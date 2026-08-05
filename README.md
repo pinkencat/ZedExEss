@@ -131,9 +131,9 @@ dotnet run --project ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -- --smoke-test
 
 ```text
 ZedExEss/
-|-- ZedExEss/             Windows WPF host and linked emulator sources
+|-- ZedExEss/             Windows WPF host and Windows-specific adapters
 |-- ZedExEss.Avalonia/    Cross-platform Avalonia desktop host
-|-- ZedExEss.Core/        Portable emulator, session, and hosting core
+|-- ZedExEss.Core/        Portable CPU, emulator, media, session, and hosting core
 |-- ZedExEss.Headless/    Command-line diagnostics and benchmarks
 |-- TEST/                 Test programs, media, and verification assets
 `-- ZedExEss.sln          Complete solution

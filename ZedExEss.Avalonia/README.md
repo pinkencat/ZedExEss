@@ -42,6 +42,5 @@ Run the real playback-device/audio-clock smoke test:
 dotnet run --project ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -- --audio-smoke-test
 ```
 
-The debugger and BASIC editor now cover the primary WPF tooling workflows. The
-next migration step is to move linked core sources physically into their owning
-project before platform packaging work begins.
+The debugger and BASIC editor cover the primary WPF tooling workflows, and the
+portable emulator sources now reside physically in their owning Core project.

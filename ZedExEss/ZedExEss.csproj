@@ -10,17 +10,6 @@
   </PropertyGroup>
 	
 	<ItemGroup>
-	  <!-- Portable emulator code is compiled by ZedExEss.Core. Only the two
-	       Windows host adapters remain in this assembly during the migration. -->
-	  <Compile Remove="Z80CPU\**\*.cs" />
-	  <Compile Remove="Spectrum\**\*.cs" />
-	  <Compile Remove="FileHandlers\**\*.cs" />
-	  <Compile Remove="Diagnostics\**\*.cs" />
-	  <Compile Include="Spectrum\Audio\WaveOutAudioPlayer.cs" />
-	  <Compile Include="Spectrum\Video\WpfSpectrumDisplay.cs" />
-	</ItemGroup>
-
-	<ItemGroup>
 	  <ProjectReference Include="..\ZedExEss.Core\ZedExEss.Core.csproj" />
 	</ItemGroup>
 
