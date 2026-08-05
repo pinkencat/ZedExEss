@@ -1,0 +1,297 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:tape="using:ZedExEss.FileHandlers"
+        x:Class="ZedExEss.AvaloniaHost.MainWindow"
+        Title="ZedExEss - Avalonia Preview"
+        Width="1120"
+        Height="720"
+        Background="#101010"
+        Focusable="True"
+        DragDrop.AllowDrop="True">
+  <Grid RowDefinitions="Auto,Auto,Auto,*">
+    <Menu Grid.Row="0" Background="#202020">
+      <MenuItem Header="_File">
+        <MenuItem x:Name="OpenMediaMenuItem" Header="_Open..." />
+        <Separator />
+        <MenuItem x:Name="ResetMenuItem" Header="_Reset" />
+        <MenuItem x:Name="TurboMenuItem" Header="_Turbo mode" ToggleType="CheckBox" />
+        <Separator />
+        <MenuItem x:Name="ExitMenuItem" Header="E_xit" />
+      </MenuItem>
+      <MenuItem Header="_Model">
+        <MenuItem x:Name="Model16MenuItem" Header="Spectrum _16K" Tag="Spectrum16K" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="Model48MenuItem" Header="Spectrum _48K" Tag="Spectrum48K" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="Model128MenuItem" Header="Spectrum _128K" Tag="Spectrum128K" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="ModelPlus2MenuItem" Header="Spectrum +_2" Tag="SpectrumPlus2" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="ModelPlus2AMenuItem" Header="Spectrum +2_A" Tag="SpectrumPlus2A" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="ModelPlus3MenuItem" Header="Spectrum +_3" Tag="SpectrumPlus3" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="ModelPentagonMenuItem" Header="_Pentagon 128" Tag="Pentagon128" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="ModelScorpionMenuItem" Header="_Scorpion 256" Tag="Scorpion256" ToggleType="Radio" GroupName="Model" />
+      </MenuItem>
+      <MenuItem Header="_Hardware">
+        <MenuItem Header="_Joystick">
+          <MenuItem x:Name="JoystickNoneMenuItem" Header="_None" ToggleType="Radio" GroupName="Joystick" />
+          <MenuItem x:Name="JoystickKempstonMenuItem" Header="_Kempston" ToggleType="Radio" GroupName="Joystick" />
+          <MenuItem x:Name="JoystickSinclair1MenuItem" Header="Sinclair _1" ToggleType="Radio" GroupName="Joystick" />
+          <MenuItem x:Name="JoystickSinclair2MenuItem" Header="Sinclair _2" ToggleType="Radio" GroupName="Joystick" />
+          <MenuItem x:Name="JoystickCursorMenuItem" Header="_Cursor/Protek" ToggleType="Radio" GroupName="Joystick" />
+        </MenuItem>
+        <Separator />
+        <MenuItem Header="+3 drive _A">
+          <MenuItem x:Name="MenuPlus3AInsert" Header="_Insert..." />
+          <MenuItem x:Name="MenuPlus3ANew" Header="_New..." />
+          <MenuItem x:Name="MenuPlus3ASave" Header="_Save As..." />
+          <MenuItem x:Name="MenuPlus3AEject" Header="_Eject" />
+        </MenuItem>
+        <MenuItem Header="+3 drive _B">
+          <MenuItem x:Name="MenuPlus3BInsert" Header="_Insert..." />
+          <MenuItem x:Name="MenuPlus3BNew" Header="_New..." />
+          <MenuItem x:Name="MenuPlus3BSave" Header="_Save As..." />
+          <MenuItem x:Name="MenuPlus3BEject" Header="_Eject" />
+        </MenuItem>
+        <MenuItem Header="Beta drive A">
+          <MenuItem x:Name="MenuBetaAInsert" Header="_Insert..." />
+          <MenuItem x:Name="MenuBetaASave" Header="_Save As..." />
+          <MenuItem x:Name="MenuBetaAEject" Header="_Eject" />
+        </MenuItem>
+        <MenuItem Header="Beta drive B">
+          <MenuItem x:Name="MenuBetaBInsert" Header="_Insert..." />
+          <MenuItem x:Name="MenuBetaBSave" Header="_Save As..." />
+          <MenuItem x:Name="MenuBetaBEject" Header="_Eject" />
+        </MenuItem>
+        <Separator />
+        <MenuItem Header="_DivMMC">
+          <MenuItem x:Name="DivMmcEnabledMenuItem" Header="_Enabled" ToggleType="CheckBox" />
+          <Separator />
+          <MenuItem x:Name="DivMmcInsertImageMenuItem" Header="Insert SD _image..." />
+          <MenuItem x:Name="DivMmcAttachFolderMenuItem" Header="Attach host _folder..." />
+          <MenuItem x:Name="DivMmcEjectMenuItem" Header="_Eject storage" />
+        </MenuItem>
+        <MenuItem x:Name="NmiMenuItem" Header="_NMI" InputGesture="F5" />
+      </MenuItem>
+      <MenuItem Header="_Tape">
+        <MenuItem x:Name="OpenTapeMenuItem" Header="_Open tape..." />
+        <Separator />
+        <MenuItem x:Name="PlayTapeMenuItem" Header="_Play" />
+        <MenuItem x:Name="StopTapeMenuItem" Header="_Stop" />
+        <MenuItem x:Name="RewindTapeMenuItem" Header="_Rewind" />
+        <MenuItem x:Name="EjectTapeMenuItem" Header="_Eject" />
+        <Separator />
+        <MenuItem x:Name="AutoLoadTapeMenuItem"
+                  Header="Auto_load tapes"
+                  ToggleType="CheckBox" />
+        <MenuItem x:Name="AutoTapePlayMenuItem"
+                  Header="_Auto tape play/stop"
+                  ToggleType="CheckBox" />
+        <Separator />
+        <MenuItem x:Name="FlashLoadMenuItem"
+                  Header="_Flash load standard blocks"
+                  ToggleType="CheckBox" />
+        <MenuItem x:Name="PollingAccelerationMenuItem"
+                  Header="Polling loader _acceleration"
+                  ToggleType="CheckBox" />
+        <MenuItem x:Name="SemanticAccelerationMenuItem"
+                  Header="Semantic acceleration (_experimental)"
+                  ToggleType="CheckBox" />
+        <MenuItem x:Name="MaximumTapeSpeedMenuItem"
+                  Header="Run acceleration at _maximum speed"
+                  ToggleType="CheckBox" />
+      </MenuItem>
+      <MenuItem Header="_View">
+        <MenuItem Header="_Zoom">
+          <MenuItem x:Name="Zoom1MenuItem" Header="_1x" Tag="1" ToggleType="CheckBox" />
+          <MenuItem x:Name="Zoom2MenuItem" Header="_2x" Tag="2" ToggleType="CheckBox" />
+          <MenuItem x:Name="Zoom3MenuItem" Header="_3x" Tag="3" ToggleType="CheckBox" />
+          <MenuItem x:Name="Zoom4MenuItem" Header="_4x" Tag="4" ToggleType="CheckBox" />
+        </MenuItem>
+        <Separator />
+        <MenuItem x:Name="GigascreenBlendMenuItem"
+                  Header="_Gigascreen blend"
+                  ToggleType="CheckBox" />
+        <Separator />
+        <MenuItem x:Name="ShowMediaBrowserMenuItem"
+                  Header="Tape/disk _browser"
+                  ToggleType="CheckBox"
+                  IsChecked="True" />
+      </MenuItem>
+      <MenuItem Header="_Tools">
+        <MenuItem x:Name="BasicEditorMenuItem" Header="_BASIC Program..." />
+        <MenuItem x:Name="PokesMenuItem" Header="_Pokes..." />
+        <Separator />
+        <MenuItem x:Name="AudioOscilloscopeMenuItem" Header="Audio _Oscilloscope..." />
+        <MenuItem x:Name="DebuggerMenuItem" Header="_Debugger..." InputGesture="F12" />
+      </MenuItem>
+    </Menu>
+
+    <Border Grid.Row="1" Background="#202020" Padding="8,6">
+      <StackPanel Orientation="Horizontal" Spacing="6">
+        <Button x:Name="QuickOpenButton" Width="34" Height="30" ToolTip.Tip="Open tape, disk or DivMMC image">
+          <PathIcon Width="18" Height="18" Data="M2,5 L8,5 10,8 22,8 22,20 2,20 Z M2,8 L22,8" />
+        </Button>
+        <Button x:Name="QuickResetButton" Width="34" Height="30" ToolTip.Tip="Reset emulation">
+          <PathIcon Width="18" Height="18" Data="M18,6 C15,3 10,3 6,6 C2,10 3,17 8,20 C13,23 20,19 20,13 M18,2 L18,7 13,7" />
+        </Button>
+        <Button x:Name="QuickPauseButton" Width="34" Height="30" ToolTip.Tip="Pause emulation">
+          <Grid Width="18" Height="18">
+            <Path x:Name="PauseGlyph" Fill="White" Data="M3,2 L8,2 8,16 3,16 Z M11,2 L16,2 16,16 11,16 Z" />
+            <Path x:Name="PlayGlyph" Fill="White" Data="M4,2 L16,9 4,16 Z" IsVisible="False" />
+          </Grid>
+        </Button>
+        <Button x:Name="QuickNmiButton" Width="34" Height="30" ToolTip.Tip="Trigger NMI (F5)">
+          <PathIcon Width="18" Height="18" Data="M12,1 L4,11 10,11 8,21 18,8 12,8 Z" />
+        </Button>
+        <Button x:Name="QuickBrowserButton" Width="34" Height="30" ToolTip.Tip="Hide tape/disk browser">
+          <PathIcon Width="18" Height="18" Data="M2,3 L22,3 22,19 2,19 Z M15,3 L15,19 M17,7 L20,7 M17,10 L20,10" />
+        </Button>
+        <Border Width="1" Margin="6,1" Background="#505050" />
+        <TextBlock VerticalAlignment="Center" Margin="0,0,2,0" Text="Model" />
+        <ComboBox x:Name="ModelComboBox" Width="170" />
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="2" Background="#181818" Padding="8,5">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock x:Name="StatusText"
+                   Grid.Column="0"
+                   Foreground="#E8E8E8"
+                   Text="Starting emulator..." />
+        <TextBlock x:Name="TapeStatusText"
+                   Grid.Column="1"
+                   Margin="12,0,0,0"
+                   Foreground="#B8D8FF"
+                   Text="Tape: none" />
+      </Grid>
+    </Border>
+
+    <Grid x:Name="MainContentGrid" Grid.Row="3" ColumnDefinitions="*,340">
+      <Border x:Name="ScreenHost"
+              Grid.Column="0"
+              Margin="8"
+              Background="Black"
+              ClipToBounds="True">
+        <Image x:Name="ScreenImage"
+               HorizontalAlignment="Center"
+               VerticalAlignment="Center"
+               Stretch="Fill"
+               RenderOptions.BitmapInterpolationMode="None" />
+      </Border>
+
+      <Border x:Name="MediaBrowserPanel" Grid.Column="1" Margin="0,8,8,8" Padding="7" Background="#181818" BorderBrush="#383838" BorderThickness="1">
+        <Grid RowDefinitions="Auto,*">
+          <Grid Grid.Row="0" ColumnDefinitions="Auto,*" Margin="2,0,2,6">
+            <Border x:Name="DiskActivityLight"
+                    Width="11" Height="11" CornerRadius="6"
+                    Margin="0,2,7,0" Background="#245C24" />
+            <TextBlock x:Name="DiskStatusText"
+                       Grid.Column="1" TextWrapping="Wrap"
+                       Foreground="#D8D8D8" Text="Disk: none" />
+          </Grid>
+
+          <TabControl Grid.Row="1">
+            <TabItem Header="Tape">
+              <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" Margin="6">
+                <TextBlock x:Name="TapeFileText"
+                           Grid.Row="0" Margin="0,0,0,5"
+                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                           Text="No tape loaded" />
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="5">
+                  <Button x:Name="PlayTapeButton" MinWidth="52" Content="Play" />
+                  <Button x:Name="StopTapeButton" MinWidth="52" Content="Stop" />
+                  <Button x:Name="RewindTapeButton" MinWidth="64" Content="Rewind" />
+                  <Button x:Name="EjectTapeButton" MinWidth="52" Content="Eject" />
+                </StackPanel>
+                <ProgressBar x:Name="TapeBlockProgress"
+                             Grid.Row="2" Margin="0,6,0,4"
+                             Minimum="0" Maximum="1" Value="0" />
+                <TextBlock x:Name="TapeBlockText"
+                           Grid.Row="3" Margin="0,0,0,5"
+                           Foreground="#C8E2FF" TextWrapping="Wrap"
+                           Text="No tape loaded" />
+                <Grid Grid.Row="4" RowDefinitions="Auto,*">
+                  <Grid Grid.Row="0" ColumnDefinitions="34,92,52,*" Margin="5,0,5,3">
+                    <TextBlock Grid.Column="0" Text="#" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="Type" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="2" Text="Len" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="3" Text="Name" FontWeight="SemiBold" />
+                  </Grid>
+                  <ListBox x:Name="TapeBlocksList" Grid.Row="1">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate x:DataType="tape:BlockInfo">
+                        <Grid ColumnDefinitions="34,92,52,*" Margin="2,1">
+                          <TextBlock Grid.Column="0" Text="{Binding DisplayIndex}" />
+                          <TextBlock Grid.Column="1" Text="{Binding Type}" TextTrimming="CharacterEllipsis" />
+                          <TextBlock Grid.Column="2" Text="{Binding Length}" />
+                          <TextBlock Grid.Column="3" Text="{Binding FileName}" TextTrimming="CharacterEllipsis" />
+                        </Grid>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                </Grid>
+              </Grid>
+            </TabItem>
+
+            <TabItem Header="+3 Disks">
+              <StackPanel Margin="7" Spacing="12">
+                <Border Padding="7" BorderBrush="#444" BorderThickness="1">
+                  <StackPanel Spacing="6">
+                    <TextBlock Text="Drive A" FontWeight="SemiBold" />
+                    <TextBlock x:Name="Plus3APathText" Text="(none)" TextWrapping="Wrap" />
+                    <WrapPanel Orientation="Horizontal">
+                      <Button x:Name="Plus3AInsertButton" Margin="0,0,5,5" Content="Insert..." />
+                      <Button x:Name="Plus3ANewButton" Margin="0,0,5,5" Content="New..." />
+                      <Button x:Name="Plus3ASaveButton" Margin="0,0,5,5" Content="Save As..." />
+                      <Button x:Name="Plus3AEjectButton" Margin="0,0,5,5" Content="Eject" />
+                    </WrapPanel>
+                    <CheckBox x:Name="Plus3AWriteProtectCheckBox" Content="Write protected" />
+                  </StackPanel>
+                </Border>
+                <Border Padding="7" BorderBrush="#444" BorderThickness="1">
+                  <StackPanel Spacing="6">
+                    <TextBlock Text="Drive B" FontWeight="SemiBold" />
+                    <TextBlock x:Name="Plus3BPathText" Text="(none)" TextWrapping="Wrap" />
+                    <WrapPanel Orientation="Horizontal">
+                      <Button x:Name="Plus3BInsertButton" Margin="0,0,5,5" Content="Insert..." />
+                      <Button x:Name="Plus3BNewButton" Margin="0,0,5,5" Content="New..." />
+                      <Button x:Name="Plus3BSaveButton" Margin="0,0,5,5" Content="Save As..." />
+                      <Button x:Name="Plus3BEjectButton" Margin="0,0,5,5" Content="Eject" />
+                    </WrapPanel>
+                    <CheckBox x:Name="Plus3BWriteProtectCheckBox" Content="Write protected" />
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Beta Disks">
+              <StackPanel Margin="7" Spacing="12">
+                <Border Padding="7" BorderBrush="#444" BorderThickness="1">
+                  <StackPanel Spacing="6">
+                    <TextBlock Text="Drive A" FontWeight="SemiBold" />
+                    <TextBlock x:Name="BetaAPathText" Text="(none)" TextWrapping="Wrap" />
+                    <WrapPanel Orientation="Horizontal">
+                      <Button x:Name="BetaAInsertButton" Margin="0,0,5,5" Content="Insert..." />
+                      <Button x:Name="BetaASaveButton" Margin="0,0,5,5" Content="Save As..." />
+                      <Button x:Name="BetaAEjectButton" Margin="0,0,5,5" Content="Eject" />
+                    </WrapPanel>
+                    <CheckBox x:Name="BetaAWriteProtectCheckBox" Content="Write protected" />
+                  </StackPanel>
+                </Border>
+                <Border Padding="7" BorderBrush="#444" BorderThickness="1">
+                  <StackPanel Spacing="6">
+                    <TextBlock Text="Drive B" FontWeight="SemiBold" />
+                    <TextBlock x:Name="BetaBPathText" Text="(none)" TextWrapping="Wrap" />
+                    <WrapPanel Orientation="Horizontal">
+                      <Button x:Name="BetaBInsertButton" Margin="0,0,5,5" Content="Insert..." />
+                      <Button x:Name="BetaBSaveButton" Margin="0,0,5,5" Content="Save As..." />
+                      <Button x:Name="BetaBEjectButton" Margin="0,0,5,5" Content="Eject" />
+                    </WrapPanel>
+                    <CheckBox x:Name="BetaBWriteProtectCheckBox" Content="Write protected" />
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </TabItem>
+          </TabControl>
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>

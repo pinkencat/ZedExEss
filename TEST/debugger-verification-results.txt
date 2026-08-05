@@ -1,0 +1,12 @@
+﻿Debugger headless verification
+Output: C:\Users\brain\source\repos\ZedExEss\TEST\debugger-verification-results.txt
+
+PASS Disassemble representative Z80 opcodes
+PASS Assemble representative Z80 snippets
+PASS Execution breakpoint stops before instruction
+PASS Single-step advances through emulator timing path
+PASS Step-over uses temporary breakpoint after CALL
+PASS Memory and port watchpoints pause after instruction
+PASS Project and patch debugger state through the portable view service
+
+Result: PASS

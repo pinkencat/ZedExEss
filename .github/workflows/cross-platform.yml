@@ -1,0 +1,128 @@
+name: Cross-platform build
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - Port
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    name: Verify on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore portable projects
+        run: |
+          dotnet restore ZedExEss.Headless/ZedExEss.Headless.csproj
+          dotnet restore ZedExEss.Avalonia/ZedExEss.Avalonia.csproj
+
+      - name: Build portable projects
+        run: |
+          dotnet build ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-restore
+          dotnet build ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -c Release --no-restore
+
+      - name: Run portable diagnostics
+        run: |
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-basic
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-debugger
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-pentagon
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-session
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-settings
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-tape-acceleration
+          dotnet run --project ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -c Release --no-build -- --smoke-test
+
+  package:
+    name: Package ${{ matrix.runtime }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: linux-x64
+            runner: ubuntu-24.04
+          - runtime: linux-arm64
+            runner: ubuntu-24.04
+          - runtime: osx-arm64
+            runner: macos-15
+          - runtime: osx-x64
+            runner: macos-15-intel
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Publish self-contained application
+        run: >-
+          dotnet publish ZedExEss.Avalonia/ZedExEss.Avalonia.csproj
+          -c Release
+          -r ${{ matrix.runtime }}
+          --self-contained true
+          -o publish/${{ matrix.runtime }}
+
+      - name: Package Linux application
+        if: startsWith(matrix.runtime, 'linux-')
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          tar -C publish/${{ matrix.runtime }} -czf artifacts/ZedExEss-${{ matrix.runtime }}.tar.gz .
+
+      - name: Create macOS app bundle
+        if: startsWith(matrix.runtime, 'osx-')
+        shell: bash
+        run: |
+          app="package/ZedExEss.app"
+          mkdir -p "$app/Contents/MacOS" artifacts
+          cp -R publish/${{ matrix.runtime }}/. "$app/Contents/MacOS/"
+          chmod +x "$app/Contents/MacOS/ZedExEss.Avalonia"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>en</string>
+            <key>CFBundleDisplayName</key><string>ZedExEss</string>
+            <key>CFBundleExecutable</key><string>ZedExEss.Avalonia</string>
+            <key>CFBundleIdentifier</key><string>uk.co.zedexess.emulator</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>ZedExEss</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "artifacts/ZedExEss-${{ matrix.runtime }}.zip"
+
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZedExEss-${{ matrix.runtime }}
+          path: artifacts/ZedExEss-${{ matrix.runtime }}.*
+          if-no-files-found: error

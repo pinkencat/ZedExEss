@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RootNamespace>ZedExEss</RootNamespace>
+  </PropertyGroup>
+	<PropertyGroup>
+		<InvariantGlobalization>true</InvariantGlobalization>
+	</PropertyGroup>
+
+
+	<!--
+    The files remain in their existing locations during the migration so this
+    first split is reviewable and does not mix namespace/file moves with an
+    assembly-boundary change. Later phases can move each linked directory into
+    this project without changing the resulting public API.
+  -->
+  <ItemGroup>
+    <Compile Include="AssemblyInfo.cs" />
+    <Compile Include="Execution\**\*.cs" />
+    <Compile Include="Hosting\**\*.cs" />
+    <Compile Include="Session\**\*.cs" />
+    <Compile Include="..\ZedExEss\Z80CPU\**\*.cs" Link="Z80CPU\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\ZedExEss\Spectrum\**\*.cs"
+             Exclude="..\ZedExEss\Spectrum\Audio\WaveOutAudioPlayer.cs;..\ZedExEss\Spectrum\Video\WpfSpectrumDisplay.cs"
+             Link="Spectrum\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\ZedExEss\FileHandlers\**\*.cs" Link="FileHandlers\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\ZedExEss\Diagnostics\**\*.cs" Link="Diagnostics\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

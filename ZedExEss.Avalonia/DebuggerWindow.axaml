@@ -1,0 +1,155 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:debug="using:ZedExEss.Spectrum.Debugging"
+        x:Class="ZedExEss.AvaloniaHost.DebuggerWindow"
+        Title="Z80 Debugger"
+        Width="1080"
+        Height="720"
+        MinWidth="760"
+        MinHeight="500"
+        WindowStartupLocation="CenterOwner"
+        Background="#151515">
+  <Grid Margin="8" RowDefinitions="Auto,Auto,*">
+    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6">
+      <Button x:Name="RunButton" Content="Run" />
+      <Button x:Name="PauseButton" Content="Pause" />
+      <Button x:Name="StepIntoButton" Content="Step Into" />
+      <Button x:Name="StepOverButton" Content="Step Over" />
+      <Button x:Name="RunToButton" Content="Run To Cursor" />
+      <Button x:Name="RefreshButton" Content="Refresh" />
+      <TextBlock x:Name="DebuggerStatusText" Margin="12,5,0,0" Foreground="#FFD080" />
+    </StackPanel>
+
+    <TextBlock x:Name="RegistersText"
+               Grid.Row="1" Margin="0,7"
+               FontFamily="Consolas,Menlo,Monospace"
+               Foreground="#E8E8E8" />
+
+    <Grid Grid.Row="2" ColumnDefinitions="3*,2*">
+      <Border Grid.Column="0" Margin="0,0,6,0" Padding="6" BorderBrush="#444" BorderThickness="1">
+        <Grid RowDefinitions="Auto,Auto,*,Auto">
+          <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="5" Margin="0,0,0,6">
+            <TextBlock Text="Address" VerticalAlignment="Center" />
+            <TextBox x:Name="DisassemblyAddressText" Width="72" Text="0000" FontFamily="Consolas" />
+            <Button x:Name="DisassemblyGoButton" Content="Go" />
+            <Button x:Name="DisassemblyPreviousButton" Content="- page" />
+            <Button x:Name="DisassemblyNextButton" Content="+ page" />
+            <Button x:Name="ToggleBreakpointButton" Content="Breakpoint" />
+          </StackPanel>
+          <WrapPanel Grid.Row="1" Margin="0,0,0,6">
+            <TextBlock Text="Range" Margin="0,4,5,5" VerticalAlignment="Center" />
+            <TextBox x:Name="ExportStartText" Width="72" Margin="0,0,5,5" Text="0000" FontFamily="Consolas" />
+            <TextBlock Text="-" Margin="0,4,5,5" VerticalAlignment="Center" />
+            <TextBox x:Name="ExportEndText" Width="72" Margin="0,0,5,5" Text="0000" FontFamily="Consolas" />
+            <Button x:Name="UseSelectionButton" Margin="0,0,5,5" Content="Use Selection" />
+            <Button x:Name="CopyDisassemblyButton" Margin="0,0,5,5" Content="Copy" />
+            <Button x:Name="SaveDisassemblyButton" Margin="0,0,5,5" Content="Save" />
+            <TextBlock x:Name="ExportStatusText" Margin="4,4,0,5" Foreground="#B8D8FF" />
+          </WrapPanel>
+          <ListBox x:Name="DisassemblyList" Grid.Row="2" SelectionMode="Multiple">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="debug:Z80DisassemblyLine">
+                <Grid Margin="1">
+                  <Border Background="#18324A" IsVisible="{Binding IsCurrent}" CornerRadius="2" />
+                  <Border Background="#5A2020" IsVisible="{Binding HasBreakpoint}" CornerRadius="2" />
+                  <Grid ColumnDefinitions="20,20,54,100,*,120" Margin="3,1">
+                    <TextBlock Grid.Column="0" Text="●" IsVisible="{Binding HasBreakpoint}"
+                               Foreground="#FF7777" FontWeight="Bold" HorizontalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="▶" IsVisible="{Binding IsCurrent}"
+                               Foreground="#74C8FF" FontWeight="Bold" HorizontalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="{Binding AddressText}" FontFamily="Consolas" />
+                    <TextBlock Grid.Column="3" Text="{Binding BytesText}" FontFamily="Consolas" />
+                    <TextBlock Grid.Column="4" Text="{Binding Mnemonic}" FontFamily="Consolas" />
+                    <TextBlock Grid.Column="5" Text="{Binding Mapping.DisplayName}" Foreground="#AAA" FontSize="11" />
+                  </Grid>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="5" Margin="0,6,0,0">
+            <TextBlock Text="Selected bytes" VerticalAlignment="Center" />
+            <TextBox x:Name="SelectedBytesText" Width="190" FontFamily="Consolas" />
+            <Button x:Name="ApplySelectedBytesButton" Content="Apply" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <TabControl Grid.Column="1" Margin="6,0,0,0">
+        <TabItem Header="Memory">
+          <Grid Margin="7" RowDefinitions="Auto,*,Auto">
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="5" Margin="0,0,0,6">
+              <TextBlock Text="Address" VerticalAlignment="Center" />
+              <TextBox x:Name="MemoryAddressText" Width="72" Text="4000" FontFamily="Consolas" />
+              <Button x:Name="MemoryGoButton" Content="Go" />
+              <Button x:Name="MemoryPreviousButton" Content="- page" />
+              <Button x:Name="MemoryNextButton" Content="+ page" />
+            </StackPanel>
+            <TextBox x:Name="MemoryText"
+                     Grid.Row="1" IsReadOnly="True"
+                     AcceptsReturn="True" TextWrapping="NoWrap"
+                     FontFamily="Consolas,Menlo,Monospace" FontSize="12"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto" />
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="5" Margin="0,6,0,0">
+              <TextBlock Text="Patch bytes" VerticalAlignment="Center" />
+              <TextBox x:Name="MemoryPatchText" Width="210" FontFamily="Consolas" />
+              <Button x:Name="MemoryApplyButton" Content="Apply" />
+            </StackPanel>
+          </Grid>
+        </TabItem>
+
+        <TabItem Header="Stack">
+          <TextBox x:Name="StackText" Margin="7" IsReadOnly="True"
+                   AcceptsReturn="True" TextWrapping="NoWrap"
+                   FontFamily="Consolas,Menlo,Monospace"
+                   ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                   ScrollViewer.VerticalScrollBarVisibility="Auto" />
+        </TabItem>
+
+        <TabItem Header="Breakpoints">
+          <Grid Margin="7" RowDefinitions="Auto,*">
+            <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,7">
+              <ComboBox x:Name="BreakpointTypeCombo" Width="150" HorizontalAlignment="Left" />
+              <WrapPanel>
+                <TextBox x:Name="BreakpointAddressText" Width="72" Margin="0,0,5,5" Text="8000" FontFamily="Consolas" />
+                <TextBox x:Name="BreakpointEndText" Width="72" Margin="0,0,5,5" PlaceholderText="End" FontFamily="Consolas" />
+                <TextBox x:Name="BreakpointMaskText" Width="72" Margin="0,0,5,5" Text="FFFF" FontFamily="Consolas" />
+                <Button x:Name="AddBreakpointButton" Margin="0,0,5,5" Content="Add" />
+                <Button x:Name="EnableBreakpointButton" Margin="0,0,5,5" Content="Enable/Disable" />
+                <Button x:Name="RemoveBreakpointButton" Margin="0,0,5,5" Content="Remove" />
+              </WrapPanel>
+            </StackPanel>
+            <ListBox x:Name="BreakpointsList" Grid.Row="1">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="debug:DebuggerBreakpoint">
+                  <TextBlock Text="{Binding Summary}" FontFamily="Consolas" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Grid>
+        </TabItem>
+
+        <TabItem Header="Assembler">
+          <Grid Margin="7" RowDefinitions="Auto,*,Auto,120">
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="5" Margin="0,0,0,6">
+              <TextBlock Text="Address" VerticalAlignment="Center" />
+              <TextBox x:Name="AssemblerAddressText" Width="72" Text="8000" FontFamily="Consolas" />
+              <Button x:Name="AssemblerPreviewButton" Content="Preview" />
+              <Button x:Name="AssemblerApplyButton" Content="Apply" />
+            </StackPanel>
+            <TextBox x:Name="AssemblerText" Grid.Row="1"
+                     AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
+                     FontFamily="Consolas,Menlo,Monospace"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto" />
+            <TextBlock Grid.Row="2" Margin="0,6,0,3" Text="Output" />
+            <TextBox x:Name="AssemblerOutputText" Grid.Row="3" IsReadOnly="True"
+                     AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas,Menlo,Monospace"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto" />
+          </Grid>
+        </TabItem>
+      </TabControl>
+    </Grid>
+  </Grid>
+</Window>

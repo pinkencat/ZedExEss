@@ -1,0 +1,13 @@
+<!--
+  === File overview ===
+  This file implements the WPF application shell and emulator-facing user interface.
+  Comments below describe responsibilities and boundaries; runtime behavior is unchanged.
+-->
+
+<Application
+    x:Class="ZedExEss.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="clr-namespace:ZedExEss">
+    <Application.Resources />
+</Application>

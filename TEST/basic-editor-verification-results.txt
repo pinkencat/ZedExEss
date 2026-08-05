@@ -1,0 +1,13 @@
+﻿BASIC editor headless verification
+Output: C:\Users\brain\source\repos\ZedExEss\TEST\basic-editor-verification-results.txt
+
+PASS: Tokenize PRINT with hidden numeric value
+PASS: Gate 128 BASIC-only tokens by token mode
+PASS: Preserve BASIC token display spacing
+PASS: Tokenize and detokenize common BASIC statements
+PASS: Reject duplicate line numbers
+PASS: Reject structurally invalid BASIC source
+PASS: Inject BASIC into all supported model memory maps
+PASS: Drive BASIC editing through the portable session
+
+Result: PASS

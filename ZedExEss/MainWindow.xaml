@@ -1,0 +1,257 @@
+<!--
+  === File overview ===
+  This file implements the WPF application shell and emulator-facing user interface.
+  Comments below describe responsibilities and boundaries; runtime behavior is unchanged.
+-->
+
+<Window x:Class="ZedExEss.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:ZedExEss"
+        mc:Ignorable="d"
+        Title="ZedExEss" Height="600" Width="900" Background="Black"
+        Focusable="True"
+        AllowDrop="True"
+        PreviewDragOver="OnWindowPreviewDragOver"
+        PreviewDrop="OnWindowPreviewDrop"
+        SizeChanged="OnWindowSizeChanged">
+    <Window.Resources>
+        <Style x:Key="QuickIconButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="5" />
+            <Setter Property="Margin" Value="1,0" />
+            <Setter Property="Background" Value="#303030" />
+            <Setter Property="BorderBrush" Value="#555555" />
+            <Setter Property="Foreground" Value="White" />
+        </Style>
+    </Window.Resources>
+    <DockPanel x:Name="RootDockPanel" Background="Black" SnapsToDevicePixels="True" UseLayoutRounding="True">
+        <Menu x:Name="MainMenu" DockPanel.Dock="Top">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Open..." Click="OnOpenFile" />
+                <Separator />
+                <MenuItem Header="_Reset" Click="OnResetMachine" />
+                <MenuItem x:Name="TurboMenu" Header="_Turbo Mode" IsCheckable="True" Click="OnTurboModeToggle" />
+                <Separator />
+                <MenuItem Header="E_xit" Click="OnExit" />
+            </MenuItem>
+            <MenuItem Header="_Model">
+                <MenuItem x:Name="Model16KMenu" Header="Spectrum 16K" Tag="Spectrum16K" IsCheckable="True" Click="OnModelMenuClick" />
+                <MenuItem x:Name="Model48KMenu" Header="Spectrum 48K" Tag="Spectrum48K" IsCheckable="True" Click="OnModelMenuClick" />
+                <MenuItem x:Name="Model128KMenu" Header="Spectrum 128K" Tag="Spectrum128K" IsCheckable="True" Click="OnModelMenuClick" />
+                <MenuItem x:Name="ModelPlus2Menu" Header="Spectrum +2" Tag="SpectrumPlus2" IsCheckable="True" Click="OnModelMenuClick" />
+                <MenuItem x:Name="ModelPlus2AMenu" Header="Spectrum +2A" Tag="SpectrumPlus2A" IsCheckable="True" Click="OnModelMenuClick" />
+                <MenuItem x:Name="ModelPlus3Menu" Header="Spectrum +3" Tag="SpectrumPlus3" IsCheckable="True" Click="OnModelMenuClick" />
+                <Separator />
+                <MenuItem x:Name="ModelPentagon128Menu" Header="Pentagon 128" Tag="Pentagon128" IsCheckable="True" Click="OnModelMenuClick" />
+                <MenuItem x:Name="ModelScorpion256Menu" Header="Scorpion 256" Tag="Scorpion256" IsCheckable="True" Click="OnModelMenuClick" />
+            </MenuItem>
+            <MenuItem Header="_Hardware">
+                <MenuItem Header="_Joystick">
+                    <MenuItem x:Name="JoystickNoneMenu" Header="_None" Tag="None" IsCheckable="True" Click="OnJoystickMenuClick" />
+                    <MenuItem x:Name="JoystickKempstonMenu" Header="_Kempston" Tag="Kempston" IsCheckable="True" Click="OnJoystickMenuClick" />
+                    <MenuItem x:Name="JoystickSinclair1Menu" Header="Sinclair _1" Tag="Sinclair1" IsCheckable="True" Click="OnJoystickMenuClick" />
+                    <MenuItem x:Name="JoystickSinclair2Menu" Header="Sinclair _2" Tag="Sinclair2" IsCheckable="True" Click="OnJoystickMenuClick" />
+                    <MenuItem x:Name="JoystickCursorMenu" Header="_Cursor/Protek" Tag="Cursor" IsCheckable="True" Click="OnJoystickMenuClick" />
+                </MenuItem>
+                <MenuItem Header="_Disk">
+                    <MenuItem Header="_+3 Drive A">
+                        <MenuItem x:Name="DiskNewBlankMenu" Header="_New Blank +3 Disk..." Click="OnDiskNewBlank" />
+                        <MenuItem x:Name="DiskInsertMenu" Header="_Insert DSK..." Click="OnDiskInsert" />
+                        <MenuItem x:Name="DiskSaveAsMenu" Header="Save _As..." Click="OnDiskSaveAs" />
+                        <MenuItem x:Name="DiskEjectMenu" Header="_Eject" Click="OnDiskEject" />
+                        <Separator />
+                        <MenuItem x:Name="DiskWriteProtectMenu" Header="_Write Protected" IsCheckable="True" Click="OnDiskWriteProtectToggle" />
+                    </MenuItem>
+                    <MenuItem Header="+3 Drive _B">
+                        <MenuItem x:Name="DiskBNewBlankMenu" Header="_New Blank +3 Disk..." Click="OnDiskBNewBlank" />
+                        <MenuItem x:Name="DiskBInsertMenu" Header="_Insert DSK..." Click="OnDiskBInsert" />
+                        <MenuItem x:Name="DiskBSaveAsMenu" Header="Save _As..." Click="OnDiskBSaveAs" />
+                        <MenuItem x:Name="DiskBEjectMenu" Header="_Eject" Click="OnDiskBEject" />
+                        <Separator />
+                        <MenuItem x:Name="DiskBWriteProtectMenu" Header="_Write Protected" IsCheckable="True" Click="OnDiskBWriteProtectToggle" />
+                    </MenuItem>
+                    <Separator />
+                    <MenuItem Header="_Beta/TR-DOS Drive A">
+                        <MenuItem x:Name="BetaDiskInsertMenu" Header="_Insert TRD/SCL..." Click="OnBetaDiskInsert" />
+                        <MenuItem x:Name="BetaDiskSaveAsMenu" Header="Save _As..." Click="OnBetaDiskSaveAs" />
+                        <MenuItem x:Name="BetaDiskEjectMenu" Header="_Eject" Click="OnBetaDiskEject" />
+                        <Separator />
+                        <MenuItem x:Name="BetaDiskWriteProtectMenu" Header="_Write Protected" IsCheckable="True" Click="OnBetaDiskWriteProtectToggle" />
+                    </MenuItem>
+                    <MenuItem Header="Beta/TR-DOS Drive B">
+                        <MenuItem x:Name="BetaDiskBInsertMenu" Header="_Insert TRD/SCL..." Click="OnBetaDiskBInsert" />
+                        <MenuItem x:Name="BetaDiskBSaveAsMenu" Header="Save _As..." Click="OnBetaDiskBSaveAs" />
+                        <MenuItem x:Name="BetaDiskBEjectMenu" Header="_Eject" Click="OnBetaDiskBEject" />
+                        <Separator />
+                        <MenuItem x:Name="BetaDiskBWriteProtectMenu" Header="_Write Protected" IsCheckable="True" Click="OnBetaDiskBWriteProtectToggle" />
+                    </MenuItem>
+                    <Separator />
+                    <MenuItem x:Name="DiskTraceMenu" Header="_Trace FDC" IsCheckable="True" Click="OnDiskTraceToggle" />
+                </MenuItem>
+                <MenuItem Header="_DivMMC">
+                    <MenuItem x:Name="DivDisabledMenu" Header="_Disabled" Tag="Disabled" IsCheckable="True" Click="OnDivExpansionMenuClick" />
+                    <MenuItem x:Name="DivMmcMenu" Header="Div_MMC" Tag="DivMmc" IsCheckable="True" Click="OnDivExpansionMenuClick" />
+                    <Separator />
+                    <MenuItem x:Name="DivStorageNewMenu" Header="_New Blank FAT16 Image..." Click="OnDivStorageNew" />
+                    <MenuItem x:Name="DivStorageInsertMenu" Header="_Insert Storage Image..." Click="OnDivStorageInsert" />
+                    <MenuItem x:Name="DivStorageFolderMenu" Header="Use _Folder as Storage..." Click="OnDivStorageFolder" />
+                    <MenuItem x:Name="DivStorageImportFolderMenu" Header="Import _Folder to Image..." Click="OnDivStorageImportFolder" />
+                    <MenuItem x:Name="DivStorageEjectMenu" Header="_Eject Storage Image" Click="OnDivStorageEject" />
+                    <MenuItem x:Name="DivStorageWriteProtectMenu" Header="Storage _Write Protected" IsCheckable="True" Click="OnDivStorageWriteProtectToggle" />
+                    <Separator />
+                    <MenuItem x:Name="DivNmiMenu" Header="_NMI" InputGestureText="F5" Click="OnDivNmi" />
+                </MenuItem>
+            </MenuItem>
+            <MenuItem Header="_Tape">
+                <MenuItem x:Name="TapePlayMenu" Header="_Play" Click="OnTapePlay" />
+                <MenuItem x:Name="TapeStopMenu" Header="_Stop" Click="OnTapeStop" />
+                <MenuItem x:Name="TapeRewindMenu" Header="_Rewind" Click="OnTapeRewind" />
+                <MenuItem x:Name="TapeEjectMenu" Header="E_ject" Click="OnTapeEject" />
+                <Separator />
+                <MenuItem x:Name="AutoLoadTapeMenu" Header="Auto_load Tapes" IsCheckable="True" Click="OnAutoLoadTapeToggle" />
+                <MenuItem x:Name="AutoTapePlayMenu" Header="_Auto Tape Play/Stop" IsCheckable="True" Click="OnAutoTapePlayToggle" />
+                <Separator />
+                <MenuItem x:Name="FlashLoadMenu" Header="_Flash Load Standard Blocks" IsCheckable="True" Click="OnFlashLoadToggle" />
+                <MenuItem x:Name="EdgeLoadMenu" Header="_Polling Loader Acceleration" IsCheckable="True" Click="OnEdgeLoadToggle" />
+                <MenuItem x:Name="SemanticEdgeLoadMenu" Header="_Semantic Loader Acceleration (Experimental)" IsCheckable="True" Click="OnSemanticEdgeLoadToggle" />
+                <MenuItem x:Name="TapeAccelerationMaxSpeedMenu" Header="Run Loader Acceleration at _Maximum Speed" IsCheckable="True" Click="OnTapeAccelerationMaxSpeedToggle" />
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem Header="_Zoom">
+                    <MenuItem x:Name="Zoom1Menu" Header="_1x" Tag="1" IsCheckable="True" Click="OnZoomMenuClick" />
+                    <MenuItem x:Name="Zoom2Menu" Header="_2x" Tag="2" IsCheckable="True" Click="OnZoomMenuClick" />
+                    <MenuItem x:Name="Zoom3Menu" Header="_3x" Tag="3" IsCheckable="True" Click="OnZoomMenuClick" />
+                    <MenuItem x:Name="Zoom4Menu" Header="_4x" Tag="4" IsCheckable="True" Click="OnZoomMenuClick" />
+                </MenuItem>
+                <Separator />
+                <MenuItem x:Name="GigascreenBlendMenu" Header="_Gigascreen Blend" IsCheckable="True" Click="OnGigascreenBlendToggle" />
+            </MenuItem>
+            <MenuItem Header="_Tools">
+                <MenuItem Header="_Debugger..." InputGestureText="F12" Click="OnDebugger" />
+                <MenuItem Header="_Oscilloscope..." Click="OnAudioOscilloscope" />
+                <MenuItem Header="_BASIC Program..." Click="OnBasicProgram" />
+                <MenuItem Header="_Pokes..." Click="OnPokes" />
+                <Separator />
+                <MenuItem x:Name="DirtyLinePresentationMenu" Header="_Dirty Line Presentation" IsCheckable="True" IsChecked="True" Click="OnDirtyLinePresentationToggle" />
+            </MenuItem>
+        </Menu>
+        <ToolBar x:Name="QuickAccessToolBar" DockPanel.Dock="Top" Background="#202020" Padding="2">
+            <Button x:Name="QuickOpenButton" Style="{StaticResource QuickIconButtonStyle}" ToolTip="Open file" Click="OnOpenFile">
+                <Viewbox Stretch="Uniform">
+                    <Canvas Width="24" Height="24">
+                        <Path Data="M3,7 L9,7 L11,9 L21,9 L21,19 L3,19 Z M3,11 L21,11" Stroke="White" StrokeThickness="2" StrokeLineJoin="Round" Fill="Transparent" />
+                    </Canvas>
+                </Viewbox>
+            </Button>
+            <Button x:Name="QuickResetButton" Style="{StaticResource QuickIconButtonStyle}" ToolTip="Reset" Click="OnResetMachine">
+                <Viewbox Stretch="Uniform">
+                    <Canvas Width="24" Height="24">
+                        <Path Data="M4,4 L4,10 L10,10 M5,12 A7,7 0 1 0 7,7" Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Fill="Transparent" />
+                    </Canvas>
+                </Viewbox>
+            </Button>
+            <Button x:Name="QuickPausePlayButton" Style="{StaticResource QuickIconButtonStyle}" ToolTip="Pause emulation" Click="OnQuickPausePlay">
+                <Grid>
+                    <Viewbox x:Name="QuickPauseIcon" Stretch="Uniform">
+                        <Canvas Width="24" Height="24">
+                            <Rectangle Canvas.Left="6" Canvas.Top="4" Width="4" Height="16" Fill="White" />
+                            <Rectangle Canvas.Left="14" Canvas.Top="4" Width="4" Height="16" Fill="White" />
+                        </Canvas>
+                    </Viewbox>
+                    <Viewbox x:Name="QuickPlayIcon" Stretch="Uniform" Visibility="Collapsed">
+                        <Canvas Width="24" Height="24">
+                            <Polygon Points="7,4 19,12 7,20" Fill="White" />
+                        </Canvas>
+                    </Viewbox>
+                </Grid>
+            </Button>
+            <Button x:Name="QuickNmiButton" Style="{StaticResource QuickIconButtonStyle}" ToolTip="Trigger DivMMC NMI" Click="OnDivNmi">
+                <Viewbox Stretch="Uniform">
+                    <Canvas Width="24" Height="24">
+                        <Polygon Points="13,2 5,13 11,13 9,22 19,10 13,10" Stroke="White" StrokeThickness="1.6" StrokeLineJoin="Round" Fill="Transparent" />
+                    </Canvas>
+                </Viewbox>
+            </Button>
+            <Separator />
+            <Button x:Name="QuickTapeBrowserButton" Style="{StaticResource QuickIconButtonStyle}" ToolTip="Hide tape browser" Click="OnToggleTapeBrowser">
+                <Grid>
+                    <Viewbox x:Name="QuickTapeHideIcon" Stretch="Uniform">
+                        <Canvas Width="24" Height="24">
+                            <Rectangle Canvas.Left="3" Canvas.Top="5" Width="18" Height="14" Stroke="White" StrokeThickness="2" Fill="Transparent" />
+                            <Line X1="15" Y1="5" X2="15" Y2="19" Stroke="White" StrokeThickness="2" />
+                            <Path Data="M11,9 L7,12 L11,15" Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Fill="Transparent" />
+                        </Canvas>
+                    </Viewbox>
+                    <Viewbox x:Name="QuickTapeShowIcon" Stretch="Uniform" Visibility="Collapsed">
+                        <Canvas Width="24" Height="24">
+                            <Rectangle Canvas.Left="3" Canvas.Top="5" Width="18" Height="14" Stroke="White" StrokeThickness="2" Fill="Transparent" />
+                            <Line X1="15" Y1="5" X2="15" Y2="19" Stroke="White" StrokeThickness="2" />
+                            <Path Data="M17,9 L21,12 L17,15" Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Fill="Transparent" />
+                        </Canvas>
+                    </Viewbox>
+                </Grid>
+            </Button>
+        </ToolBar>
+        <Grid x:Name="MainContentGrid" Background="Black">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="TapeBrowserColumn" Width="300" />
+            </Grid.ColumnDefinitions>
+            <Border x:Name="ScreenHost" Background="Black" Margin="6" Grid.Column="0"
+                    SnapsToDevicePixels="True">
+                <Image x:Name="ScreenImage"
+                       Stretch="Fill"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       RenderOptions.BitmapScalingMode="NearestNeighbor"
+                       SnapsToDevicePixels="True" />
+            </Border>
+            <Border x:Name="TapeBrowserPanel" Background="#141414" BorderBrush="#2A2A2A" BorderThickness="1" Padding="8" Margin="6" Grid.Column="1">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Grid.Row="0" Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Ellipse x:Name="DiskActivityLight" Width="10" Height="10" Fill="#202020" Stroke="#555555" StrokeThickness="1" Margin="0,3,6,0" VerticalAlignment="Top" />
+                        <TextBlock Grid.Column="1" x:Name="DiskStatusText" Foreground="White" FontWeight="SemiBold" Text="Disk: (none)" TextWrapping="Wrap" />
+                    </Grid>
+                    <TextBlock Grid.Row="1" x:Name="TapeFileText" Foreground="White" FontWeight="SemiBold" Text="Tape: (none)" Margin="0,0,0,6" />
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,6">
+                        <Button x:Name="TapePlayButton" Content="Play" Width="60" Margin="0,0,6,0" Click="OnTapePlay" />
+                        <Button x:Name="TapeStopButton" Content="Stop" Width="60" Margin="0,0,6,0" Click="OnTapeStop" />
+                        <Button x:Name="TapeRewindButton" Content="Rewind" Width="70" Margin="0,0,6,0" Click="OnTapeRewind" />
+                        <Button x:Name="TapeEjectButton" Content="Eject" Width="60" Click="OnTapeEject" />
+                    </StackPanel>
+                    <ProgressBar Grid.Row="3" x:Name="TapeBlockProgress" Minimum="0" Maximum="1" Height="14" />
+                    <TextBlock Grid.Row="4" x:Name="TapeBlockText" Foreground="White" Margin="0,4,0,6" Text="No tape loaded" />
+                    <TextBlock Grid.Row="5" x:Name="TapeSpeedStatusText" Foreground="#B8D7FF" Margin="0,0,0,6" Text="Tape speed: stopped" TextWrapping="Wrap" />
+                    <ListView Grid.Row="6" x:Name="TapeBlocksList" MouseDoubleClick="OnTapeBlockDoubleClick"
+                              Background="#111" Foreground="White" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="#" Width="38" DisplayMemberBinding="{Binding DisplayIndex}" />
+                                <GridViewColumn Header="Type" Width="110" DisplayMemberBinding="{Binding Type}" />
+                                <GridViewColumn Header="Len" Width="50" DisplayMemberBinding="{Binding Length}" />
+                                <GridViewColumn Header="Name" Width="140" DisplayMemberBinding="{Binding FileName}" />
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </Grid>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

@@ -1,0 +1,206 @@
+<!--
+  === File overview ===
+  This file implements the WPF application shell and emulator-facing user interface.
+  Comments below describe responsibilities and boundaries; runtime behavior is unchanged.
+-->
+
+<Window x:Class="ZedExEss.DebuggerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Z80 Debugger" Height="720" Width="1120"
+        MinHeight="520" MinWidth="860"
+        Background="#101010">
+    <DockPanel>
+        <ToolBar DockPanel.Dock="Top">
+            <Button Content="Run" Click="OnRun" />
+            <Button Content="Pause" Click="OnPause" />
+            <Separator />
+            <Button Content="Step Into" Click="OnStepInto" />
+            <Button Content="Step Over" Click="OnStepOver" />
+            <Button Content="Run To Cursor" Click="OnRunToCursor" />
+            <Separator />
+            <Button Content="Refresh" Click="OnRefresh" />
+            <TextBlock x:Name="StatusText" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="#E0E0E0" />
+        </ToolBar>
+        <ToolBar DockPanel.Dock="Top">
+            <TextBlock Text="Disasm" VerticalAlignment="Center" Foreground="#E0E0E0" />
+            <TextBlock Text="Address" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#E0E0E0" />
+            <TextBox x:Name="DisassemblyAddressText" Width="70" Margin="6,0,0,0" FontFamily="Consolas" Text="0000" KeyDown="OnDisassemblyAddressKeyDown" />
+            <Button Content="Go" Margin="6,0,0,0" Click="OnDisassemblyGo" />
+            <Separator />
+            <TextBlock Text="Range" VerticalAlignment="Center" Foreground="#E0E0E0" />
+            <TextBox x:Name="ExportStartText" Width="70" Margin="6,0,0,0" FontFamily="Consolas" Text="0000" />
+            <TextBlock Text="-" Margin="4,0" VerticalAlignment="Center" Foreground="#E0E0E0" />
+            <TextBox x:Name="ExportEndText" Width="70" FontFamily="Consolas" Text="0000" />
+            <Button Content="Use Selection" Margin="6,0,0,0" Click="OnUseSelectedDisassemblyRange" />
+            <Button Content="Copy" Margin="6,0,0,0" Click="OnCopyDisassemblyRange" />
+            <Button Content="Save" Margin="6,0,0,0" Click="OnSaveDisassemblyRange" />
+            <TextBlock x:Name="ExportStatusText" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="#E0E0E0" />
+        </ToolBar>
+
+        <Grid Margin="8">
+            <Grid.Resources>
+                <Style TargetType="{x:Type DataGridColumnHeader}">
+                    <Setter Property="Background" Value="#222222" />
+                    <Setter Property="Foreground" Value="#F0F0F0" />
+                    <Setter Property="BorderBrush" Value="#444444" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                    <Setter Property="Padding" Value="6,4" />
+                </Style>
+                <Style x:Key="DisassemblyRowStyle" TargetType="{x:Type DataGridRow}">
+                    <Setter Property="Background" Value="#151515" />
+                    <Setter Property="Foreground" Value="#E8E8E8" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                            <Setter Property="Background" Value="#18324A" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding HasBreakpoint}" Value="True">
+                            <Setter Property="Background" Value="#4A1919" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Resources>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="8" />
+                <ColumnDefinition Width="1.2*" />
+            </Grid.ColumnDefinitions>
+
+            <DataGrid x:Name="DisassemblyGrid"
+                      Grid.Column="0"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="False"
+                      SelectionMode="Extended"
+                      SelectionUnit="FullRow"
+                      GridLinesVisibility="Horizontal"
+                      HeadersVisibility="Column"
+                      FontFamily="Consolas"
+                      FontSize="13"
+                      Background="#151515"
+                      Foreground="#E8E8E8"
+                      RowBackground="#151515"
+                      AlternatingRowBackground="#1E1E1E"
+                      RowStyle="{StaticResource DisassemblyRowStyle}"
+                      VerticalScrollBarVisibility="Visible"
+                      HorizontalScrollBarVisibility="Auto"
+                      SelectionChanged="OnDisassemblySelectionChanged"
+                      CellEditEnding="OnDisassemblyCellEditEnding"
+                      MouseDoubleClick="OnDisassemblyDoubleClick">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="BP" Binding="{Binding HasBreakpoint}" Width="42" IsReadOnly="True" />
+                    <DataGridTextColumn Header="PC" Binding="{Binding AddressText}" Width="70" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Bytes" Binding="{Binding EditableBytesText, UpdateSourceTrigger=LostFocus}" Width="150" />
+                    <DataGridTextColumn Header="Instruction" Binding="{Binding Mnemonic}" Width="*" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Map" Binding="{Binding Mapping.DisplayName}" Width="140" IsReadOnly="True" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="#2A2A2A" />
+
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border BorderBrush="#333333" BorderThickness="1" Padding="8" Background="#181818" Margin="0,0,0,8">
+                    <TextBlock x:Name="RegistersText"
+                               FontFamily="Consolas"
+                               FontSize="13"
+                               Foreground="#F0F0F0"
+                               TextWrapping="Wrap" />
+                </Border>
+
+                <TabControl Grid.Row="1" Background="#151515" Foreground="#E8E8E8">
+                    <TabItem Header="Memory">
+                        <DockPanel Margin="8">
+                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                                <TextBlock Text="Address" VerticalAlignment="Center" Foreground="#E8E8E8" />
+                                <TextBox x:Name="MemoryAddressText" Width="70" Margin="6,0" FontFamily="Consolas" Text="4000" />
+                                <Button Content="Go" Click="OnMemoryGo" />
+                                <Button Content="Apply" Margin="6,0,0,0" Click="OnMemoryApply" />
+                            </StackPanel>
+                            <TextBox x:Name="MemoryText"
+                                     FontFamily="Consolas"
+                                     FontSize="13"
+                                     AcceptsReturn="True"
+                                     AcceptsTab="True"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     Background="#101010"
+                                     Foreground="#E8E8E8" />
+                        </DockPanel>
+                    </TabItem>
+                    <TabItem Header="Stack">
+                        <TextBox x:Name="StackText"
+                                 Margin="8"
+                                 FontFamily="Consolas"
+                                 FontSize="13"
+                                 IsReadOnly="True"
+                                 VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Auto"
+                                 Background="#101010"
+                                 Foreground="#E8E8E8" />
+                    </TabItem>
+                    <TabItem Header="Breakpoints">
+                        <DockPanel Margin="8">
+                            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                                <WrapPanel Margin="0,0,0,6">
+                                    <ComboBox x:Name="BreakpointTypeCombo" Width="120" SelectedIndex="0" />
+                                    <TextBox x:Name="BreakpointAddressText" Width="80" Margin="6,0,0,0" FontFamily="Consolas" Text="8000" />
+                                    <TextBox x:Name="BreakpointEndText" Width="80" Margin="6,0,0,0" FontFamily="Consolas" Text="" />
+                                    <TextBox x:Name="BreakpointMaskText" Width="80" Margin="6,0,0,0" FontFamily="Consolas" Text="FFFF" />
+                                    <Button Content="Add" Margin="6,0,0,0" Click="OnAddBreakpoint" />
+                                    <Button Content="Toggle" Margin="6,0,0,0" Click="OnToggleBreakpoint" />
+                                    <Button Content="Remove" Margin="6,0,0,0" Click="OnRemoveBreakpoint" />
+                                </WrapPanel>
+                                <TextBlock Text="For ports use value/mask. For memory ranges, leave end blank for a single address."
+                                           Foreground="#AAAAAA" />
+                            </StackPanel>
+                            <ListBox x:Name="BreakpointsList"
+                                     DisplayMemberPath="Summary"
+                                     Background="#101010"
+                                     Foreground="#E8E8E8" />
+                        </DockPanel>
+                    </TabItem>
+                    <TabItem Header="Assembler">
+                        <DockPanel Margin="8">
+                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                                <TextBlock Text="Address" VerticalAlignment="Center" Foreground="#E8E8E8" />
+                                <TextBox x:Name="AssemblerAddressText" Width="70" Margin="6,0" FontFamily="Consolas" Text="8000" />
+                                <Button Content="Preview" Click="OnAssemblerPreview" />
+                                <Button Content="Apply" Margin="6,0,0,0" Click="OnAssemblerApply" />
+                            </StackPanel>
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="90" />
+                                </Grid.RowDefinitions>
+                                <TextBox x:Name="AssemblerText"
+                                         Grid.Row="0"
+                                         FontFamily="Consolas"
+                                         FontSize="13"
+                                         AcceptsReturn="True"
+                                         AcceptsTab="True"
+                                         VerticalScrollBarVisibility="Auto"
+                                         HorizontalScrollBarVisibility="Auto"
+                                         Background="#101010"
+                                         Foreground="#E8E8E8" />
+                                <TextBlock Grid.Row="1" Text="Output" Margin="0,6,0,2" Foreground="#E8E8E8" />
+                                <TextBox x:Name="AssemblerOutputText"
+                                         Grid.Row="2"
+                                         FontFamily="Consolas"
+                                         IsReadOnly="True"
+                                         VerticalScrollBarVisibility="Auto"
+                                         HorizontalScrollBarVisibility="Auto"
+                                         Background="#101010"
+                                         Foreground="#E8E8E8" />
+                            </Grid>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</Window>

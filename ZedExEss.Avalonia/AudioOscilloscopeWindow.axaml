@@ -1,0 +1,38 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ZedExEss.AvaloniaHost"
+        x:Class="ZedExEss.AvaloniaHost.AudioOscilloscopeWindow"
+        Title="Audio Oscilloscope"
+        Width="860"
+        Height="520"
+        MinWidth="520"
+        MinHeight="360"
+        Background="#101010"
+        WindowStartupLocation="CenterOwner">
+  <Grid Margin="10" RowDefinitions="*,8,*,8,*,8,*">
+    <Grid Grid.Row="0" RowDefinitions="Auto,*">
+      <TextBlock Text="Beeper" Foreground="#F0F0F0" FontWeight="SemiBold" Margin="4,0,0,4" />
+      <Border Grid.Row="1" BorderBrush="#303030" BorderThickness="1" Background="#050505">
+        <local:OscilloscopeTraceControl x:Name="BeeperTrace" WaveColor="#F5E663" />
+      </Border>
+    </Grid>
+    <Grid Grid.Row="2" RowDefinitions="Auto,*">
+      <TextBlock Text="AY A" Foreground="#F0F0F0" FontWeight="SemiBold" Margin="4,0,0,4" />
+      <Border Grid.Row="1" BorderBrush="#303030" BorderThickness="1" Background="#050505">
+        <local:OscilloscopeTraceControl x:Name="AyATrace" WaveColor="#55D6BE" />
+      </Border>
+    </Grid>
+    <Grid Grid.Row="4" RowDefinitions="Auto,*">
+      <TextBlock Text="AY B" Foreground="#F0F0F0" FontWeight="SemiBold" Margin="4,0,0,4" />
+      <Border Grid.Row="1" BorderBrush="#303030" BorderThickness="1" Background="#050505">
+        <local:OscilloscopeTraceControl x:Name="AyBTrace" WaveColor="#7AA2FF" />
+      </Border>
+    </Grid>
+    <Grid Grid.Row="6" RowDefinitions="Auto,*">
+      <TextBlock Text="AY C" Foreground="#F0F0F0" FontWeight="SemiBold" Margin="4,0,0,4" />
+      <Border Grid.Row="1" BorderBrush="#303030" BorderThickness="1" Background="#050505">
+        <local:OscilloscopeTraceControl x:Name="AyCTrace" WaveColor="#FF77C8" />
+      </Border>
+    </Grid>
+  </Grid>
+</Window>
