@@ -192,11 +192,22 @@ namespace ZedExEss.Spectrum.Tape
                 byte cBefore = _cpu.C;
                 _cpu.B = setBHigh ? (byte)0xFE : (byte)0x00;
 
-                // Only bit 5 is synthesized here. Bit 6 must be
-                // preserved because the real IN which follows this hook supplies
-                // the new EAR level to Search/Digital Integration style routines.
                 bool earHigh = edgeResult.EarHighBefore;
-                _cpu.C = (byte)((_cpu.C & ~0x20) | (earHigh ? 0x00 : 0x20));
+                if (_mode == AccelerationMode.IncreasingComplementC)
+                {
+                    // Search-derived routines such as Technician Ted update their
+                    // saved EAR sample with LD A,C / CPL / LD C,A after detecting
+                    // an edge. The simulated RET bypasses those instructions, so
+                    // reproduce their state change explicitly.
+                    _cpu.C = (byte)~_cpu.C;
+                }
+                else
+                {
+                    // ROM-style routines keep the RRA-adjusted EAR sample in bit 5.
+                    // Bit 6 is intentionally untouched for the other recognised
+                    // bit-6 routines, whose post-edge code does not complement C.
+                    _cpu.C = (byte)((_cpu.C & ~0x20) | (earHigh ? 0x00 : 0x20));
+                }
                 _cpu.SetFlags((byte)(_cpu.GetFlags() | 0x01));
 
                 ReturnFromAcceleratedRoutine();
@@ -390,9 +401,18 @@ namespace ZedExEss.Spectrum.Tape
                         if (value == 0x28) state = 12; else return AccelerationMode.None;
                         break;
                     case 12:
-                        return value == unchecked((byte)(0x100 - count))
-                            ? AccelerationMode.Increasing
-                            : AccelerationMode.None;
+                        if (value != unchecked((byte)(0x100 - count)))
+                        {
+                            return AccelerationMode.None;
+                        }
+
+                        // Some Search-loader variants perform this state update
+                        // between leaving the polling loop and RET. Because semantic
+                        // acceleration returns directly, remember that it must be
+                        // reproduced rather than silently skipped.
+                        return MatchesBytes(pc, 0x79, 0x2F, 0x4F)
+                            ? AccelerationMode.IncreasingComplementC
+                            : AccelerationMode.Increasing;
 
                     // Digital Integration loader.
                     case 13:
@@ -508,6 +528,18 @@ namespace ZedExEss.Spectrum.Tape
 
             return hash;
         }
+        private bool MatchesBytes(ushort start, params byte[] expected)
+        {
+            for (int i = 0; i < expected.Length; i++)
+            {
+                if (_memory.ReadDirect(unchecked((ushort)(start + i))) != expected[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
         private void ResetRuntimeState()
         {
             ClearActiveMode();
@@ -537,6 +569,7 @@ namespace ZedExEss.Spectrum.Tape
         {
             None,
             Increasing,
+            IncreasingComplementC,
             Decreasing
         }
     }

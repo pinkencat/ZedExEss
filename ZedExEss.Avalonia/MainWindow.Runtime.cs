@@ -85,6 +85,7 @@ public sealed partial class MainWindow
         machine.Joystick.Type = _joystickType;
         machine.EarInput.EdgeLoadingEnabled = _edgeLoadEnabled;
         machine.EarInput.SemanticAccelerationEnabled = _semanticEdgeLoadEnabled;
+        machine.EarInput.AutoPlayEnabled = _autoTapePlayStopEnabled;
         machine.Emulator.ForceFullFrameCopy = _gigascreenBlendEnabled;
     }
 
@@ -289,6 +290,11 @@ public sealed partial class MainWindow
         }
 
         _autoTapePlayStopEnabled = _autoTapePlayMenuItem.IsChecked;
+        if (_machine != null)
+        {
+            _machine.EarInput.AutoPlayEnabled = _autoTapePlayStopEnabled;
+        }
+
         UpdateDebuggerHooks();
         UpdateRuntimeMenuState();
     }

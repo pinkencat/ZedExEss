@@ -51,6 +51,7 @@ namespace ZedExEss.Diagnostics
             Check(writer, ref failed, "Semantic semantic acceleration returns and advances one edge", VerifySemanticAcceleration);
             Check(writer, ref failed, "Semantic semantic result preserves inverse EAR polarity in C bit 5", VerifySemanticEarPolarity);
             Check(writer, ref failed, "Semantic semantic result leaves C bit 6 untouched", VerifySemanticPreservesCBit6);
+            Check(writer, ref failed, "Semantic Search variant reproduces its skipped C complement", VerifySearchVariantComplementsC);
             Check(writer, ref failed, "Atomic semantic edge reports one complete transition", VerifyAtomicEdgeContract);
             Check(writer, ref failed, "Recognised hot path uses one snapshot and one atomic advance", VerifySemanticHotPathCallCount);
             Check(writer, ref failed, "Ordinary edge between claim and sample forces a seed read", VerifyClaimSampleEdgeRace);
@@ -170,6 +171,32 @@ namespace ZedExEss.Diagnostics
             Require(machine.Accelerator.TryClaimRead(OpcodePc, 0xFE), "Known signature was not claimed for bit-6 check.");
             Require(machine.Accelerator.TryAcceleratePreparedRead(), "Bit-6 check did not accelerate.");
             Require((machine.Cpu.C & 0x40) != 0, "Semantic acceleration modified C bit 6.");
+        }
+        private static void VerifySearchVariantComplementsC()
+        {
+            byte[] routine =
+            [
+                0x04, 0xC8, 0x3E, 0x00, 0xDB, 0xFE, 0xA9, 0xE6, 0x40,
+                0xD8, 0x00, 0x28, 0xF3, 0x79, 0x2F, 0x4F, 0x37, 0xC9
+            ];
+            TestMachine machine = CreateMachine(routine);
+            machine.Cpu.C = 0x40;
+
+            Require(machine.Accelerator.TryClaimRead(OpcodePc, 0xFE),
+                "Search-loader signature was not claimed.");
+            Require(!machine.Accelerator.TryAcceleratePreparedRead(),
+                "Search-loader seed read unexpectedly advanced an edge.");
+
+            machine.Cpu.SP = 0xA000;
+            machine.Memory.WriteDirect(0xA000, 0x00);
+            machine.Memory.WriteDirect(0xA001, 0x90);
+            machine.Cpu.PC = PcAfterIn;
+            Require(machine.Accelerator.TryClaimRead(OpcodePc, 0xFE),
+                "Search-loader accelerated read was not claimed.");
+            Require(machine.Accelerator.TryAcceleratePreparedRead(),
+                "Search-loader read was not accelerated.");
+            Require(machine.Cpu.C == 0xBF,
+                $"Search-loader C update was skipped (expected BF, got {machine.Cpu.C:X2}).");
         }
         private static void VerifyAtomicEdgeContract()
         {
@@ -407,7 +434,7 @@ namespace ZedExEss.Diagnostics
             machine.Cpu.SetInterruptState(2, iff1: true, iff2: true);
             return machine;
         }
-        private static TestMachine CreateMachine()
+        private static TestMachine CreateMachine(byte[]? routine = null)
         {
             var memory = new SpectrumMemory(SpectrumModel.Spectrum48K, RomSet.CreateBlank(1));
             var ports = new SpectrumPortBus(SpectrumModel.Spectrum48K, contendedPages: memory);
@@ -416,7 +443,7 @@ namespace ZedExEss.Diagnostics
             cpu.PC = PcAfterIn;
 
             // Common increasing-counter signature, scanned from PC-6.
-            byte[] routine = [0x04, 0xC8, 0x3E, 0x7F, 0xDB, 0xFE, 0x1F, 0xD0, 0xA9, 0xE6, 0x20, 0x28, 0xF3];
+            routine ??= [0x04, 0xC8, 0x3E, 0x7F, 0xDB, 0xFE, 0x1F, 0xD0, 0xA9, 0xE6, 0x20, 0x28, 0xF3];
             for (int i = 0; i < routine.Length; i++)
             {
                 memory.WriteDirect(unchecked((ushort)(ScanStart + i)), routine[i]);

@@ -3732,7 +3732,6 @@ namespace ZedExEss
                 { Key.Right, SpectrumJoystickButton.Right },
                 { Key.Up, SpectrumJoystickButton.Up },
                 { Key.Down, SpectrumJoystickButton.Down },
-                { Key.RightCtrl, SpectrumJoystickButton.Fire },
                 { Key.LeftAlt, SpectrumJoystickButton.Fire },
                 { Key.RightAlt, SpectrumJoystickButton.Fire }
             };
