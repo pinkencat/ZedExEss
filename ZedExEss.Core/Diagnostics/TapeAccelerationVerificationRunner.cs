@@ -59,10 +59,36 @@ namespace ZedExEss.Diagnostics
             Check(writer, ref failed, "Polling skips do not impersonate semantic edges", VerifyPollingSkipEdgeOrigin);
             Check(writer, ref failed, "Non-data phase is handed to polling fallback", VerifyNonDataPhaseFallsThrough);
             Check(writer, ref failed, "Unknown loop remains available to polling fallback", VerifyUnknownSignatureFallsThrough);
+            Check(writer, ref failed, "Polling and semantic modes request one shared fast execution path", VerifyAggregateAccelerationState);
             Check(writer, ref failed, "Fast tape CPU batching preserves machine timing and state", VerifyInstructionTstateBatching);
             Check(writer, ref failed, "Fast tape CPU batching preserves frame interrupts", VerifyInstructionTstateBatchingWithInterrupts);
             writer.WriteLine(failed == 0 ? "Result: PASS" : $"Result: FAIL ({failed} failed checks)");
             return failed == 0 ? 0 : 1;
+        }
+
+        private static void VerifyAggregateAccelerationState()
+        {
+            var earInput = new SpectrumEarInputDevice();
+            Require(!earInput.LoaderAccelerationEnabled,
+                "Loader acceleration aggregate should be off initially.");
+
+            earInput.EdgeLoadingEnabled = true;
+            Require(earInput.LoaderAccelerationEnabled,
+                "Polling acceleration did not request the shared fast execution path.");
+
+            earInput.EdgeLoadingEnabled = false;
+            earInput.SemanticAccelerationEnabled = true;
+            Require(earInput.LoaderAccelerationEnabled,
+                "Semantic acceleration did not request the shared fast execution path.");
+
+            earInput.EdgeLoadingEnabled = true;
+            earInput.SemanticAccelerationEnabled = false;
+            Require(earInput.LoaderAccelerationEnabled,
+                "Disabling semantic acceleration incorrectly suppressed polling acceleration.");
+
+            earInput.EdgeLoadingEnabled = false;
+            Require(!earInput.LoaderAccelerationEnabled,
+                "Loader acceleration aggregate remained active after both engines were disabled.");
         }
         private static void VerifyRecognisedSignature()
         {

@@ -32,6 +32,17 @@ namespace ZedExEss.Spectrum.Tape
         /// </summary>
         public SemanticTapeEdgeAccelerator? SemanticAccelerator => _semanticAccelerator;
 
+        /// <summary>
+        /// Gets whether either tape-loader acceleration engine is enabled.
+        /// </summary>
+        /// <remarks>
+        /// Frontends use this aggregate state to select the single
+        /// <see cref="Core.TapeFastRunner"/> execution owner. Polling and semantic
+        /// acceleration remain separate read algorithms, but must never create
+        /// competing execution paths.
+        /// </remarks>
+        public bool LoaderAccelerationEnabled => _edgeLoadingEnabled || _semanticAccelerationEnabled;
+
         public bool EdgeLoadingEnabled
         {
             get => _edgeLoadingEnabled;
@@ -130,7 +141,7 @@ namespace ZedExEss.Spectrum.Tape
         }
         public string GetAccelerationStatus()
         {
-            if (!_edgeLoadingEnabled && !_semanticAccelerationEnabled)
+            if (!LoaderAccelerationEnabled)
             {
                 return "Accel: off";
             }
@@ -164,10 +175,10 @@ namespace ZedExEss.Spectrum.Tape
             {
                 _pollingLoopDetector.SkippingEnabled = _edgeLoadingEnabled;
                 _pollingLoopDetector.AutoPlayDetectionEnabled = _autoPlayEnabled;
-                _pollingLoopDetector.Enabled = _edgeLoadingEnabled || _semanticAccelerationEnabled || _autoPlayEnabled;
+                _pollingLoopDetector.Enabled = LoaderAccelerationEnabled || _autoPlayEnabled;
             }
 
-            bool hookEnabled = _edgeLoadingEnabled || _semanticAccelerationEnabled || _autoPlayEnabled;
+            bool hookEnabled = LoaderAccelerationEnabled || _autoPlayEnabled;
             _cpu?.ConfigureTapeAccelerationHook(hookEnabled ? _pollingLoopDetector : null);
         }
     }

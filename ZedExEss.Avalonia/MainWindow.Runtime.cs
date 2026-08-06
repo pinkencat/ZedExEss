@@ -115,7 +115,7 @@ public sealed partial class MainWindow
     {
         return !_turboEnabled
             && _runTapeAccelerationAtMaximumSpeed
-            && (_edgeLoadEnabled || _semanticEdgeLoadEnabled)
+            && _machine?.EarInput.LoaderAccelerationEnabled == true
             && _machine?.Emulator.IsPaused == false
             && _session.Tape?.IsPlaying == true;
     }

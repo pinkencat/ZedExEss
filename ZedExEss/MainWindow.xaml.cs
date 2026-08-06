@@ -3004,15 +3004,16 @@ namespace ZedExEss
         {
             return !_turboEnabled
                 && _runTapeAccelerationAtMaximumSpeed
-                && (_edgeLoadEnabled || _semanticEdgeLoadEnabled)
+                && _earInput?.LoaderAccelerationEnabled == true
                 && _emulator != null
                 && !_emulator.IsPaused
                 && _tapeLoader?.IsPlaying == true;
         }
         private void RefreshTapeFastRunMode()
         {
-            // Edge loading benefits from an unthrottled producer even when global turbo is off.
-            // A sparse presentation cadence keeps loader border feedback without dominating CPU.
+            // Both acceleration engines share this one execution owner. A sparse
+            // presentation cadence preserves loader border feedback without letting
+            // rendering dominate the unthrottled tape workload.
             if (_emulator == null || _turboEnabled)
             {
                 StopTapeFastRunner();
