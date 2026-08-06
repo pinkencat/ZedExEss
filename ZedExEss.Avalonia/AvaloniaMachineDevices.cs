@@ -11,6 +11,7 @@ namespace ZedExEss.AvaloniaHost;
 internal sealed class AvaloniaMachineDevices
 {
     public SpectrumPlus3DiskController? Plus3DiskController { get; internal set; }
+    public SpectrumBeta128Device? Beta128Device { get; internal set; }
     public SpectrumBeta128DiskController? BetaDiskController { get; internal set; }
     public SpectrumDivMmcDevice? DivMmcDevice { get; internal set; }
 }

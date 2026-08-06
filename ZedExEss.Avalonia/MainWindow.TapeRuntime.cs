@@ -166,10 +166,6 @@ public sealed partial class MainWindow
             EjectPlus3DisksForAutoLoad();
         }
 
-        // Turbo is selected before reset so ROM boot and +2A/+3 drive probing are accelerated,
-        // not merely the tape playback that follows them.
-        _turboEnabled = true;
-        UpdateRuntimeMenuState();
         ReplaceMachine(
             model,
             preserveTape: true,

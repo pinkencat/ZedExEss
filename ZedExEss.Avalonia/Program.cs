@@ -172,13 +172,73 @@ internal static class Program
                 Spectrum.Core.SpectrumModel.SpectrumPlus3,
                 disks,
                 out AvaloniaMachineDevices plus3Devices);
-            _ = AvaloniaMachineBootstrap.CreateMachine(
+            Spectrum.Core.SpectrumMachine betaMachine = AvaloniaMachineBootstrap.CreateMachine(
                 Spectrum.Core.SpectrumModel.Pentagon128,
                 disks,
                 out AvaloniaMachineDevices betaDevices);
-            if (plus3Devices.Plus3DiskController == null || betaDevices.BetaDiskController == null)
+            if (plus3Devices.Plus3DiskController == null
+                || betaDevices.Beta128Device == null
+                || betaDevices.BetaDiskController == null)
             {
                 Console.Error.WriteLine("Avalonia host smoke test failed: optional disk controllers were not exposed.");
+                return 1;
+            }
+
+            bool betaMatchesPentagonRomZero = true;
+            for (ushort address = 0; address < 0x4000; address++)
+            {
+                if (betaDevices.Beta128Device.ReadMemory(address) != betaMachine.Memory.ReadDirect(address))
+                {
+                    betaMatchesPentagonRomZero = false;
+                    break;
+                }
+            }
+
+            if (betaMatchesPentagonRomZero)
+            {
+                Console.Error.WriteLine("Avalonia host smoke test failed: Pentagon machine ROM was selected as TR-DOS ROM.");
+                return 1;
+            }
+
+            // Pentagon enters TR-DOS by fetching through 3Dxx while its 48K ROM is selected.
+            // Verify that the Avalonia-built machine exposes the same automap path as WPF.
+            betaMachine.Memory.WritePort7FFD(0x10);
+            _ = betaMachine.Memory.FetchOpcode(0x3D00);
+            if (!betaDevices.Beta128Device.IsPaged)
+            {
+                Console.Error.WriteLine("Avalonia host smoke test failed: Pentagon TR-DOS automap did not page the Beta ROM.");
+                return 1;
+            }
+
+            Spectrum.Core.SpectrumMachine betaMenuMachine = AvaloniaMachineBootstrap.CreateMachine(
+                Spectrum.Core.SpectrumModel.Pentagon128,
+                new Spectrum.Core.SpectrumDiskMediaState(),
+                out AvaloniaMachineDevices betaMenuDevices);
+            bool sawBetaRom = false;
+            betaMenuMachine.Emulator.ConfigureBeforeCpuStep(() =>
+            {
+                sawBetaRom |= betaMenuDevices.Beta128Device?.IsPaged == true;
+                return false;
+            });
+            RunFrames(betaMenuMachine, 160);
+            for (int i = 0; i < 4; i++)
+            {
+                PressSpectrumKeys(
+                    betaMenuMachine,
+                    [Spectrum.Input.SpectrumKey.CapsShift, Spectrum.Input.SpectrumKey.D6],
+                    heldFrames: 5,
+                    releasedFrames: 10);
+            }
+
+            PressSpectrumKeys(
+                betaMenuMachine,
+                [Spectrum.Input.SpectrumKey.Enter],
+                heldFrames: 5,
+                releasedFrames: 10);
+            RunFrames(betaMenuMachine, 20);
+            if (!sawBetaRom || betaMenuMachine.Memory.ReadDirect(0x5C3A) == 0x03)
+            {
+                Console.Error.WriteLine("Avalonia host smoke test failed: Pentagon menu entered BASIC error 4 instead of TR-DOS.");
                 return 1;
             }
 
@@ -251,6 +311,34 @@ internal static class Program
                 File.Delete(temporarySdPath);
             }
         }
+    }
+
+    private static void RunFrames(Spectrum.Core.SpectrumMachine machine, int frameCount)
+    {
+        for (int i = 0; i < frameCount; i++)
+        {
+            machine.Emulator.RunFrame(presentFrame: false);
+        }
+    }
+
+    private static void PressSpectrumKeys(
+        Spectrum.Core.SpectrumMachine machine,
+        ReadOnlySpan<Spectrum.Input.SpectrumKey> keys,
+        int heldFrames,
+        int releasedFrames)
+    {
+        foreach (Spectrum.Input.SpectrumKey key in keys)
+        {
+            machine.Keyboard.SetKeyState(key, pressed: true);
+        }
+
+        RunFrames(machine, heldFrames);
+        foreach (Spectrum.Input.SpectrumKey key in keys)
+        {
+            machine.Keyboard.SetKeyState(key, pressed: false);
+        }
+
+        RunFrames(machine, releasedFrames);
     }
 
     private static int RunAudioSmokeTest()

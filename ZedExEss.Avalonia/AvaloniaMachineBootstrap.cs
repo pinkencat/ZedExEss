@@ -103,6 +103,7 @@ internal static class AvaloniaMachineBootstrap
             byte[] trDosRom = LoadTrDosRom(context.Model, romDirectory);
             var betaDevice = new SpectrumBeta128Device(trDosRom);
             var betaController = new SpectrumBeta128DiskController(betaDevice);
+            devices.Beta128Device = betaDevice;
             devices.BetaDiskController = betaController;
             context.Memory.ConfigureBeta128(betaDevice);
 
@@ -164,28 +165,96 @@ internal static class AvaloniaMachineBootstrap
 
     private static byte[] LoadTrDosRom(SpectrumModel model, string romDirectory)
     {
-        if (model == SpectrumModel.Scorpion256)
+        if (model == SpectrumModel.Scorpion256
+            && TryLoadScorpionTrDosRom(romDirectory, out byte[] trDosRom))
         {
-            string scorpionPath = Path.Combine(romDirectory, "scorpion.rom");
-            byte[] combined = File.ReadAllBytes(scorpionPath);
-            if (combined.Length >= RomBankSize * 4)
-            {
-                byte[] embedded = combined.AsSpan(RomBankSize * 3, RomBankSize).ToArray();
-                if (LooksLikeTrDosRom(embedded))
-                {
-                    return embedded;
-                }
-            }
+            return trDosRom;
         }
 
         string standalonePath = Path.Combine(romDirectory, "trdos.rom");
-        byte[] standalone = File.ReadAllBytes(standalonePath);
-        if (standalone.Length != RomBankSize)
+        if (TryLoadStandaloneTrDosRom(model, standalonePath, romDirectory, out trDosRom))
         {
-            throw new InvalidDataException($"TR-DOS ROM must be exactly {RomBankSize} bytes.");
+            return trDosRom;
         }
 
-        return standalone;
+        // Some ROM sets bundle a valid TR-DOS image as Scorpion bank 3. The WPF host uses
+        // this as its fallback when trdos.rom is actually a duplicate machine ROM bank.
+        if (TryLoadScorpionTrDosRom(romDirectory, out trDosRom))
+        {
+            return trDosRom;
+        }
+
+        throw new FileNotFoundException(
+            "TR-DOS ROM not found. Expected a valid trdos.rom or TR-DOS bank in scorpion.rom.");
+    }
+
+    private static bool TryLoadStandaloneTrDosRom(
+        SpectrumModel model,
+        string path,
+        string romDirectory,
+        out byte[] rom)
+    {
+        rom = [];
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        byte[] candidate = File.ReadAllBytes(path);
+        if (candidate.Length != RomBankSize
+            || IsSameAsModelRomBankZero(model, candidate, romDirectory))
+        {
+            return false;
+        }
+
+        rom = candidate;
+        return true;
+    }
+
+    private static bool TryLoadScorpionTrDosRom(string romDirectory, out byte[] rom)
+    {
+        rom = [];
+        string path = Path.Combine(romDirectory, "scorpion.rom");
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        byte[] combined = File.ReadAllBytes(path);
+        if (combined.Length < RomBankSize * 4)
+        {
+            return false;
+        }
+
+        rom = combined.AsSpan(RomBankSize * 3, RomBankSize).ToArray();
+        return LooksLikeTrDosRom(rom);
+    }
+
+    private static bool IsSameAsModelRomBankZero(
+        SpectrumModel model,
+        ReadOnlySpan<byte> candidate,
+        string romDirectory)
+    {
+        string? fileName = model switch
+        {
+            SpectrumModel.Pentagon128 => "pentagon.rom",
+            SpectrumModel.Scorpion256 => "scorpion.rom",
+            _ => null
+        };
+        if (fileName == null)
+        {
+            return false;
+        }
+
+        string path = Path.Combine(romDirectory, fileName);
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        byte[] combined = File.ReadAllBytes(path);
+        return combined.Length >= RomBankSize
+            && candidate.SequenceEqual(combined.AsSpan(0, RomBankSize));
     }
 
     private static bool LooksLikeTrDosRom(ReadOnlySpan<byte> rom)
