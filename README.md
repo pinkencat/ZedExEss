@@ -3,6 +3,8 @@
 
 ZedExEss is a ZX Spectrum emulator written in C# and .NET 9. Primarily built as a Windows WPF application, there is also an Avalonia version implemented for cross-platform support. The CPU core passes ZEXALL and all Raxoft Z80 CPU instruction tests.
 
+For binary releases for various platforms, see [Releases](https://github.com/pinkencat/ZedExEss/releases)
+
 > [!WARNING]
 > **Scorpion 256 support is unfinished.** The model can be selected and parts of its memory paging, ROM, and Beta 128/TR-DOS hardware are implemented, but compatibility and accuracy are not yet complete. Treat Scorpion support as experimental.
 
