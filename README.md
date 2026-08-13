@@ -117,6 +117,7 @@ For example, run the portable verification suites with:
 ```powershell
 dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -- --verify-basic
 dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -- --verify-debugger
+dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -- --verify-interface1 --interface1-rom ZedExEss/ROMs/if1-2.rom
 dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -- --verify-pentagon
 dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -- --verify-session
 dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -- --verify-settings

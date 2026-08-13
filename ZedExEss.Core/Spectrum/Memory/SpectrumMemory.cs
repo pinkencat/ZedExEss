@@ -6,6 +6,7 @@ using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.Debugging;
 using ZedExEss.Spectrum.Disk.Beta;
 using ZedExEss.Spectrum.DivMmc;
+using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Z80CPU;
 
 namespace ZedExEss.Spectrum.Memory
@@ -42,6 +43,7 @@ namespace ZedExEss.Spectrum.Memory
 
         private SpectrumDivMmcDevice? _divExpansion;
         private SpectrumBeta128Device? _beta128;
+        private SpectrumInterface1Device? _interface1;
         private RomSet _roms;
         private byte _port7ffd;
         private byte _port1ffd;
@@ -112,6 +114,10 @@ namespace ZedExEss.Spectrum.Memory
         public void ConfigureBeta128(SpectrumBeta128Device? beta128)
         {
             _beta128 = beta128;
+        }
+        public void ConfigureInterface1(SpectrumInterface1Device? interface1)
+        {
+            _interface1 = interface1;
         }
         public void ConfigureTiming(Z80? cpu, IContentionProfile? contention)
         {
@@ -188,6 +194,13 @@ namespace ZedExEss.Spectrum.Memory
                 return divExpansion.ReadMemory(address);
             }
 
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (interface1 != null && address < 0x4000 && interface1.IsPaged)
+            {
+                ApplyMemoryContention(address);
+                return interface1.ReadMemory(address);
+            }
+
             ApplyMemoryContention(address);
             return _mappedPages[address >> 14][address & 0x3FFF];
         }
@@ -208,6 +221,12 @@ namespace ZedExEss.Spectrum.Memory
                 return divExpansion.ReadMemory(address);
             }
 
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (interface1 != null && address < 0x4000 && interface1.IsPaged)
+            {
+                return interface1.ReadMemory(address);
+            }
+
             return _mappedPages[address >> 14][address & 0x3FFF];
         }
 
@@ -220,14 +239,14 @@ namespace ZedExEss.Spectrum.Memory
             beta128?.BeforeOpcodeFetch(address, AllowsBeta128RomTrap());
 
             SpectrumDivMmcDevice? divExpansion = _divExpansion;
-            if (divExpansion == null)
-            {
-                return Read(address);
-            }
+            divExpansion?.BeforeOpcodeFetch(address);
 
-            divExpansion.BeforeOpcodeFetch(address);
+            SpectrumInterface1Device? interface1 = _interface1;
+            interface1?.BeforeOpcodeFetch(address);
+
             byte value = Read(address);
-            divExpansion.AfterOpcodeFetch(address);
+            divExpansion?.AfterOpcodeFetch(address);
+            interface1?.AfterOpcodeFetch(address);
             return value;
         }
 
@@ -245,6 +264,13 @@ namespace ZedExEss.Spectrum.Memory
             SpectrumDivMmcDevice? divExpansion = _divExpansion;
             if (divExpansion != null && address < 0x4000 && divExpansion.TryWriteMemory(address, value))
             {
+                return;
+            }
+
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (interface1 != null && address < 0x4000 && interface1.IsPaged)
+            {
+                ApplyMemoryContention(address);
                 return;
             }
 
@@ -281,6 +307,12 @@ namespace ZedExEss.Spectrum.Memory
                 return;
             }
 
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (interface1 != null && address < 0x4000 && interface1.IsPaged)
+            {
+                return;
+            }
+
             int pageIndex = address >> 14;
             if (_pageReadOnly[pageIndex])
             {
@@ -309,6 +341,13 @@ namespace ZedExEss.Spectrum.Memory
             SpectrumDivMmcDevice? divExpansion = _divExpansion;
             if (divExpansion != null && address < 0x4000 && divExpansion.TryWriteMemory(address, value))
             {
+                return;
+            }
+
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (interface1 != null && address < 0x4000 && interface1.IsPaged)
+            {
+                ApplyMemoryContention(address);
                 return;
             }
 

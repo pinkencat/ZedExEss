@@ -91,7 +91,7 @@ namespace ZedExEss.Spectrum.Basic
 
             if (!int.TryParse(text[..index], NumberStyles.None, CultureInfo.InvariantCulture, out int lineNumber)
                 || lineNumber < 0
-                || lineNumber > 9999)
+                || lineNumber > 65535)
             {
                 error = $"Source line {sourceLineNumber} has an invalid BASIC line number.";
                 return false;

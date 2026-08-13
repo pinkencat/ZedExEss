@@ -23,6 +23,7 @@ namespace ZedExEss.Diagnostics
             "Tests:\n" +
             "  --verify-basic\n" +
             "  --verify-debugger\n" +
+            "  --verify-interface1 [--interface1-rom <path>]\n" +
             "  --verify-pentagon\n" +
             "  --verify-session\n" +
             "  --verify-settings\n" +
@@ -121,6 +122,16 @@ namespace ZedExEss.Diagnostics
                 return true;
             }
 
+            if (options.RunInterface1Verification)
+            {
+                exitCode = Interface1VerificationRunner.Run(new Interface1VerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomPath = options.Interface1RomPath
+                });
+                return true;
+            }
+
             if (options.RunTapeAccelerationVerification)
             {
                 exitCode = TapeAccelerationVerificationRunner.Run(new TapeAccelerationVerificationOptions
@@ -206,6 +217,12 @@ namespace ZedExEss.Diagnostics
                         break;
                     case "--verify-debugger":
                         options.RunDebuggerVerification = true;
+                        break;
+                    case "--verify-interface1":
+                        options.RunInterface1Verification = true;
+                        break;
+                    case "--interface1-rom":
+                        options.Interface1RomPath = RequireValue(args, ref i, arg);
                         break;
                     case "--verify-tape-acceleration":
                         options.RunTapeAccelerationVerification = true;
@@ -336,10 +353,12 @@ namespace ZedExEss.Diagnostics
             public bool RunPentagonVerification { get; set; }
             public bool RunBasicVerification { get; set; }
             public bool RunDebuggerVerification { get; set; }
+            public bool RunInterface1Verification { get; set; }
             public bool RunTapeAccelerationVerification { get; set; }
             public bool RunSessionVerification { get; set; }
             public bool RunSettingsVerification { get; set; }
             public string? TapeGamePath { get; set; }
+            public string? Interface1RomPath { get; set; }
             public SpectrumModel TapeGameModel { get; set; } = SpectrumModel.Spectrum48K;
             public int TapeGameMaxFrames { get; set; } = 90_000;
             public bool TapeGameFastBatching { get; set; }
