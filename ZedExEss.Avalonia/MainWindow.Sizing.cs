@@ -76,14 +76,13 @@ public sealed partial class MainWindow
 
     private void ApplyScreenZoom()
     {
-        if (_machine == null)
+        if (!TryGetActiveFrameSize(out int frameWidth, out int frameHeight))
         {
             return;
         }
 
-        SpectrumUlaTiming timing = SpectrumUlaTiming.ForModel(_machine.Model);
-        _screenImage.Width = timing.FrameWidth * _screenZoom;
-        _screenImage.Height = timing.FrameHeight * _screenZoom;
+        _screenImage.Width = frameWidth * _screenZoom;
+        _screenImage.Height = frameHeight * _screenZoom;
     }
 
     private void OnWindowSizeChanged(object? sender, SizeChangedEventArgs e)
@@ -112,7 +111,8 @@ public sealed partial class MainWindow
 
     private void ResizeWindowToScreenZoom()
     {
-        if (!_sizingUiInitialized || !IsVisible || WindowState != WindowState.Normal || _machine == null)
+        if (!_sizingUiInitialized || !IsVisible || WindowState != WindowState.Normal
+            || !TryGetActiveFrameSize(out int frameWidth, out int frameHeight))
         {
             return;
         }
@@ -124,17 +124,16 @@ public sealed partial class MainWindow
             return;
         }
 
-        SpectrumUlaTiming timing = SpectrumUlaTiming.ForModel(_machine.Model);
         Thickness margin = _screenHost.Margin;
         double mainChromeWidth = Math.Max(0, ClientSize.Width - _mainContentGrid.Bounds.Width);
         double mainChromeHeight = Math.Max(0, ClientSize.Height - _mainContentGrid.Bounds.Height);
         double desiredClientWidth =
-            (timing.FrameWidth * _screenZoom)
+            (frameWidth * _screenZoom)
             + margin.Left + margin.Right
             + (_mediaBrowserVisible ? MediaBrowserWidth : 0)
             + mainChromeWidth;
         double desiredClientHeight =
-            (timing.FrameHeight * _screenZoom)
+            (frameHeight * _screenZoom)
             + margin.Top + margin.Bottom
             + mainChromeHeight;
 
@@ -171,7 +170,7 @@ public sealed partial class MainWindow
 
     private void FitScreenZoomToWindow()
     {
-        if (!_sizingUiInitialized || _machine == null)
+        if (!_sizingUiInitialized || !TryGetActiveFrameSize(out int frameWidth, out int frameHeight))
         {
             return;
         }
@@ -183,10 +182,9 @@ public sealed partial class MainWindow
             return;
         }
 
-        SpectrumUlaTiming timing = SpectrumUlaTiming.ForModel(_machine.Model);
         double rawFit = Math.Min(
-            availableWidth / timing.FrameWidth,
-            availableHeight / timing.FrameHeight);
+            availableWidth / frameWidth,
+            availableHeight / frameHeight);
         double fitZoom = Math.Floor(rawFit / ScreenZoomStep) * ScreenZoomStep;
         fitZoom = Math.Clamp(fitZoom, MinScreenZoom, MaxScreenZoom);
         if (Math.Abs(fitZoom - _screenZoom) < 0.001)
@@ -197,6 +195,28 @@ public sealed partial class MainWindow
         _screenZoom = fitZoom;
         ApplyScreenZoom();
         UpdateZoomMenuChecks();
+    }
+
+    private bool TryGetActiveFrameSize(out int width, out int height)
+    {
+        if (_zx8xMachine != null)
+        {
+            width = _zx8xMachine.FrameWidth;
+            height = _zx8xMachine.FrameHeight;
+            return true;
+        }
+
+        if (_machine != null)
+        {
+            SpectrumUlaTiming timing = SpectrumUlaTiming.ForModel(_machine.Model);
+            width = timing.FrameWidth;
+            height = timing.FrameHeight;
+            return true;
+        }
+
+        width = 0;
+        height = 0;
+        return false;
     }
 
     private void UpdateZoomMenuChecks()

@@ -25,7 +25,7 @@ namespace ZedExEss.Spectrum.Ports
         Z80? cpu = null,
         IContentionProfile? contention = null,
         IContendedPageProvider? contendedPages = null,
-        IFloatingBus? floatingBus = null) : IPortBus
+        IFloatingBus? floatingBus = null) : IPortBus, IZ80PortBus
     {
         // Some models expose writeback effects on a later bus point; queueing
         // here lets reads observe the same ordering as the emulated CPU.

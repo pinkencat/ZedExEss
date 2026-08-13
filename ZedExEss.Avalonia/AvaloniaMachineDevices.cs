@@ -1,6 +1,7 @@
 using ZedExEss.Spectrum.Disk.Beta;
 using ZedExEss.Spectrum.Disk.Plus3;
 using ZedExEss.Spectrum.DivMmc;
+using ZedExEss.Spectrum.Interface1;
 
 namespace ZedExEss.AvaloniaHost;
 
@@ -14,4 +15,5 @@ internal sealed class AvaloniaMachineDevices
     public SpectrumBeta128Device? Beta128Device { get; internal set; }
     public SpectrumBeta128DiskController? BetaDiskController { get; internal set; }
     public SpectrumDivMmcDevice? DivMmcDevice { get; internal set; }
+    public SpectrumInterface1Device? Interface1Device { get; internal set; }
 }

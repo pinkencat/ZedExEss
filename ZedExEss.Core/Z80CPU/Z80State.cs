@@ -2,7 +2,9 @@ namespace ZedExEss.Z80CPU
 {
     // Deliberately small public state surface for snapshot loading and debugger UI.
     // Instruction execution uses the private/inlined accessors in Z80Methods.
-    public partial class Z80
+    public partial class Z80Core<TMemory, TPorts>
+        where TMemory : class, IZ80MemoryBus
+        where TPorts : class, IZ80PortBus
     {
         public byte GetFlags()
         {

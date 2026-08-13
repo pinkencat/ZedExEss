@@ -48,6 +48,9 @@
                 <Separator />
                 <MenuItem x:Name="ModelPentagon128Menu" Header="Pentagon 128" Tag="Pentagon128" IsCheckable="True" Click="OnModelMenuClick" />
                 <MenuItem x:Name="ModelScorpion256Menu" Header="Scorpion 256" Tag="Scorpion256" IsCheckable="True" Click="OnModelMenuClick" />
+                <Separator />
+                <MenuItem x:Name="ModelZx80Menu" Header="Sinclair ZX80" Tag="Zx80" IsCheckable="True" Click="OnZx8xModelMenuClick" />
+                <MenuItem x:Name="ModelZx81Menu" Header="Sinclair ZX81" Tag="Zx81" IsCheckable="True" Click="OnZx8xModelMenuClick" />
             </MenuItem>
             <MenuItem Header="_Hardware">
                 <MenuItem Header="_Joystick">
@@ -57,6 +60,11 @@
                     <MenuItem x:Name="JoystickSinclair2Menu" Header="Sinclair _2" Tag="Sinclair2" IsCheckable="True" Click="OnJoystickMenuClick" />
                     <MenuItem x:Name="JoystickCursorMenu" Header="_Cursor/Protek" Tag="Cursor" IsCheckable="True" Click="OnJoystickMenuClick" />
                 </MenuItem>
+                <MenuItem Header="ZX80/ZX81 _RAM">
+                    <MenuItem x:Name="Zx8xRam1KMenu" Header="_1 KiB internal" Tag="Internal1K" IsCheckable="True" Click="OnZx8xRamMenuClick" />
+                    <MenuItem x:Name="Zx8xRam16KMenu" Header="_16 KiB expansion" Tag="Expansion16K" IsCheckable="True" Click="OnZx8xRamMenuClick" />
+                </MenuItem>
+                <Separator />
                 <MenuItem Header="_Disk">
                     <MenuItem Header="_+3 Drive A">
                         <MenuItem x:Name="DiskNewBlankMenu" Header="_New Blank +3 Disk..." Click="OnDiskNewBlank" />
@@ -91,6 +99,78 @@
                     </MenuItem>
                     <Separator />
                     <MenuItem x:Name="DiskTraceMenu" Header="_Trace FDC" IsCheckable="True" Click="OnDiskTraceToggle" />
+                </MenuItem>
+                <MenuItem Header="_Interface 1">
+                    <MenuItem x:Name="Interface1EnabledMenu" Header="_Enabled" IsCheckable="True" Click="OnInterface1EnabledClick" />
+                    <MenuItem Header="Firmware _Revision">
+                        <MenuItem x:Name="Interface1Revision1Menu" Header="Revision _1" Tag="Revision1" IsCheckable="True" Click="OnInterface1RevisionClick" />
+                        <MenuItem x:Name="Interface1Revision2Menu" Header="Revision _2" Tag="Revision2" IsCheckable="True" Click="OnInterface1RevisionClick" />
+                    </MenuItem>
+                    <Separator />
+                    <MenuItem x:Name="Microdrive1Menu" Header="Drive 1: (empty)">
+                        <MenuItem Header="_Insert..." Tag="0" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="0" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive1SaveMenu" Header="_Save As..." Tag="0" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive1EjectMenu" Header="_Eject" Tag="0" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive1WriteProtectMenu" Header="_Write Protected" Tag="0" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
+                    <MenuItem x:Name="Microdrive2Menu" Header="Drive 2: (empty)">
+                        <MenuItem Header="_Insert..." Tag="1" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="1" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive2SaveMenu" Header="_Save As..." Tag="1" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive2EjectMenu" Header="_Eject" Tag="1" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive2WriteProtectMenu" Header="_Write Protected" Tag="1" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
+                    <MenuItem x:Name="Microdrive3Menu" Header="Drive 3: (empty)">
+                        <MenuItem Header="_Insert..." Tag="2" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="2" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive3SaveMenu" Header="_Save As..." Tag="2" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive3EjectMenu" Header="_Eject" Tag="2" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive3WriteProtectMenu" Header="_Write Protected" Tag="2" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
+                    <MenuItem x:Name="Microdrive4Menu" Header="Drive 4: (empty)">
+                        <MenuItem Header="_Insert..." Tag="3" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="3" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive4SaveMenu" Header="_Save As..." Tag="3" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive4EjectMenu" Header="_Eject" Tag="3" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive4WriteProtectMenu" Header="_Write Protected" Tag="3" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
+                    <MenuItem x:Name="Microdrive5Menu" Header="Drive 5: (empty)">
+                        <MenuItem Header="_Insert..." Tag="4" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="4" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive5SaveMenu" Header="_Save As..." Tag="4" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive5EjectMenu" Header="_Eject" Tag="4" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive5WriteProtectMenu" Header="_Write Protected" Tag="4" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
+                    <MenuItem x:Name="Microdrive6Menu" Header="Drive 6: (empty)">
+                        <MenuItem Header="_Insert..." Tag="5" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="5" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive6SaveMenu" Header="_Save As..." Tag="5" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive6EjectMenu" Header="_Eject" Tag="5" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive6WriteProtectMenu" Header="_Write Protected" Tag="5" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
+                    <MenuItem x:Name="Microdrive7Menu" Header="Drive 7: (empty)">
+                        <MenuItem Header="_Insert..." Tag="6" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="6" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive7SaveMenu" Header="_Save As..." Tag="6" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive7EjectMenu" Header="_Eject" Tag="6" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive7WriteProtectMenu" Header="_Write Protected" Tag="6" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
+                    <MenuItem x:Name="Microdrive8Menu" Header="Drive 8: (empty)">
+                        <MenuItem Header="_Insert..." Tag="7" Click="OnMicrodriveInsert" />
+                        <MenuItem Header="_New..." Tag="7" Click="OnMicrodriveCreate" />
+                        <MenuItem x:Name="Microdrive8SaveMenu" Header="_Save As..." Tag="7" Click="OnMicrodriveSaveAs" />
+                        <MenuItem x:Name="Microdrive8EjectMenu" Header="_Eject" Tag="7" Click="OnMicrodriveEject" />
+                        <Separator />
+                        <MenuItem x:Name="Microdrive8WriteProtectMenu" Header="_Write Protected" Tag="7" IsCheckable="True" Click="OnMicrodriveWriteProtect" />
+                    </MenuItem>
                 </MenuItem>
                 <MenuItem Header="_DivMMC">
                     <MenuItem x:Name="DivDisabledMenu" Header="_Disabled" Tag="Disabled" IsCheckable="True" Click="OnDivExpansionMenuClick" />
@@ -227,7 +307,10 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <Ellipse x:Name="DiskActivityLight" Width="10" Height="10" Fill="#202020" Stroke="#555555" StrokeThickness="1" Margin="0,3,6,0" VerticalAlignment="Top" />
-                        <TextBlock Grid.Column="1" x:Name="DiskStatusText" Foreground="White" FontWeight="SemiBold" Text="Disk: (none)" TextWrapping="Wrap" />
+                        <StackPanel Grid.Column="1">
+                            <TextBlock x:Name="DiskStatusText" Foreground="White" FontWeight="SemiBold" Text="Disk: (none)" TextWrapping="Wrap" />
+                            <TextBlock x:Name="MicrodriveStatusText" Foreground="#B8D7FF" Text="Microdrive: disabled" TextWrapping="Wrap" />
+                        </StackPanel>
                     </Grid>
                     <TextBlock Grid.Row="1" x:Name="TapeFileText" Foreground="White" FontWeight="SemiBold" Text="Tape: (none)" Margin="0,0,0,6" />
                     <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,6">

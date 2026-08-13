@@ -7,6 +7,9 @@ using ZedExEss.Hosting;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.DivMmc;
 using ZedExEss.Spectrum.Input;
+using ZedExEss.Spectrum.Interface1;
+using ZedExEss.Zx8x.Core;
+using ZedExEss.Zx8x.Memory;
 using ShapePath = Avalonia.Controls.Shapes.Path;
 
 namespace ZedExEss.AvaloniaHost;
@@ -18,6 +21,8 @@ namespace ZedExEss.AvaloniaHost;
 public sealed partial class MainWindow
 {
     private readonly Dictionary<SpectrumModel, MenuItem> _modelMenuItems = [];
+    private readonly Dictionary<Zx8xModel, MenuItem> _zx8xModelMenuItems = [];
+    private readonly Dictionary<Zx8xRamConfiguration, MenuItem> _zx8xRamMenuItems = [];
     private readonly Dictionary<SpectrumJoystickType, MenuItem> _joystickMenuItems = [];
     private readonly MenuItem[] _plus3SaveMenuItems = new MenuItem[2];
     private readonly MenuItem[] _plus3EjectMenuItems = new MenuItem[2];
@@ -100,6 +105,10 @@ public sealed partial class MainWindow
         RegisterModelMenuItem("ModelPlus3MenuItem", SpectrumModel.SpectrumPlus3);
         RegisterModelMenuItem("ModelPentagonMenuItem", SpectrumModel.Pentagon128);
         RegisterModelMenuItem("ModelScorpionMenuItem", SpectrumModel.Scorpion256);
+        RegisterZx8xModelMenuItem("ModelZx80MenuItem", Zx8xModel.Zx80);
+        RegisterZx8xModelMenuItem("ModelZx81MenuItem", Zx8xModel.Zx81);
+        RegisterZx8xRamMenuItem("Zx8xRam1KMenuItem", Zx8xRamConfiguration.Internal1K);
+        RegisterZx8xRamMenuItem("Zx8xRam16KMenuItem", Zx8xRamConfiguration.Expansion16K);
         RegisterJoystickMenuItem("JoystickNoneMenuItem", SpectrumJoystickType.None);
         RegisterJoystickMenuItem("JoystickKempstonMenuItem", SpectrumJoystickType.Kempston);
         RegisterJoystickMenuItem("JoystickSinclair1MenuItem", SpectrumJoystickType.Sinclair1);
@@ -107,6 +116,7 @@ public sealed partial class MainWindow
         RegisterJoystickMenuItem("JoystickCursorMenuItem", SpectrumJoystickType.Cursor);
 
         WireDiskMenus();
+        InitializeInterface1Ui();
         _divMmcEnabledMenuItem.Click += OnDivMmcEnabledClicked;
         FindRequiredControl<MenuItem>("DivMmcInsertImageMenuItem").Click += OnInsertDivMmcImageClicked;
         FindRequiredControl<MenuItem>("DivMmcAttachFolderMenuItem").Click += OnAttachDivMmcFolderClicked;
@@ -161,10 +171,46 @@ public sealed partial class MainWindow
         _modelMenuItems[model] = item;
         item.Click += (_, _) =>
         {
-            if (!_updatingCommandChecks && model != _machine?.Model)
+            if (!_updatingCommandChecks && (_zx8xMachine != null || model != _machine?.Model))
             {
                 ReplaceMachine(model, preserveTape: true, rewindTape: false);
             }
+        };
+    }
+
+    private void RegisterZx8xModelMenuItem(string name, Zx8xModel model)
+    {
+        MenuItem item = FindRequiredControl<MenuItem>(name);
+        _zx8xModelMenuItems[model] = item;
+        item.Click += (_, _) =>
+        {
+            if (!_updatingCommandChecks && (_zx8xMachine == null || model != _zx8xModel))
+            {
+                ReplaceZx8xMachine(model);
+            }
+        };
+    }
+
+    private void RegisterZx8xRamMenuItem(string name, Zx8xRamConfiguration configuration)
+    {
+        MenuItem item = FindRequiredControl<MenuItem>(name);
+        _zx8xRamMenuItems[configuration] = item;
+        item.Click += (_, _) =>
+        {
+            if (_updatingCommandChecks || configuration == _zx8xRamConfiguration)
+            {
+                UpdateZx8xRamMenuState();
+                return;
+            }
+
+            _zx8xRamConfiguration = configuration;
+            if (_zx8xModel.HasValue)
+            {
+                ReplaceZx8xMachine(_zx8xModel.Value);
+            }
+
+            UpdateZx8xRamMenuState();
+            Focus();
         };
     }
 
@@ -204,10 +250,12 @@ public sealed partial class MainWindow
                 Title = "Open Spectrum media",
                 Filters =
                 [
-                    new FileDialogFilter("Supported files", "*.z80", "*.sna", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.img", "*.hdf", "*.sd", "*.bin"),
+                    new FileDialogFilter("Supported files", "*.z80", "*.sna", "*.o", "*.p", "*.81", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.mdr", "*.img", "*.hdf", "*.sd", "*.bin"),
                     new FileDialogFilter("Snapshots", "*.z80", "*.sna"),
+                    new FileDialogFilter("ZX80/ZX81 program images", "*.o", "*.p", "*.81"),
                     new FileDialogFilter("Tape images", "*.tap", "*.tzx", "*.csw"),
                     new FileDialogFilter("Disk images", "*.dsk", "*.trd", "*.scl"),
+                    new FileDialogFilter("Microdrive cartridges", "*.mdr"),
                     new FileDialogFilter("DivMMC images", "*.img", "*.hdf", "*.sd", "*.bin"),
                     new FileDialogFilter("All files", "*.*")
                 ]
@@ -237,6 +285,11 @@ public sealed partial class MainWindow
             case ".sna":
                 LoadSnapshotPath(path, isZ80: false);
                 break;
+            case ".o":
+            case ".p":
+            case ".81":
+                LoadZx8xProgramImagePath(path);
+                break;
             case ".tap":
             case ".tzx":
             case ".csw":
@@ -254,6 +307,9 @@ public sealed partial class MainWindow
             case ".sd":
             case ".bin":
                 AttachDivMmcStorage(path, folderBacked: false);
+                break;
+            case ".mdr":
+                AttachMicrodriveToFirstEmptyDrive(path);
                 break;
             default:
                 throw new NotSupportedException($"Unsupported media type: {System.IO.Path.GetExtension(path)}");
@@ -354,12 +410,17 @@ public sealed partial class MainWindow
         _divExpansionMode = _divMmcEnabledMenuItem.IsChecked
             ? SpectrumDivExpansionMode.DivMmc
             : SpectrumDivExpansionMode.Disabled;
+        if (_divExpansionMode != SpectrumDivExpansionMode.Disabled)
+        {
+            _interface1Enabled = false;
+        }
         if (_machine != null)
         {
             ReplaceMachine(_machine.Model, preserveTape: true, rewindTape: false);
         }
 
         UpdateDivMmcMenuState();
+        UpdateInterface1MenuState();
     }
 
     private void OnEjectDivMmcClicked(object? sender, RoutedEventArgs e)
@@ -423,7 +484,7 @@ public sealed partial class MainWindow
         ToolTip.SetTip(_pauseButton, paused ? "Resume emulation" : "Pause emulation");
     }
 
-    private void UpdateModelMenuState(SpectrumModel model)
+    private void UpdateModelMenuState(SpectrumModel? model, Zx8xModel? zx8xModel = null)
     {
         if (_modelMenuItems.Count == 0)
         {
@@ -436,6 +497,34 @@ public sealed partial class MainWindow
             foreach ((SpectrumModel itemModel, MenuItem item) in _modelMenuItems)
             {
                 item.IsChecked = itemModel == model;
+            }
+
+            foreach ((Zx8xModel itemModel, MenuItem item) in _zx8xModelMenuItems)
+            {
+                item.IsChecked = itemModel == zx8xModel;
+            }
+        }
+        finally
+        {
+            _updatingCommandChecks = false;
+        }
+
+        UpdateZx8xRamMenuState();
+    }
+
+    private void UpdateZx8xRamMenuState()
+    {
+        if (_zx8xRamMenuItems.Count == 0)
+        {
+            return;
+        }
+
+        _updatingCommandChecks = true;
+        try
+        {
+            foreach ((Zx8xRamConfiguration configuration, MenuItem item) in _zx8xRamMenuItems)
+            {
+                item.IsChecked = configuration == _zx8xRamConfiguration;
             }
         }
         finally
@@ -635,8 +724,8 @@ public sealed partial class MainWindow
         }
 
         string extension = System.IO.Path.GetExtension(item.Name).ToLowerInvariant();
-        return extension is ".z80" or ".sna" or ".tap" or ".tzx" or ".csw"
-            or ".dsk" or ".trd" or ".scl" or ".img" or ".hdf" or ".sd" or ".bin";
+        return extension is ".z80" or ".sna" or ".o" or ".p" or ".81" or ".tap" or ".tzx" or ".csw"
+            or ".dsk" or ".trd" or ".scl" or ".mdr" or ".img" or ".hdf" or ".sd" or ".bin";
     }
 
     private int GetInitialPlus3Drive()

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using ZedExEss.Hosting;
 using ZedExEss.Spectrum.Input;
+using ZedExEss.Zx8x.Memory;
 
 namespace ZedExEss.Diagnostics;
 
@@ -97,6 +98,8 @@ public static class SettingsVerificationRunner
         Require(settings.FlashLoadEnabled && settings.PollingLoaderAccelerationEnabled,
             "Established tape acceleration defaults were not preserved.");
         Require(!settings.SemanticLoaderAccelerationEnabled, "Experimental semantic acceleration must default off.");
+        Require(settings.Zx8xRamConfiguration == Zx8xRamConfiguration.Expansion16K,
+            "ZX80/ZX81 RAM should default to the common 16 KiB expansion.");
     }
 
     private static void VerifyRoundTrip(ISettingsStore store, string settingsPath)
@@ -113,7 +116,10 @@ public static class SettingsVerificationRunner
             AutoLoadTapeOnAttach = true,
             AutoTapePlayStopEnabled = false,
             DirtyLinePresentationEnabled = false,
-            GigascreenBlendEnabled = true
+            GigascreenBlendEnabled = true,
+            Interface1Enabled = true,
+            Interface1RomRevision = Spectrum.Interface1.SpectrumInterface1RomRevision.Revision1,
+            Zx8xRamConfiguration = Zx8xRamConfiguration.Internal1K
         };
 
         store.Save(expected);

@@ -4,6 +4,8 @@ using System.Text;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Spectrum.Memory;
+using ZedExEss.Spectrum.Ports;
+using ZedExEss.Z80CPU;
 
 namespace ZedExEss.Diagnostics;
 
@@ -42,10 +44,16 @@ public static class Interface1VerificationRunner
         Check("Opcode-fetch ROMCS mapping", VerifyRomMapping, ref failed);
         Check("Partially decoded IF1 ports", VerifyPortDecode, ref failed);
         Check("Eight-drive motor shift register", VerifyMotorShiftRegister, ref failed);
+        Check("MDR image validation and round trip", VerifyMdrImage, ref failed);
+        Check("Microdrive GAP/SYNC and byte transport", VerifyMicrodriveReadTransport, ref failed);
+        Check("Microdrive write and write protection", VerifyMicrodriveWriteTransport, ref failed);
+        Check("Persistent Microdrive session state", VerifyPersistentMediaState, ref failed);
+        Check("Dirty MDR shutdown flush and reload", VerifyDirtyMediaFlush, ref failed);
 
         if (!string.IsNullOrWhiteSpace(options.RomPath))
         {
             Check("Supplied Interface 1 ROM", () => VerifySuppliedRom(options.RomPath!), ref failed);
+            Check("Interface 1 ROM cartridge-presence probe", () => VerifyRomPresenceProbe(options.RomPath!), ref failed);
         }
 
         writer.WriteLine();
@@ -138,12 +146,117 @@ public static class Interface1VerificationRunner
         device.Write(0x00EF, 0x02);
         device.Write(0x00EF, 0x00);
         Require(device.MotorMask == 0x01 && device.IsMotorRunning(1), "Drive 1 did not start on a falling clock edge.");
+        Require(device.SelectedDriveNumber == 1, "Selected-drive status did not identify drive 1.");
+        Require(device.Activity == MicrodriveActivityState.Idle, "Selecting a drive incorrectly reported data activity.");
 
         // Shift drive 1 to drive 2 while inserting an off state for drive 1.
         device.Write(0x00EF, 0x03);
         device.Write(0x00EF, 0x01);
         Require(device.MotorMask == 0x02, "Motor state did not shift from drive 1 to drive 2.");
         Require(!device.IsMotorRunning(1) && device.IsMotorRunning(2), "Shifted motor selection is incorrect.");
+        Require(device.SelectedDriveNumber == 2, "Selected-drive status did not follow the motor shift register.");
+    }
+
+    private static void VerifyMdrImage()
+    {
+        byte[] image = CreatePatternedMdr(writeProtected: true);
+        MicrodriveCartridge cartridge = MicrodriveCartridge.Load(image);
+
+        Require(cartridge.SectorCount == MicrodriveCartridge.MinimumSectorCount, "MDR sector count was decoded incorrectly.");
+        Require(cartridge.WriteProtected, "MDR trailing write-protect byte was ignored.");
+        Require(cartridge.ToMdrBytes().AsSpan().SequenceEqual(image), "MDR round trip changed image bytes.");
+
+        bool rejected = false;
+        try
+        {
+            _ = MicrodriveCartridge.Load(new byte[(MicrodriveCartridge.MinimumSectorCount * MicrodriveCartridge.SectorLength) - 1]);
+        }
+        catch (InvalidDataException)
+        {
+            rejected = true;
+        }
+
+        Require(rejected, "An invalid MDR length was accepted.");
+
+        MicrodriveCartridge formatted = MicrodriveCartridge.CreateFormatted("Success", 179);
+        byte[] expectedFirstHeader =
+        [
+            0x01, 0x4B, 0x00, 0x00,
+            (byte)'S', (byte)'u', (byte)'c', (byte)'c', (byte)'e', (byte)'s', (byte)'s',
+            0x20, 0x20, 0x20, 0x88
+        ];
+        for (int i = 0; i < expectedFirstHeader.Length; i++)
+        {
+            Require(formatted.ReadByte(i) == expectedFirstHeader[i],
+                $"Formatted MDR header byte {i} is {formatted.ReadByte(i):X2}; expected {expectedFirstHeader[i]:X2}.");
+        }
+
+        Require(formatted.GetPreambleState(0) == byte.MaxValue,
+            "Formatted cartridge did not expose a valid sector-header preamble.");
+        Require(formatted.GetPreambleState(formatted.SectorCount) == byte.MaxValue,
+            "Formatted cartridge did not expose a valid record-header preamble.");
+    }
+
+    private static void VerifyMicrodriveReadTransport()
+    {
+        byte[] image = CreatePatternedMdr(writeProtected: false);
+        var cartridge = MicrodriveCartridge.Load(image);
+        var device = new SpectrumInterface1Device(CreatePatternedRom());
+        device.InsertCartridge(1, cartridge);
+        SelectDriveOne(device);
+
+        for (int i = 0; i < 15; i++)
+        {
+            Require(device.Read(0x00EF) == 0xE7, $"GAP ended too early at status read {i}.");
+        }
+
+        Require(device.Read(0x00EF) == 0xE1, "GAP/SYNC active-low status was not exposed after the gap.");
+        Require(device.Activity == MicrodriveActivityState.Reading, "Status polling did not report Microdrive read activity.");
+
+        for (int i = 0; i < MicrodriveCartridge.HeaderLength; i++)
+        {
+            Require(device.Read(0x00E7) == image[i], $"Header transport byte {i} is incorrect.");
+        }
+
+        // A status poll restarts the transfer at the record-header boundary.
+        _ = device.Read(0x00EF);
+        Require(device.Read(0x00E7) == image[MicrodriveCartridge.HeaderLength],
+            "Record-header transport did not follow the sector header.");
+
+        Require(ReferenceEquals(device.EjectCartridge(1), cartridge), "Eject did not return the inserted cartridge.");
+        Require(device.GetCartridge(1) == null, "Drive retained an ejected cartridge.");
+    }
+
+    private static void VerifyMicrodriveWriteTransport()
+    {
+        var cartridge = MicrodriveCartridge.CreateBlank(MicrodriveCartridge.MinimumSectorCount);
+        var device = new SpectrumInterface1Device(CreatePatternedRom());
+        device.InsertCartridge(1, cartridge);
+        SelectDriveOne(device);
+
+        byte[] header = Enumerable.Range(0, MicrodriveCartridge.HeaderLength)
+            .Select(static i => (byte)(0x80 + i))
+            .ToArray();
+        WritePreamble(device);
+        foreach (byte value in header)
+        {
+            device.Write(0x00E7, value);
+        }
+
+        for (int i = 0; i < header.Length; i++)
+        {
+            Require(cartridge.ReadByte(i) == header[i], $"Written header byte {i} was not stored.");
+        }
+
+        cartridge.SetWriteProtected(true);
+        _ = device.Read(0x00EF); // Move transport to the record-header half.
+        Require(device.Read(0x00EF) == 0xE6, "Write-protect status bit is not active-low.");
+
+        int recordOffset = MicrodriveCartridge.HeaderLength;
+        byte before = cartridge.ReadByte(recordOffset);
+        WritePreamble(device);
+        device.Write(0x00E7, 0x35);
+        Require(cartridge.ReadByte(recordOffset) == before, "Write-protected media was modified.");
     }
 
     private static void VerifySuppliedRom(string path)
@@ -155,6 +268,134 @@ public static class Interface1VerificationRunner
         Require(firmware.Any(static value => value != 0xFF), "Supplied Interface 1 ROM contains only FFh.");
     }
 
+    /// <summary>
+    /// Executes the firmware's own SEL-DRIVE routine. This covers the real
+    /// eight-pulse motor sequence, settling delay and six-consecutive-GAP presence
+    /// test instead of merely duplicating those assumptions in a diagnostic helper.
+    /// </summary>
+    private static void VerifyRomPresenceProbe(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        byte[] firmware = File.ReadAllBytes(fullPath);
+        string machineRomPath = Path.Combine(Path.GetDirectoryName(fullPath)!, "48.rom");
+        Require(File.Exists(machineRomPath), $"48K ROM not found beside Interface 1 ROM: {machineRomPath}");
+
+        SpectrumInterface1Device? device = null;
+        SpectrumMachine machine = SpectrumMachineFactory.Create(new SpectrumMachineOptions
+        {
+            Model = SpectrumModel.Spectrum48K,
+            Roms = RomSet.LoadFromFiles([machineRomPath]),
+            RenderEnabled = false,
+            ConfigureDevices = context =>
+            {
+                device = new SpectrumInterface1Device(firmware);
+                context.Memory.ConfigureInterface1(device);
+                context.Ports.AddDevice(device);
+            }
+        });
+        SpectrumInterface1Device attachedDevice = device
+            ?? throw new InvalidOperationException("Interface 1 device was not attached to the full machine graph.");
+
+        attachedDevice.InsertCartridge(1, MicrodriveCartridge.CreateFormatted("Verifier", MicrodriveCartridge.MinimumSectorCount));
+
+        Z80 cpu = machine.Cpu;
+        cpu.A = 1;
+        cpu.SP = 0x9000;
+        machine.Memory.WriteDirect(0x9000, 0x00);
+        machine.Memory.WriteDirect(0x9001, 0x80);
+
+        // An M1 fetch at 0008h asserts ROMCS. Continue directly at the matching
+        // firmware revision's SEL-DRIVE entry and stop at the synthetic RAM return.
+        _ = machine.Memory.FetchOpcode(0x0008);
+        cpu.PC = FindSelectDriveEntry(firmware);
+        const int maximumInstructions = 250_000;
+        for (int i = 0; i < maximumInstructions && cpu.PC != 0x8000; i++)
+        {
+            machine.Emulator.StepInstruction();
+        }
+
+        Require(cpu.PC == 0x8000,
+            $"Firmware presence probe did not return (PC={cpu.PC:X4}, motor={attachedDevice.MotorMask:X2}).");
+        Require(attachedDevice.MotorMask == 0x01 && attachedDevice.IsMotorRunning(1),
+            $"Firmware selected the wrong Microdrive motor (mask={attachedDevice.MotorMask:X2}).");
+    }
+
+    private static ushort FindSelectDriveEntry(ReadOnlySpan<byte> firmware)
+    {
+        // Both Sinclair revisions begin SEL-DRIVE with PUSH HL / CP 0 / JR NZ and
+        // contain the distinctive 1388h settling counter shortly afterwards.
+        ReadOnlySpan<byte> prefix = [0xE5, 0xFE, 0x00, 0x20];
+        for (int offset = 0; offset <= firmware.Length - 24; offset++)
+        {
+            if (!firmware.Slice(offset, prefix.Length).SequenceEqual(prefix))
+            {
+                continue;
+            }
+
+            ReadOnlySpan<byte> window = firmware.Slice(offset, 24);
+            for (int i = 0; i <= window.Length - 3; i++)
+            {
+                if (window[i] == 0x21 && window[i + 1] == 0x88 && window[i + 2] == 0x13)
+                {
+                    return checked((ushort)offset);
+                }
+            }
+        }
+
+        throw new InvalidDataException("Could not locate SEL-DRIVE in the supplied Interface 1 ROM.");
+    }
+
+    private static void VerifyPersistentMediaState()
+    {
+        var media = new SpectrumInterface1MediaState();
+        MicrodriveCartridge cartridge = media.Create(3, MicrodriveCartridge.MinimumSectorCount);
+        cartridge.SetWriteProtected(true);
+
+        var firstDevice = new SpectrumInterface1Device(CreatePatternedRom());
+        media.ConnectDevice(firstDevice);
+        Require(ReferenceEquals(firstDevice.GetCartridge(4), cartridge), "Persistent media was not connected to its drive.");
+
+        var replacement = new SpectrumInterface1Device(CreatePatternedRom());
+        media.ConnectDevice(replacement);
+        Require(firstDevice.GetCartridge(4) == null, "The replaced device retained session media.");
+        Require(ReferenceEquals(replacement.GetCartridge(4), cartridge), "Media did not survive device replacement.");
+        Require(media.GetPath(3) == null && media.GetCartridge(3)?.WriteProtected == true,
+            "Unsaved media state changed during replacement.");
+
+        media.ConnectDevice(null);
+        Require(replacement.GetCartridge(4) == null, "Disconnect did not detach media from the old device.");
+        Require(ReferenceEquals(media.GetCartridge(3), cartridge), "Disconnect discarded persistent media.");
+    }
+
+    private static void VerifyDirtyMediaFlush()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"zedexess-if1-{Guid.NewGuid():N}");
+        string path = Path.Combine(directory, "flush-test.mdr");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var media = new SpectrumInterface1MediaState();
+            MicrodriveCartridge cartridge = media.Create(0, MicrodriveCartridge.MinimumSectorCount, "FlushTest");
+            media.SaveAs(0, path);
+
+            byte original = cartridge.ReadByte(30);
+            byte replacement = (byte)(original ^ 0x5A);
+            Require(cartridge.TryWriteByte(30, replacement), "Writable cartridge rejected a verification byte.");
+            Require(cartridge.Modified, "Changing a cartridge byte did not mark the image dirty.");
+
+            media.FlushAll();
+            Require(!cartridge.Modified, "Flushing a cartridge did not clear its dirty state.");
+
+            MicrodriveCartridge reloaded = MicrodriveCartridge.Load(path);
+            Require(reloaded.ReadByte(30) == replacement,
+                "A dirty cartridge byte was lost when the saved MDR was reloaded.");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static byte[] CreatePatternedRom()
     {
         byte[] firmware = new byte[SpectrumInterface1Device.RomSize];
@@ -164,6 +405,37 @@ public static class Interface1VerificationRunner
         }
 
         return firmware;
+    }
+
+    private static byte[] CreatePatternedMdr(bool writeProtected)
+    {
+        int dataLength = MicrodriveCartridge.MinimumSectorCount * MicrodriveCartridge.SectorLength;
+        byte[] image = new byte[dataLength + 1];
+        for (int i = 0; i < dataLength; i++)
+        {
+            image[i] = (byte)((i * 19 + 0x23) & 0xFF);
+        }
+
+        image[^1] = writeProtected ? (byte)1 : (byte)0;
+        return image;
+    }
+
+    private static void SelectDriveOne(SpectrumInterface1Device device)
+    {
+        device.Write(0x00EF, 0x02);
+        device.Write(0x00EF, 0x00);
+        Require(device.IsMotorRunning(1), "Drive 1 was not selected.");
+    }
+
+    private static void WritePreamble(SpectrumInterface1Device device)
+    {
+        for (int i = 0; i < 10; i++)
+        {
+            device.Write(0x00E7, 0x00);
+        }
+
+        device.Write(0x00E7, 0xFF);
+        device.Write(0x00E7, 0xFF);
     }
 
     private static void Require(bool condition, string message)

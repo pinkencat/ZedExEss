@@ -2,6 +2,9 @@ using Avalonia.Interactivity;
 using ZedExEss.Hosting;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.Input;
+using ZedExEss.Spectrum.Interface1;
+using ZedExEss.Zx8x.Core;
+using ZedExEss.Zx8x.Memory;
 
 namespace ZedExEss.AvaloniaHost;
 
@@ -25,6 +28,9 @@ public sealed partial class MainWindow
     private bool _autoTapePlayStopEnabled = true;
     private bool _gigascreenBlendEnabled;
     private double _screenZoom = DefaultScreenZoom;
+    private bool _interface1Enabled;
+    private SpectrumInterface1RomRevision _interface1RomRevision = SpectrumInterface1RomRevision.Revision2;
+    private Zx8xRamConfiguration _zx8xRamConfiguration = Zx8xRamConfiguration.Expansion16K;
 
     private static ISettingsStore CreateSettingsStore()
     {
@@ -52,6 +58,13 @@ public sealed partial class MainWindow
         _autoLoadTapeOnAttach = _hostSettings.AutoLoadTapeOnAttach;
         _autoTapePlayStopEnabled = _hostSettings.AutoTapePlayStopEnabled;
         _gigascreenBlendEnabled = _hostSettings.GigascreenBlendEnabled;
+        _interface1Enabled = _hostSettings.Interface1Enabled;
+        _interface1RomRevision = Enum.IsDefined(typeof(SpectrumInterface1RomRevision), _hostSettings.Interface1RomRevision)
+            ? _hostSettings.Interface1RomRevision
+            : SpectrumInterface1RomRevision.Revision2;
+        _zx8xRamConfiguration = Enum.IsDefined(typeof(Zx8xRamConfiguration), _hostSettings.Zx8xRamConfiguration)
+            ? _hostSettings.Zx8xRamConfiguration
+            : Zx8xRamConfiguration.Expansion16K;
     }
 
     private void SaveHostSettings()
@@ -67,7 +80,10 @@ public sealed partial class MainWindow
             FlashLoadEnabled = _flashLoadEnabled,
             AutoLoadTapeOnAttach = _autoLoadTapeOnAttach,
             AutoTapePlayStopEnabled = _autoTapePlayStopEnabled,
-            GigascreenBlendEnabled = _gigascreenBlendEnabled
+            GigascreenBlendEnabled = _gigascreenBlendEnabled,
+            Interface1Enabled = _interface1Enabled,
+            Interface1RomRevision = _interface1RomRevision,
+            Zx8xRamConfiguration = _zx8xRamConfiguration
         };
 
         try
@@ -120,12 +136,44 @@ public sealed partial class MainWindow
             && _session.Tape?.IsPlaying == true;
     }
 
+    private bool ShouldUseZx8xFastTapeRunner()
+    {
+        return !_turboEnabled
+            && _edgeLoadEnabled
+            && _runTapeAccelerationAtMaximumSpeed
+            && _zx8xMachine?.IsPaused == false
+            && _zx8xMachine.Tape.Loader?.IsPlaying == true;
+    }
+
     /// <summary>
     /// Re-evaluates execution ownership after a mode, pause, or tape-playback transition.
     /// Existing owners are retained when they already represent the requested mode.
     /// </summary>
     private void RefreshExecutionOwner()
     {
+        if (_zx8xMachine != null)
+        {
+            if (_closing || _replacingMachine)
+            {
+                return;
+            }
+
+            ExecutionOwnerKind zxDesired = _turboEnabled
+                ? ExecutionOwnerKind.Turbo
+                : ShouldUseZx8xFastTapeRunner()
+                    ? ExecutionOwnerKind.FastTape
+                    : ExecutionOwnerKind.Realtime;
+            if (GetExecutionOwnerKind() == zxDesired)
+            {
+                return;
+            }
+
+            StopExecutionOwner();
+            _ = StartSelectedZx8xExecution(_zx8xMachine);
+            UpdateRuntimeMenuState();
+            return;
+        }
+
         SpectrumMachine? machine = _machine;
         if (machine == null || _closing || _replacingMachine || _debugger.IsPaused)
         {
@@ -156,26 +204,43 @@ public sealed partial class MainWindow
         TapeFastRunner? fastTape = _fastTapeRunner;
         _fastTapeRunner = null;
         fastTape?.Dispose();
+
+        Zx8xTurboRunner? zxTurbo = _zx8xTurboRunner;
+        _zx8xTurboRunner = null;
+        zxTurbo?.Dispose();
+
+        Zx8xTurboRunner? zxFastTape = _zx8xFastTapeRunner;
+        _zx8xFastTapeRunner = null;
+        zxFastTape?.Dispose();
+
+        Zx8xRealtimeFrameRunner? zxRealtime = _zx8xRealtimeRunner;
+        _zx8xRealtimeRunner = null;
+        if (zxRealtime != null)
+        {
+            zxRealtime.Faulted -= OnRunnerFaulted;
+            zxRealtime.Dispose();
+        }
     }
 
     private bool HasExecutionOwner()
     {
-        return _audioOutput != null || _runner != null || _turboRunner != null || _fastTapeRunner != null;
+        return _audioOutput != null || _runner != null || _turboRunner != null || _fastTapeRunner != null
+            || _zx8xTurboRunner != null || _zx8xFastTapeRunner != null || _zx8xRealtimeRunner != null;
     }
 
     private ExecutionOwnerKind GetExecutionOwnerKind()
     {
-        if (_turboRunner != null)
+        if (_turboRunner != null || _zx8xTurboRunner != null)
         {
             return ExecutionOwnerKind.Turbo;
         }
 
-        if (_fastTapeRunner != null)
+        if (_fastTapeRunner != null || _zx8xFastTapeRunner != null)
         {
             return ExecutionOwnerKind.FastTape;
         }
 
-        if (_audioOutput != null || _runner != null)
+        if (_audioOutput != null || _runner != null || _zx8xRealtimeRunner != null)
         {
             return ExecutionOwnerKind.Realtime;
         }
@@ -208,6 +273,10 @@ public sealed partial class MainWindow
         if (_machine != null)
         {
             _statusText.Text = $"{FormatModel(_machine.Model)} — {GetExecutionModeText()} — keyboard active";
+        }
+        else if (_zx8xMachine != null)
+        {
+            _statusText.Text = $"{FormatZx8xModel(_zx8xMachine.Model)} — {GetExecutionModeText()} — keyboard active";
         }
 
         Focus();

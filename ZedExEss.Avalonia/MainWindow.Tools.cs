@@ -42,6 +42,12 @@ public sealed partial class MainWindow
 
     private async void OnBasicEditorClicked(object? sender, RoutedEventArgs e)
     {
+        if (_zx8xMachine != null)
+        {
+            _statusText.Text = "The BASIC editor currently supports Sinclair Spectrum BASIC only.";
+            return;
+        }
+
         SpectrumMachine? machine = _machine;
         if (machine == null)
         {
@@ -65,6 +71,12 @@ public sealed partial class MainWindow
 
     private async void OnPokesClicked(object? sender, RoutedEventArgs e)
     {
+        if (_zx8xMachine != null)
+        {
+            _statusText.Text = "ZX80/ZX81 memory editing will be exposed through the portable debugger path.";
+            return;
+        }
+
         SpectrumMachine? machine = _machine;
         if (machine == null)
         {
@@ -106,6 +118,12 @@ public sealed partial class MainWindow
 
     private void OnAudioOscilloscopeClicked(object? sender, RoutedEventArgs e)
     {
+        if (_zx8xMachine != null)
+        {
+            _statusText.Text = "The current oscilloscope displays Spectrum beeper and AY channels.";
+            return;
+        }
+
         if (_oscilloscopeWindow != null)
         {
             _oscilloscopeWindow.Activate();
@@ -127,6 +145,12 @@ public sealed partial class MainWindow
 
     private void OnDebuggerClicked(object? sender, RoutedEventArgs e)
     {
+        if (_zx8xMachine != null)
+        {
+            _statusText.Text = "The debugger is not yet connected to the ZX80/ZX81 machine bus.";
+            return;
+        }
+
         if (_machine == null)
         {
             return;

@@ -4,6 +4,7 @@ using ZedExEss.Spectrum.Disk.Beta;
 using ZedExEss.Spectrum.Disk.Plus3;
 using ZedExEss.Spectrum.DivMmc;
 using ZedExEss.Spectrum.Input;
+using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Spectrum.Memory;
 
 namespace ZedExEss.AvaloniaHost;
@@ -47,6 +48,25 @@ internal static class AvaloniaMachineBootstrap
         SpectrumDivExpansionMode divExpansionMode,
         out AvaloniaMachineDevices devices)
     {
+        return CreateMachine(
+            model,
+            disks,
+            divMmcMedia,
+            divExpansionMode,
+            interface1Enabled: false,
+            SpectrumInterface1RomRevision.Revision2,
+            out devices);
+    }
+
+    public static SpectrumMachine CreateMachine(
+        SpectrumModel model,
+        SpectrumDiskMediaState? disks,
+        SpectrumDivMmcMediaState? divMmcMedia,
+        SpectrumDivExpansionMode divExpansionMode,
+        bool interface1Enabled,
+        SpectrumInterface1RomRevision interface1RomRevision,
+        out AvaloniaMachineDevices devices)
+    {
         EmulatorHostSettings settings = CreateSettingsStore().Load();
         SpectrumJoystickType joystick = Enum.IsDefined(typeof(SpectrumJoystickType), settings.JoystickType)
             ? settings.JoystickType
@@ -65,6 +85,8 @@ internal static class AvaloniaMachineBootstrap
                 disks,
                 divMmcMedia,
                 divExpansionMode,
+                interface1Enabled,
+                interface1RomRevision,
                 romDirectory,
                 createdDevices)
         });
@@ -93,9 +115,12 @@ internal static class AvaloniaMachineBootstrap
         SpectrumDiskMediaState? disks,
         SpectrumDivMmcMediaState? divMmcMedia,
         SpectrumDivExpansionMode divExpansionMode,
+        bool interface1Enabled,
+        SpectrumInterface1RomRevision interface1RomRevision,
         string romDirectory,
         AvaloniaMachineDevices devices)
     {
+        ConfigureInterface1(context, interface1Enabled, interface1RomRevision, romDirectory, devices);
         ConfigureDivMmc(context, divMmcMedia, divExpansionMode, romDirectory, devices);
 
         if (SpectrumModelTraits.HasBeta128Disk(context.Model))
@@ -134,6 +159,25 @@ internal static class AvaloniaMachineBootstrap
 
             context.Ports.AddDevice(plus3Controller);
         }
+    }
+
+    private static void ConfigureInterface1(
+        SpectrumMachineConfigurationContext context,
+        bool enabled,
+        SpectrumInterface1RomRevision revision,
+        string romDirectory,
+        AvaloniaMachineDevices devices)
+    {
+        if (!enabled || !SpectrumInterface1Compatibility.IsSupported(context.Model))
+        {
+            return;
+        }
+
+        string path = Path.Combine(romDirectory, SpectrumInterface1Compatibility.GetRomFileName(revision));
+        var device = new SpectrumInterface1Device(File.ReadAllBytes(path));
+        context.Memory.ConfigureInterface1(device);
+        context.Ports.AddDevice(device);
+        devices.Interface1Device = device;
     }
 
     private static void ConfigureDivMmc(

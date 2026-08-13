@@ -21,11 +21,13 @@ using ZedExEss.Spectrum.Disk.Beta;
 using ZedExEss.Spectrum.Disk.Plus3;
 using ZedExEss.Spectrum.DivMmc;
 using ZedExEss.Spectrum.Input;
+using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Spectrum.Memory;
 using ZedExEss.Spectrum.Ports;
 using ZedExEss.Spectrum.Tape;
 using ZedExEss.Spectrum.Video;
 using ZedExEss.Z80CPU;
+using ZedExEss.Zx8x.Memory;
 
 namespace ZedExEss
 {
@@ -58,6 +60,9 @@ namespace ZedExEss
         private SpectrumJoystickDevice _joystick = null!;
         private SpectrumJoystickType _joystickType = SpectrumJoystickType.None;
         private SpectrumDivExpansionMode _divExpansionMode = SpectrumDivExpansionMode.Disabled;
+        private bool _interface1Enabled;
+        private SpectrumInterface1RomRevision _interface1RomRevision = SpectrumInterface1RomRevision.Revision2;
+        private SpectrumInterface1Device? _interface1Device;
         private SpectrumDivMmcDevice? _divDevice;
         private SpectrumBeta128Device? _beta128Device;
         private SpectrumBeta128DiskController? _betaDiskController;
@@ -110,13 +115,14 @@ namespace ZedExEss
         private long _lastDiskActivityTimestamp;
 
         private readonly SpectrumSessionController _session = new();
-        private TzxLoader? _tapeLoader => _session.Tape;
+        private TzxLoader? _tapeLoader => _zx8xMachine?.Tape.Loader ?? _session.Tape;
         private AutoLoadKeyboardInjector? _autoLoadInjector;
         private DebuggerWindow? _debuggerWindow;
         private AudioOscilloscopeWindow? _oscilloscopeWindow;
         private EmulationRunState? _debuggerSuspendedRunState;
         private EmulationRunState? _quickPauseRunState;
-        private string? _tapePath => _session.TapePath;
+        private string? _tapePath => _zx8xMachine?.Tape.Path ?? _session.TapePath;
+        private Zx8xRamConfiguration _zx8xRamConfiguration = Zx8xRamConfiguration.Expansion16K;
         private readonly ObservableCollection<BlockInfo> _tapeBlocks = [];
         private bool _tapeBrowserVisible = true;
         private const double DefaultScreenZoom = 2.0;
@@ -161,6 +167,7 @@ namespace ZedExEss
             _uiDispatcher = new WpfUiDispatcher(Dispatcher);
             _settingsStore = new JsonFileSettingsStore(GetSettingsPath());
             ApplyHostSettings(_settingsStore.Load());
+            InitializeInterface1Ui();
 
             TapeBlocksList.ItemsSource = _tapeBlocks;
             _keyMap = BuildKeyMap();
@@ -207,6 +214,23 @@ namespace ZedExEss
             _audioPlayer?.Dispose();
             _turboRunner?.Dispose();
             _fastTapeRunner?.Dispose();
+            StopZx8xHostMachine();
+            try
+            {
+                // The runners must be stopped before copying mutable cartridge bytes.
+                _session.Interface1.FlushAll();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    ex.Message,
+                    "Microdrive Save Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+
+            _session.Interface1.ConnectDevice(null);
+            ObserveInterface1Device(null);
             CloseDivStorage(showErrors: false);
             base.OnClosed(e);
         }
@@ -230,6 +254,13 @@ namespace ZedExEss
             _autoTapePlayStopEnabled = settings.AutoTapePlayStopEnabled;
             UseDirtyLinePresentation = settings.DirtyLinePresentationEnabled;
             _gigascreenBlendEnabled = settings.GigascreenBlendEnabled;
+            _interface1Enabled = settings.Interface1Enabled;
+            _interface1RomRevision = Enum.IsDefined(typeof(SpectrumInterface1RomRevision), settings.Interface1RomRevision)
+                ? settings.Interface1RomRevision
+                : SpectrumInterface1RomRevision.Revision2;
+            _zx8xRamConfiguration = Enum.IsDefined(typeof(Zx8xRamConfiguration), settings.Zx8xRamConfiguration)
+                ? settings.Zx8xRamConfiguration
+                : Zx8xRamConfiguration.Expansion16K;
         }
         private void SaveHostSettings()
         {
@@ -245,7 +276,10 @@ namespace ZedExEss
                 AutoLoadTapeOnAttach = _autoLoadTapeOnAttach,
                 AutoTapePlayStopEnabled = _autoTapePlayStopEnabled,
                 DirtyLinePresentationEnabled = UseDirtyLinePresentation,
-                GigascreenBlendEnabled = _gigascreenBlendEnabled
+                GigascreenBlendEnabled = _gigascreenBlendEnabled,
+                Interface1Enabled = _interface1Enabled,
+                Interface1RomRevision = _interface1RomRevision,
+                Zx8xRamConfiguration = _zx8xRamConfiguration
             };
 
             try
@@ -272,6 +306,7 @@ namespace ZedExEss
         /// </remarks>
         private void InitializeMachine(SpectrumModel model, RomSet roms, Action<Z80, SpectrumMemory, SpectrumUlaRenderer>? initializer, bool preserveTape, bool rewindTape = false)
         {
+            StopZx8xHostMachine();
             _autoLoadInjector = null;
             if(_emulator != null)
                 _emulator.FrameCompleted -= OnFrameCompleted;
@@ -355,6 +390,7 @@ namespace ZedExEss
             UpdateModelMenuChecks();
             UpdateJoystickMenuChecks();
             UpdateDivExpansionMenuChecks();
+            UpdateInterface1MenuState();
             UpdateDivStorageMenuState();
             UpdateDiskMenuState();
             UpdateDiskUi();
@@ -380,8 +416,32 @@ namespace ZedExEss
             SpectrumPortBus ports = context.Ports;
 
             _divDevice = null;
+            ObserveInterface1Device(null);
+            _session.Interface1.ConnectDevice(null);
             _beta128Device = null;
             _betaDiskController = null;
+            if (_interface1Enabled && SpectrumInterface1Compatibility.IsSupported(model))
+            {
+                string romPath = Path.Combine(
+                    AppContext.BaseDirectory,
+                    "ROMs",
+                    SpectrumInterface1Compatibility.GetRomFileName(_interface1RomRevision));
+                try
+                {
+                    var interface1Device = new SpectrumInterface1Device(File.ReadAllBytes(romPath));
+                    _session.Interface1.ConnectDevice(interface1Device);
+                    ObserveInterface1Device(interface1Device);
+                    memory.ConfigureInterface1(interface1Device);
+                    ports.AddDevice(interface1Device);
+                }
+                catch (Exception ex)
+                {
+                    _interface1Enabled = false;
+                    _session.Interface1.ConnectDevice(null);
+                    MessageBox.Show(ex.Message, "Interface 1 ROM Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+
             if (SpectrumModelTraits.HasBeta128Disk(model))
             {
                 if (TryCreateBeta128(model, out SpectrumBeta128Device? beta128Device, out string betaError)
@@ -458,6 +518,7 @@ namespace ZedExEss
         {
             // The audio/turbo producer raises this event. Coalesce frames while the dispatcher is
             // busy so emulation never blocks behind an accumulating queue of stale presentations.
+            SpectrumEmulator source = _emulator;
             if (Interlocked.Exchange(ref _renderPending, 1) == 1)
             {
                 return;
@@ -467,6 +528,11 @@ namespace ZedExEss
             {
                 try
                 {
+                    if (_zx8xMachine != null || !ReferenceEquals(source, _emulator))
+                    {
+                        return;
+                    }
+
                     if (_gigascreenBlendEnabled)
                     {
                         if (_emulator.TryCopyFrame(_presentBuffer))
@@ -535,10 +601,12 @@ namespace ZedExEss
                 DefaultExtension = ".z80",
                 Filters =
                 [
-                    new FileDialogFilter("Supported Files", "*.z80", "*.sna", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.img", "*.hdf", "*.sd", "*.bin"),
+                    new FileDialogFilter("Supported Files", "*.z80", "*.sna", "*.o", "*.p", "*.81", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.mdr", "*.img", "*.hdf", "*.sd", "*.bin"),
                     new FileDialogFilter("Snapshots", "*.z80", "*.sna"),
+                    new FileDialogFilter("ZX80/ZX81 Program Images", "*.o", "*.p", "*.81"),
                     new FileDialogFilter("Tape Files", "*.tap", "*.tzx", "*.csw"),
                     new FileDialogFilter("Disk Images", "*.dsk", "*.trd", "*.scl"),
+                    new FileDialogFilter("Microdrive Cartridges", "*.mdr"),
                     new FileDialogFilter("DivMMC Storage Images", "*.img", "*.hdf", "*.sd", "*.bin"),
                     new FileDialogFilter("All Files", "*.*")
                 ]
@@ -573,6 +641,11 @@ namespace ZedExEss
                 case ".sna":
                     LoadSnapshot(path, isZ80: false);
                     break;
+                case ".o":
+                case ".p":
+                case ".81":
+                    LoadZx8xProgramImagePath(path);
+                    break;
                 case ".tap":
                 case ".tzx":
                 case ".csw":
@@ -588,6 +661,9 @@ namespace ZedExEss
                 case ".sd":
                 case ".bin":
                     AttachDivStorage(path, folderBacked: false, showDeferredMessage: true);
+                    break;
+                case ".mdr":
+                    AttachMicrodriveToFirstEmptyDrive(path);
                     break;
                 default:
                     MessageBox.Show($"Unsupported file type: {ext}", "Open File", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -672,6 +748,11 @@ namespace ZedExEss
                 case ".sna":
                     LoadSnapshot(path, isZ80: false);
                     return true;
+                case ".o":
+                case ".p":
+                case ".81":
+                    LoadZx8xProgramImagePath(path);
+                    return true;
                 case ".tap":
                 case ".tzx":
                 case ".csw":
@@ -704,6 +785,9 @@ namespace ZedExEss
                 case ".bin":
                     AttachDivStorage(path, folderBacked: false, showDeferredMessage: true);
                     return true;
+                case ".mdr":
+                    AttachMicrodriveToFirstEmptyDrive(path);
+                    return true;
                 default:
                     return false;
             }
@@ -733,7 +817,9 @@ namespace ZedExEss
             }
 
             string ext = Path.GetExtension(path).ToLowerInvariant();
-            return ext is ".z80" or ".sna" or ".tap" or ".tzx" or ".csw" or ".dsk" or ".trd" or ".scl" or ".img" or ".hdf" or ".sd" or ".bin";
+            return ext is ".z80" or ".sna" or ".o" or ".p" or ".81"
+                or ".tap" or ".tzx" or ".csw" or ".dsk" or ".trd" or ".scl"
+                or ".mdr" or ".img" or ".hdf" or ".sd" or ".bin";
         }
         private int GetInitialPlus3DropDrive()
         {
@@ -806,6 +892,13 @@ namespace ZedExEss
         }
         private void OnResetMachine(object sender, RoutedEventArgs e)
         {
+            if (_zx8xModel.HasValue)
+            {
+                InitializeZx8xMachine(_zx8xModel.Value);
+                Focus();
+                return;
+            }
+
             if (!TryLoadRoms(_model, out RomSet roms, out string error))
             {
                 MessageBox.Show(error, "ROM Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -840,7 +933,7 @@ namespace ZedExEss
                 return;
             }
 
-            if (model == _model)
+            if (_zx8xMachine == null && model == _model)
             {
                 return;
             }
@@ -901,6 +994,10 @@ namespace ZedExEss
             }
 
             _divExpansionMode = mode;
+            if (mode != SpectrumDivExpansionMode.Disabled)
+            {
+                _interface1Enabled = false;
+            }
             InitializeMachine(_model, roms, null, preserveTape: true);
         }
         private void OnDivNmi(object sender, RoutedEventArgs e)
@@ -1538,13 +1635,28 @@ namespace ZedExEss
         private void OnTapePlay(object sender, RoutedEventArgs e)
         {
             ResetTapeSpeedTracking();
-            _tapeLoader?.Play();
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.CassetteMonitorEnabled = false;
+                _zx8xMachine.Tape.Play(_zx8xMachine.Cpu.Cyc);
+            }
+            else
+            {
+                _tapeLoader?.Play();
+            }
             RefreshTapeFastRunMode();
             UpdateTapeUi();
         }
         private void OnTapeStop(object sender, RoutedEventArgs e)
         {
-            _tapeLoader?.Stop();
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.Tape.Stop(_zx8xMachine.Cpu.Cyc);
+            }
+            else
+            {
+                _tapeLoader?.Stop();
+            }
             RefreshTapeFastRunMode();
             UpdateTapeUi();
         }
@@ -1560,7 +1672,14 @@ namespace ZedExEss
             }
 
             ResetTapeSpeedTracking();
-            _tapeLoader.Reset();
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.Tape.Rewind(_zx8xMachine.Cpu.Cyc);
+            }
+            else
+            {
+                _tapeLoader.Reset();
+            }
             RefreshTapeFastRunMode();
             if (updateUi)
             {
@@ -1583,13 +1702,38 @@ namespace ZedExEss
                 return;
             }
 
-            _tapeLoader.JumpToBlock(info.Index);
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.Tape.JumpToBlock(info.Index, _zx8xMachine.Cpu.Cyc);
+            }
+            else
+            {
+                _tapeLoader.JumpToBlock(info.Index);
+            }
             ResetTapeSpeedTracking();
             RefreshTapeFastRunMode();
             UpdateTapeUi();
         }
         private void LoadTapeFile(string path, bool allowAutoLoad = true)
         {
+            if (_zx8xMachine != null)
+            {
+                if (!string.Equals(Path.GetExtension(path), ".tzx", StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show(
+                        "ZX80/ZX81 cassette playback currently accepts TZX images. Use .o, .p or .81 for direct program loading.",
+                        "ZX80/ZX81 Tape",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return;
+                }
+
+                _session.EjectTape();
+                _zx8xMachine.Tape.LoadTzx(path, _zx8xMachine.Cpu.Cyc);
+                RefreshTapeAttachmentUi();
+                return;
+            }
+
             _session.LoadTape(path);
             RefreshTapeAttachmentUi();
             RefreshTapeFastRunMode();
@@ -1847,7 +1991,14 @@ namespace ZedExEss
         private void ClearTape()
         {
             _autoLoadInjector = null;
-            _session.EjectTape();
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.Tape.Eject(_zx8xMachine.Cpu.Cyc);
+            }
+            else
+            {
+                _session.EjectTape();
+            }
             ClearTapeUi();
             RefreshTapeFastRunMode();
         }
@@ -2032,9 +2183,10 @@ namespace ZedExEss
             if (_earInput != null)
             {
                 _earInput.EdgeLoadingEnabled = _edgeLoadEnabled;
-                RefreshTapeFastRunMode();
-                TapeSpeedStatusText.Text = GetTapeSpeedStatusText();
             }
+
+            RefreshTapeFastRunMode();
+            TapeSpeedStatusText.Text = GetTapeSpeedStatusText();
         }
         private void OnSemanticEdgeLoadToggle(object sender, RoutedEventArgs e)
         {
@@ -2384,14 +2536,19 @@ namespace ZedExEss
         }
         private void UpdateModelMenuChecks()
         {
-            Model16KMenu.IsChecked = _model == SpectrumModel.Spectrum16K;
-            Model48KMenu.IsChecked = _model == SpectrumModel.Spectrum48K;
-            Model128KMenu.IsChecked = _model == SpectrumModel.Spectrum128K;
-            ModelPlus2Menu.IsChecked = _model == SpectrumModel.SpectrumPlus2;
-            ModelPlus2AMenu.IsChecked = _model == SpectrumModel.SpectrumPlus2A;
-            ModelPlus3Menu.IsChecked = _model == SpectrumModel.SpectrumPlus3;
-            ModelPentagon128Menu.IsChecked = _model == SpectrumModel.Pentagon128;
-            ModelScorpion256Menu.IsChecked = _model == SpectrumModel.Scorpion256;
+            bool spectrumSelected = _zx8xMachine == null;
+            Model16KMenu.IsChecked = spectrumSelected && _model == SpectrumModel.Spectrum16K;
+            Model48KMenu.IsChecked = spectrumSelected && _model == SpectrumModel.Spectrum48K;
+            Model128KMenu.IsChecked = spectrumSelected && _model == SpectrumModel.Spectrum128K;
+            ModelPlus2Menu.IsChecked = spectrumSelected && _model == SpectrumModel.SpectrumPlus2;
+            ModelPlus2AMenu.IsChecked = spectrumSelected && _model == SpectrumModel.SpectrumPlus2A;
+            ModelPlus3Menu.IsChecked = spectrumSelected && _model == SpectrumModel.SpectrumPlus3;
+            ModelPentagon128Menu.IsChecked = spectrumSelected && _model == SpectrumModel.Pentagon128;
+            ModelScorpion256Menu.IsChecked = spectrumSelected && _model == SpectrumModel.Scorpion256;
+            ModelZx80Menu.IsChecked = _zx8xModel == Zx8x.Core.Zx8xModel.Zx80;
+            ModelZx81Menu.IsChecked = _zx8xModel == Zx8x.Core.Zx8xModel.Zx81;
+            Zx8xRam1KMenu.IsChecked = _zx8xRamConfiguration == Zx8xRamConfiguration.Internal1K;
+            Zx8xRam16KMenu.IsChecked = _zx8xRamConfiguration == Zx8xRamConfiguration.Expansion16K;
         }
         private void UpdateJoystickMenuChecks()
         {
@@ -2889,6 +3046,13 @@ namespace ZedExEss
         }
         private void ToggleQuickPause()
         {
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.SetPaused(!_zx8xMachine.IsPaused);
+                UpdateQuickAccessState();
+                return;
+            }
+
             if (_emulator == null)
             {
                 return;
@@ -2952,7 +3116,7 @@ namespace ZedExEss
 
             if (QuickPausePlayButton != null)
             {
-                bool paused = _emulator?.IsPaused == true;
+                bool paused = _zx8xMachine?.IsPaused ?? (_emulator?.IsPaused == true);
                 QuickPausePlayButton.ToolTip = paused ? "Resume emulation" : "Pause emulation";
                 QuickPauseIcon.Visibility = paused ? Visibility.Collapsed : Visibility.Visible;
                 QuickPlayIcon.Visibility = paused ? Visibility.Visible : Visibility.Collapsed;
@@ -2960,7 +3124,8 @@ namespace ZedExEss
 
             if (QuickNmiButton != null)
             {
-                QuickNmiButton.IsEnabled = _divExpansionMode != SpectrumDivExpansionMode.Disabled;
+                QuickNmiButton.IsEnabled = _zx8xMachine == null
+                    && _divExpansionMode != SpectrumDivExpansionMode.Disabled;
             }
 
             if (QuickTapeBrowserButton != null)
@@ -2976,6 +3141,32 @@ namespace ZedExEss
             // the waveOut producer and a TurboRunner at the same time.
             _turboEnabled = enabled;
             TurboMenu.IsChecked = enabled;
+
+            if (_zx8xMachine != null)
+            {
+                _zx8xTurboRunner?.Dispose();
+                _zx8xTurboRunner = null;
+                _zx8xFastTapeRunner?.Dispose();
+                _zx8xFastTapeRunner = null;
+                _audioPlayer?.Dispose();
+                _audioPlayer = null;
+                _zx8xMachine.Audio.DiscardPendingSamples(_zx8xMachine.Cpu.Cyc);
+                if (enabled)
+                {
+                    _zx8xTurboRunner = new Zx8x.Core.Zx8xTurboRunner(_zx8xMachine, presentEveryNFrames: 5);
+                }
+                else
+                {
+                    _audioPlayer = new WaveOutAudioPlayer(
+                        _zx8xMachine,
+                        _zx8xMachine.SampleRate,
+                        AudioBufferSamples,
+                        AudioBufferCount);
+                }
+
+                UpdateQuickAccessState();
+                return;
+            }
 
             if (_emulator == null)
             {
@@ -3011,6 +3202,12 @@ namespace ZedExEss
         }
         private void RefreshTapeFastRunMode()
         {
+            if (_zx8xMachine != null)
+            {
+                RefreshZx8xTapeFastRunMode();
+                return;
+            }
+
             // Both acceleration engines share this one execution owner. A sparse
             // presentation cadence preserves loader border feedback without letting
             // rendering dominate the unthrottled tape workload.
@@ -3054,6 +3251,12 @@ namespace ZedExEss
         }
         private void StopTapeFastRunner()
         {
+            if (_zx8xFastTapeRunner != null)
+            {
+                _zx8xFastTapeRunner.Dispose();
+                _zx8xFastTapeRunner = null;
+            }
+
             if (_fastTapeRunner == null)
             {
                 return;
@@ -3067,6 +3270,57 @@ namespace ZedExEss
             }
 
             UpdateQuickAccessState();
+        }
+
+        private bool ShouldRunZx8xTapeFastMode()
+        {
+            return _zx8xMachine != null
+                && !_turboEnabled
+                && !_zx8xMachine.IsPaused
+                && _edgeLoadEnabled
+                && _runTapeAccelerationAtMaximumSpeed
+                && _zx8xMachine.Tape.Loader?.IsPlaying == true;
+        }
+
+        private void RefreshZx8xTapeFastRunMode()
+        {
+            Zx8x.Core.Zx8xMachine? machine = _zx8xMachine;
+            if (machine == null || _turboEnabled)
+            {
+                return;
+            }
+
+            if (ShouldRunZx8xTapeFastMode())
+            {
+                if (_zx8xFastTapeRunner != null)
+                {
+                    return;
+                }
+
+                _audioPlayer?.Dispose();
+                _audioPlayer = null;
+                machine.Audio.DiscardPendingSamples(machine.Cpu.Cyc);
+                _zx8xFastTapeRunner = new Zx8x.Core.Zx8xTurboRunner(machine, presentEveryNFrames: 5);
+                return;
+            }
+
+            bool wasFast = _zx8xFastTapeRunner != null;
+            _zx8xFastTapeRunner?.Dispose();
+            _zx8xFastTapeRunner = null;
+            if (_audioPlayer == null)
+            {
+                machine.Audio.DiscardPendingSamples(machine.Cpu.Cyc);
+                _audioPlayer = new WaveOutAudioPlayer(
+                    machine,
+                    machine.SampleRate,
+                    AudioBufferSamples,
+                    AudioBufferCount);
+            }
+
+            if (wasFast)
+            {
+                ResetTapeSpeedTracking();
+            }
         }
         private EmulationRunState SuspendEmulationForModal()
         {
@@ -3118,7 +3372,7 @@ namespace ZedExEss
         }
         private void UpdateWindowTitle()
         {
-            if (_cpu == null || _cpuHz <= 0 || _tstatesPerFrame <= 0)
+            if ((_zx8xMachine == null && _cpu == null) || _cpuHz <= 0 || _tstatesPerFrame <= 0)
             {
                 Title = BaseTitle;
                 return;
@@ -3128,7 +3382,7 @@ namespace ZedExEss
             {
                 _speedStopwatch.Start();
                 _lastSpeedSeconds = _speedStopwatch.Elapsed.TotalSeconds;
-                _lastSpeedTstates = _cpu.Cyc;
+                _lastSpeedTstates = GetCurrentCpuCycles();
                 Title = BaseTitle;
                 return;
             }
@@ -3140,7 +3394,7 @@ namespace ZedExEss
                 return;
             }
 
-            ulong nowTstates = _cpu.Cyc;
+            ulong nowTstates = GetCurrentCpuCycles();
             ulong deltaTstates = nowTstates - _lastSpeedTstates;
             _lastSpeedSeconds = nowSeconds;
             _lastSpeedTstates = nowTstates;
@@ -3188,6 +3442,16 @@ namespace ZedExEss
         }
         private void ShowAudioOscilloscopeWindow()
         {
+            if (_zx8xMachine != null)
+            {
+                MessageBox.Show(
+                    "The current oscilloscope displays Spectrum beeper and AY channels. ZX80/ZX81 cassette monitoring will be added with the ZX8x media tools.",
+                    "Oscilloscope",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
             if (_oscilloscopeWindow != null)
             {
                 _oscilloscopeWindow.Activate();
@@ -3211,6 +3475,16 @@ namespace ZedExEss
         }
         private void ShowDebuggerWindow()
         {
+            if (_zx8xMachine != null)
+            {
+                MessageBox.Show(
+                    "The debugger is not yet connected to the ZX80/ZX81 machine bus.",
+                    "Debugger",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
             if (_debuggerWindow != null)
             {
                 _debuggerWindow.Activate();
@@ -3423,6 +3697,16 @@ namespace ZedExEss
         }
         private void OnBasicProgram(object sender, RoutedEventArgs e)
         {
+            if (_zx8xMachine != null)
+            {
+                MessageBox.Show(
+                    "The BASIC editor currently supports Sinclair Spectrum BASIC only.",
+                    "BASIC Program",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
             if (_memory == null)
             {
                 MessageBox.Show("No memory available for BASIC editing.", "BASIC Program", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -3446,6 +3730,16 @@ namespace ZedExEss
         }
         private void OnPokes(object sender, RoutedEventArgs e)
         {
+            if (_zx8xMachine != null)
+            {
+                MessageBox.Show(
+                    "ZX80/ZX81 memory editing will be exposed through the portable debugger path.",
+                    "Pokes",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
             var dialog = new PokeDialog
             {
                 Owner = this
@@ -3701,6 +3995,11 @@ namespace ZedExEss
         private bool HandleKeyEvent(KeyEventArgs e, bool pressed)
         {
             Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+            if (_zx8xMachine != null)
+            {
+                return HandleZx8xKeyEvent(key, pressed);
+            }
+
             if (pressed && key == Key.F5)
             {
                 return TriggerDivNmi();

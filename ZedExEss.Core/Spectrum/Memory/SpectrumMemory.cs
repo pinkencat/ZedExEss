@@ -14,7 +14,7 @@ namespace ZedExEss.Spectrum.Memory
     /// <summary>
     /// Model-aware memory map, including ROM/RAM paging, expansion overlays and delayed screen-write visibility.
     /// </summary>
-    public sealed class SpectrumMemory : IMemoryBus, IContendedPageProvider, IScreenMemoryProvider, IScreenWriteSynchronizer
+    public sealed class SpectrumMemory : IMemoryBus, IContendedPageProvider, IScreenMemoryProvider, IScreenWriteSynchronizer, IZ80MemoryBus
     {
         private const int PageSize = 16 * 1024;
         private const int ScreenSize = 0x1B00;

@@ -6,6 +6,7 @@ using ZedExEss.Spectrum.Ports;
 using ZedExEss.Spectrum.Tape;
 using ZedExEss.Spectrum.Video;
 using ZedExEss.Z80CPU;
+using ZedExEss.Machines;
 
 namespace ZedExEss.Spectrum.Core;
 
@@ -17,7 +18,7 @@ namespace ZedExEss.Spectrum.Core;
 /// can therefore be driven by WinMM, an Avalonia audio backend, turbo execution, or diagnostics
 /// without rebuilding its timing-sensitive device graph differently.
 /// </remarks>
-public sealed class SpectrumMachine
+public sealed class SpectrumMachine : IEmulatedMachine
 {
     internal SpectrumMachine(
         SpectrumModel model,
@@ -50,6 +51,7 @@ public sealed class SpectrumMachine
     }
 
     public SpectrumModel Model { get; }
+    public MachineDescriptor Descriptor => SpectrumMachineDescriptors.ForModel(Model);
     public int SampleRate { get; }
     public int CpuClockHz => SpectrumModelTraits.CpuClockHz(Model);
     public int TstatesPerFrame => SpectrumUlaTiming.ForModel(Model).TstatesPerFrame;

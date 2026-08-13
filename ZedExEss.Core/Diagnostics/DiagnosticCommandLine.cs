@@ -24,6 +24,7 @@ namespace ZedExEss.Diagnostics
             "  --verify-basic\n" +
             "  --verify-debugger\n" +
             "  --verify-interface1 [--interface1-rom <path>]\n" +
+            "  --verify-zx8x [--zx8x-rom-directory <path>]\n" +
             "  --verify-pentagon\n" +
             "  --verify-session\n" +
             "  --verify-settings\n" +
@@ -132,6 +133,16 @@ namespace ZedExEss.Diagnostics
                 return true;
             }
 
+            if (options.RunZx8xVerification)
+            {
+                exitCode = Zx8xVerificationRunner.Run(new Zx8xVerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomDirectory = options.Zx8xRomDirectory
+                });
+                return true;
+            }
+
             if (options.RunTapeAccelerationVerification)
             {
                 exitCode = TapeAccelerationVerificationRunner.Run(new TapeAccelerationVerificationOptions
@@ -223,6 +234,12 @@ namespace ZedExEss.Diagnostics
                         break;
                     case "--interface1-rom":
                         options.Interface1RomPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--verify-zx8x":
+                        options.RunZx8xVerification = true;
+                        break;
+                    case "--zx8x-rom-directory":
+                        options.Zx8xRomDirectory = RequireValue(args, ref i, arg);
                         break;
                     case "--verify-tape-acceleration":
                         options.RunTapeAccelerationVerification = true;
@@ -354,11 +371,13 @@ namespace ZedExEss.Diagnostics
             public bool RunBasicVerification { get; set; }
             public bool RunDebuggerVerification { get; set; }
             public bool RunInterface1Verification { get; set; }
+            public bool RunZx8xVerification { get; set; }
             public bool RunTapeAccelerationVerification { get; set; }
             public bool RunSessionVerification { get; set; }
             public bool RunSettingsVerification { get; set; }
             public string? TapeGamePath { get; set; }
             public string? Interface1RomPath { get; set; }
+            public string? Zx8xRomDirectory { get; set; }
             public SpectrumModel TapeGameModel { get; set; } = SpectrumModel.Spectrum48K;
             public int TapeGameMaxFrames { get; set; } = 90_000;
             public bool TapeGameFastBatching { get; set; }

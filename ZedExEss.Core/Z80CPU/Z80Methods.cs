@@ -15,7 +15,9 @@ namespace ZedExEss.Z80CPU
     // Instruction execution and bus timing live together in this partial because
     // every memory or port access must advance the rest of the machine at the exact
     // point where the Z80 performs that bus cycle.
-    public partial class Z80(SpectrumMemory memory, SpectrumPortBus ports)
+    public partial class Z80Core<TMemory, TPorts>(TMemory memory, TPorts ports)
+        where TMemory : class, IZ80MemoryBus
+        where TPorts : class, IZ80PortBus
     {
         private int _remainingCycles;
         private SpectrumEmulator? _tstateConsumer;
@@ -628,6 +630,10 @@ namespace ZedExEss.Z80CPU
         internal void IncR()
         {
             R = (byte)((R & 0x80) | ((R + 1) & 0x7f));
+            if (HasRefreshObserver)
+            {
+                _refreshObserver!.OnRefresh(R);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1436,6 +1442,10 @@ namespace ZedExEss.Z80CPU
                     break; // ld i,a
                 case 0x4F:
                     R = A;
+                    if (HasRefreshObserver)
+                    {
+                        _refreshObserver!.OnRefreshRegisterLoaded(R);
+                    }
                     break; // ld r,a
 
                 case 0x57:
@@ -3015,6 +3025,24 @@ namespace ZedExEss.Z80CPU
                 }
 
                 return;
+            }
+        }
+
+        /// <summary>
+        /// Services an interrupt which an external machine clock asserted during
+        /// the instruction that has just completed, without fetching another opcode.
+        /// </summary>
+        /// <remarks>
+        /// Spectrum timing raises interrupt lines from inside its T-state consumer.
+        /// CPU-driven machines such as the ZX81 instead detect the horizontal NMI
+        /// boundary immediately after a complete instruction and use this boundary
+        /// entry point. It is intentionally internal to the core assembly.
+        /// </remarks>
+        internal void ServicePendingInterruptsAtBoundary()
+        {
+            if (IffDelay != 0 || NmiPending || (IntPending && IFF1))
+            {
+                ProcessInterrupts();
             }
         }
 

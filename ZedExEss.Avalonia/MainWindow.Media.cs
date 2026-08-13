@@ -84,7 +84,7 @@ public sealed partial class MainWindow
     {
         _lastTapeBlockIndex = -2;
         _tapeBlocks.Clear();
-        TzxLoader? tape = _session.Tape;
+        TzxLoader? tape = ActiveTape;
         if (tape == null)
         {
             return;
@@ -98,7 +98,7 @@ public sealed partial class MainWindow
 
     private void UpdateTapeBrowser()
     {
-        TzxLoader? tape = _session.Tape;
+        TzxLoader? tape = ActiveTape;
         if (tape == null)
         {
             _tapeFileText.Text = "No tape loaded";
@@ -109,7 +109,7 @@ public sealed partial class MainWindow
             return;
         }
 
-        _tapeFileText.Text = Path.GetFileName(_session.TapePath);
+        _tapeFileText.Text = Path.GetFileName(ActiveTapePath);
         int blockIndex = tape.CurrentBlockIndex;
         if (blockIndex < 0 || blockIndex >= tape.Blocks.Count)
         {
@@ -139,12 +139,20 @@ public sealed partial class MainWindow
 
     private void OnTapeBlockDoubleTapped(object? sender, TappedEventArgs e)
     {
-        if (_session.Tape == null || _tapeBlocksList.SelectedItem is not BlockInfo block)
+        TzxLoader? tape = ActiveTape;
+        if (tape == null || _tapeBlocksList.SelectedItem is not BlockInfo block)
         {
             return;
         }
 
-        _session.Tape.JumpToBlock(block.Index);
+        if (_zx8xMachine != null)
+        {
+            _zx8xMachine.Tape.JumpToBlock(block.Index, _zx8xMachine.Cpu.Cyc);
+        }
+        else
+        {
+            tape.JumpToBlock(block.Index);
+        }
         UpdateTapeControls();
         Focus();
     }

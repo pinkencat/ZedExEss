@@ -6,7 +6,9 @@ using System.Threading.Tasks;
 
 namespace ZedExEss.Z80CPU
 {
-    public partial class Z80
+    public partial class Z80Core<TMemory, TPorts>
+        where TMemory : class, IZ80MemoryBus
+        where TPorts : class, IZ80PortBus
     {
         // Baseline instruction lengths in T-states. Memory/port contention is added
         // at the individual bus access that incurred it, not baked into these tables.

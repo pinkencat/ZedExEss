@@ -23,6 +23,7 @@ public sealed class SpectrumSessionController
     public string? TapePath => _tapePath;
     public SpectrumDiskMediaState Disks { get; } = new();
     public SpectrumDivMmcMediaState DivMmc { get; } = new();
+    public SpectrumInterface1MediaState Interface1 { get; } = new();
 
     public event EventHandler<TapeStopReason>? TapePlaybackStopped;
 

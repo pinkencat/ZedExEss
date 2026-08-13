@@ -11,6 +11,8 @@ using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.DivMmc;
 using ZedExEss.Spectrum.Input;
 using ZedExEss.Spectrum.Video;
+using ZedExEss.Zx8x.Core;
+using ZedExEss.Zx8x.Input;
 
 namespace ZedExEss.AvaloniaHost;
 
@@ -29,12 +31,17 @@ public sealed partial class MainWindow : Window
         new("Spectrum +2A", SpectrumModel.SpectrumPlus2A),
         new("Spectrum +3", SpectrumModel.SpectrumPlus3),
         new("Pentagon 128", SpectrumModel.Pentagon128),
-        new("Scorpion 256", SpectrumModel.Scorpion256)
+        new("Scorpion 256", SpectrumModel.Scorpion256),
+        new("Sinclair ZX80", null, Zx8xModel.Zx80),
+        new("Sinclair ZX81", null, Zx8xModel.Zx81)
     ];
 
     private readonly HashSet<Key> _pressedHostKeys = [];
     private readonly Dictionary<SpectrumKey, int> _spectrumKeyPressCounts = [];
+    private readonly Dictionary<Zx8xKey, int> _zx8xKeyPressCounts = [];
     private readonly SpectrumSessionController _session = new();
+    private TzxLoader? ActiveTape => _zx8xMachine?.Tape.Loader ?? _session.Tape;
+    private string? ActiveTapePath => _zx8xMachine?.Tape.Path ?? _session.TapePath;
     private readonly IFileDialogService _fileDialogs;
     private readonly Image _screenImage;
     private readonly TextBlock _statusText;
@@ -46,6 +53,8 @@ public sealed partial class MainWindow : Window
     private readonly Button _rewindTapeButton;
     private readonly Button _ejectTapeButton;
     private SpectrumMachine? _machine;
+    private Zx8xMachine? _zx8xMachine;
+    private Zx8xModel? _zx8xModel;
     private IAudioOutput? _audioOutput;
     private RealtimeFrameRunner? _runner;
     private AvaloniaFramePresenter? _presenter;
@@ -110,6 +119,18 @@ public sealed partial class MainWindow : Window
         ShutdownTooling();
         ClearPressedKeys();
         StopRunnerAndDetachMachine();
+        try
+        {
+            // StopRunnerAndDetachMachine has ended CPU access, so the persisted MDR
+            // cannot contain a mixture of bytes from two stages of a record write.
+            _session.Interface1.FlushAll();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceError($"Unable to save Microdrive media during shutdown: {ex}");
+        }
+
+        _session.Interface1.ConnectDevice(null);
         // Stop all CPU access before flushing/discarding an attached SD card.
         _session.DivMmc.Dispose();
         _presenter?.Dispose();
@@ -138,15 +159,21 @@ public sealed partial class MainWindow : Window
                 _session.Disks,
                 _session.DivMmc,
                 _divExpansionMode,
+                _interface1Enabled,
+                _interface1RomRevision,
                 out AvaloniaMachineDevices replacementDevices);
             ApplyMachinePreferences(replacement);
             initialize?.Invoke(replacement);
             ClearPressedKeys();
             StopRunnerAndDetachMachine();
+            _zx8xMachine = null;
+            _zx8xModel = null;
+            _session.Interface1.ConnectDevice(replacementDevices.Interface1Device);
             _autoLoadInjector = null;
             _session.ReplaceMachine(replacement, preserveTape, rewindTape);
             _machine = replacement;
             _machineDevices = replacementDevices;
+            ObserveInterface1Device(replacementDevices.Interface1Device);
             beforeStart?.Invoke(replacement);
             ResetDiskActivityTracking();
             AttachDebuggerToMachine(replacement);
@@ -169,6 +196,7 @@ public sealed partial class MainWindow : Window
             _statusText.Text = $"{FormatModel(model)} — {executionMode} — keyboard active";
             UpdateTapeControls();
             UpdateDiskControls();
+            UpdateInterface1MenuState();
             SelectModelWithoutReplacing(model);
         }
         catch (Exception ex)
@@ -193,6 +221,13 @@ public sealed partial class MainWindow : Window
             _machine.EarInput.AutoPlayRequested -= OnTapeAutoPlayRequested;
         }
 
+        if (_zx8xMachine != null)
+        {
+            _zx8xMachine.Tape.PlaybackStopped -= OnTapePlaybackStopped;
+            _zx8xMachine.FrameCompleted -= OnFrameCompleted;
+        }
+
+        ObserveInterface1Device(null);
         _machineDevices = null;
 
         Interlocked.Exchange(ref _renderPending, 0);
@@ -244,15 +279,35 @@ public sealed partial class MainWindow : Window
 
     private void OnModelSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (!_suppressModelSelection && _modelComboBox.SelectedItem is ModelChoice choice
-            && choice.Model != _machine?.Model)
+        if (_suppressModelSelection || _modelComboBox.SelectedItem is not ModelChoice choice)
         {
-            ReplaceMachine(choice.Model, preserveTape: true, rewindTape: false);
+            return;
+        }
+
+        if (choice.Zx8xModel.HasValue)
+        {
+            if (_zx8xModel != choice.Zx8xModel || _zx8xMachine == null)
+            {
+                ReplaceZx8xMachine(choice.Zx8xModel.Value);
+            }
+
+            return;
+        }
+
+        if (choice.Model.HasValue && (_zx8xMachine != null || choice.Model != _machine?.Model))
+        {
+            ReplaceMachine(choice.Model.Value, preserveTape: true, rewindTape: false);
         }
     }
 
     private void OnResetClicked(object? sender, RoutedEventArgs e)
     {
+        if (_zx8xModel.HasValue)
+        {
+            ReplaceZx8xMachine(_zx8xModel.Value);
+            return;
+        }
+
         if (_machine != null)
         {
             ReplaceMachine(_machine.Model, preserveTape: true, rewindTape: true);
@@ -261,6 +316,19 @@ public sealed partial class MainWindow : Window
 
     private void OnPauseClicked(object? sender, RoutedEventArgs e)
     {
+        if (_zx8xMachine != null)
+        {
+            bool zxPaused = !_zx8xMachine.IsPaused;
+            _zx8xMachine.SetPaused(zxPaused);
+            RefreshExecutionOwner();
+            UpdatePauseCommandState(zxPaused);
+            _statusText.Text = zxPaused
+                ? $"{FormatZx8xModel(_zx8xMachine.Model)} — paused"
+                : $"{FormatZx8xModel(_zx8xMachine.Model)} — {GetExecutionModeText()} — keyboard active";
+            Focus();
+            return;
+        }
+
         if (_machine == null)
         {
             return;
@@ -315,6 +383,22 @@ public sealed partial class MainWindow : Window
 
     private void AttachTapePath(string path)
     {
+        if (_zx8xMachine != null)
+        {
+            if (!string.Equals(Path.GetExtension(path), ".tzx", StringComparison.OrdinalIgnoreCase))
+            {
+                _statusText.Text = "ZX80/ZX81 cassette playback currently accepts TZX images; use .o/.p/.81 for direct loading.";
+                return;
+            }
+
+            _session.EjectTape();
+            _zx8xMachine.Tape.LoadTzx(path, _zx8xMachine.Cpu.Cyc);
+            RefreshTapeBlockList();
+            UpdateTapeControls();
+            _statusText.Text = $"Attached {Path.GetFileName(path)}";
+            return;
+        }
+
         _session.LoadTape(path);
         RefreshTapeBlockList();
         UpdateTapeControls();
@@ -324,7 +408,15 @@ public sealed partial class MainWindow : Window
 
     private void OnPlayTapeClicked(object? sender, RoutedEventArgs e)
     {
-        _session.Tape?.Play();
+        if (_zx8xMachine != null)
+        {
+            _zx8xMachine.CassetteMonitorEnabled = false;
+            _zx8xMachine.Tape.Play(_zx8xMachine.Cpu.Cyc);
+        }
+        else
+        {
+            _session.Tape?.Play();
+        }
         RefreshExecutionOwner();
         UpdateTapeControls();
         Focus();
@@ -332,7 +424,14 @@ public sealed partial class MainWindow : Window
 
     private void OnStopTapeClicked(object? sender, RoutedEventArgs e)
     {
-        _session.Tape?.Stop();
+        if (_zx8xMachine != null)
+        {
+            _zx8xMachine.Tape.Stop(_zx8xMachine.Cpu.Cyc);
+        }
+        else
+        {
+            _session.Tape?.Stop();
+        }
         RefreshExecutionOwner();
         UpdateTapeControls();
         Focus();
@@ -340,7 +439,14 @@ public sealed partial class MainWindow : Window
 
     private void OnRewindTapeClicked(object? sender, RoutedEventArgs e)
     {
-        _session.Tape?.Reset();
+        if (_zx8xMachine != null)
+        {
+            _zx8xMachine.Tape.Rewind(_zx8xMachine.Cpu.Cyc);
+        }
+        else
+        {
+            _session.Tape?.Reset();
+        }
         RefreshExecutionOwner();
         UpdateTapeControls();
         Focus();
@@ -348,7 +454,14 @@ public sealed partial class MainWindow : Window
 
     private void OnEjectTapeClicked(object? sender, RoutedEventArgs e)
     {
-        _session.EjectTape();
+        if (_zx8xMachine != null)
+        {
+            _zx8xMachine.Tape.Eject(_zx8xMachine.Cpu.Cyc);
+        }
+        else
+        {
+            _session.EjectTape();
+        }
         RefreshExecutionOwner();
         RefreshTapeBlockList();
         UpdateTapeControls();
@@ -376,7 +489,8 @@ public sealed partial class MainWindow : Window
 
     private void UpdateTapeControls()
     {
-        var tape = _session.Tape;
+        TzxLoader? tape = ActiveTape;
+        bool zx8xSelected = _zx8xMachine != null;
         bool attached = tape != null;
         _playTapeButton.IsEnabled = attached && !tape!.IsPlaying;
         _stopTapeButton.IsEnabled = attached && tape!.IsPlaying;
@@ -386,7 +500,7 @@ public sealed partial class MainWindow : Window
 
         if (!attached)
         {
-            _tapeStatusText.Text = "Tape: none";
+            _tapeStatusText.Text = zx8xSelected ? "ZX80/ZX81 tape: none" : "Tape: none";
             UpdateTapeBrowser();
             return;
         }
@@ -394,7 +508,7 @@ public sealed partial class MainWindow : Window
         int block = tape!.CurrentBlockIndex < 0 ? 0 : tape.CurrentBlockIndex + 1;
         string state = tape.IsPlaying ? "playing" : "stopped";
         _tapeStatusText.Text =
-            $"Tape: {Path.GetFileName(_session.TapePath)} — block {block}/{tape.Blocks.Count} — {state}";
+            $"Tape: {Path.GetFileName(ActiveTapePath)} — block {block}/{tape.Blocks.Count} — {state}";
         UpdateTapeBrowser();
     }
 
@@ -412,6 +526,21 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            if (_zx8xMachine != null)
+            {
+                AvaloniaFramePresenter? zxPresenter = _presenter;
+                int[]? zxFrameBuffer = _frameBuffer;
+                if (!_closing && !_replacingMachine && zxPresenter != null && zxFrameBuffer != null
+                    && _zx8xMachine.TryCopyFrame(zxFrameBuffer))
+                {
+                    zxPresenter.Present(zxFrameBuffer);
+                    _screenImage.InvalidateVisual();
+                }
+
+                UpdateTapeControls();
+                return;
+            }
+
             SpectrumMachine? machine = _machine;
             AvaloniaFramePresenter? presenter = _presenter;
             int[]? frameBuffer = _frameBuffer;
@@ -463,7 +592,7 @@ public sealed partial class MainWindow : Window
 
     private void StartSilentFallbackAfterAudioFailure(Exception exception)
     {
-        if (_closing || _replacingMachine || _machine == null || _audioOutput?.Failure != exception)
+        if (_closing || _replacingMachine || (_machine == null && _zx8xMachine == null) || _audioOutput?.Failure != exception)
         {
             return;
         }
@@ -473,10 +602,20 @@ public sealed partial class MainWindow : Window
         failedOutput.Faulted -= OnAudioOutputFaulted;
         failedOutput.Dispose();
 
-        _runner = new RealtimeFrameRunner(_machine);
-        _runner.Faulted += OnRunnerFaulted;
-        _statusText.Text =
-            $"{FormatModel(_machine.Model)} — silent realtime; audio stopped: {exception.Message}";
+        if (_zx8xMachine != null)
+        {
+            _zx8xRealtimeRunner = new Zx8xRealtimeFrameRunner(_zx8xMachine);
+            _zx8xRealtimeRunner.Faulted += OnRunnerFaulted;
+            _statusText.Text =
+                $"{FormatZx8xModel(_zx8xMachine.Model)} — silent realtime; audio stopped: {exception.Message}";
+        }
+        else if (_machine != null)
+        {
+            _runner = new RealtimeFrameRunner(_machine);
+            _runner.Faulted += OnRunnerFaulted;
+            _statusText.Text =
+                $"{FormatModel(_machine.Model)} — silent realtime; audio stopped: {exception.Message}";
+        }
     }
 
     private string GetExecutionModeText()
@@ -488,6 +627,26 @@ public sealed partial class MainWindow : Window
     {
         if (TryHandleCommandKey(e))
         {
+            return;
+        }
+
+        if (_zx8xMachine != null)
+        {
+            if (Zx8xKeyMap.TryGetValue(e.Key, out Zx8xKey[]? zxKeys) && _pressedHostKeys.Add(e.Key))
+            {
+                foreach (Zx8xKey key in zxKeys)
+                {
+                    _zx8xKeyPressCounts.TryGetValue(key, out int count);
+                    _zx8xKeyPressCounts[key] = count + 1;
+                    if (count == 0)
+                    {
+                        _zx8xMachine.Keyboard.SetKeyState(key, pressed: true);
+                    }
+                }
+
+                e.Handled = true;
+            }
+
             return;
         }
 
@@ -524,6 +683,34 @@ public sealed partial class MainWindow : Window
 
     private void OnKeyUp(object? sender, KeyEventArgs e)
     {
+        if (_zx8xMachine != null)
+        {
+            if (_pressedHostKeys.Remove(e.Key) && Zx8xKeyMap.TryGetValue(e.Key, out Zx8xKey[]? zxKeys))
+            {
+                foreach (Zx8xKey key in zxKeys)
+                {
+                    if (!_zx8xKeyPressCounts.TryGetValue(key, out int count))
+                    {
+                        continue;
+                    }
+
+                    if (count <= 1)
+                    {
+                        _zx8xKeyPressCounts.Remove(key);
+                        _zx8xMachine.Keyboard.SetKeyState(key, pressed: false);
+                    }
+                    else
+                    {
+                        _zx8xKeyPressCounts[key] = count - 1;
+                    }
+                }
+
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         if (_machine != null && _joystickType != SpectrumJoystickType.None
             && JoystickKeyMap.TryGetValue(e.Key, out SpectrumJoystickButton joystickButton)
             && _pressedHostKeys.Remove(e.Key))
@@ -567,6 +754,11 @@ public sealed partial class MainWindow : Window
 
     private void ClearPressedKeys()
     {
+        if (_zx8xMachine != null)
+        {
+            _zx8xMachine.Keyboard.ReleaseAll();
+        }
+
         SpectrumMachine? machine = _machine;
         if (machine != null)
         {
@@ -585,6 +777,7 @@ public sealed partial class MainWindow : Window
         }
 
         _spectrumKeyPressCounts.Clear();
+        _zx8xKeyPressCounts.Clear();
         _pressedHostKeys.Clear();
     }
 
@@ -653,7 +846,7 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private sealed record ModelChoice(string Name, SpectrumModel Model)
+    private sealed record ModelChoice(string Name, SpectrumModel? Model, Zx8xModel? Zx8xModel = null)
     {
         public override string ToString() => Name;
     }
