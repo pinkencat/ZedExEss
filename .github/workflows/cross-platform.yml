@@ -52,6 +52,88 @@ jobs:
           dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-tape-acceleration
           dotnet run --project ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -c Release --no-build -- --smoke-test
 
+  windows-build:
+    name: Verify Windows desktop frontends
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore Windows desktop projects
+        shell: pwsh
+        run: |
+          dotnet restore ZedExEss/ZedExEss.csproj
+          dotnet restore ZedExEss.Avalonia/ZedExEss.Avalonia.csproj
+
+      - name: Build WPF frontend
+        shell: pwsh
+        run: dotnet build ZedExEss/ZedExEss.csproj -c Release --no-restore
+
+      - name: Build Avalonia frontend for Windows
+        shell: pwsh
+        run: dotnet build ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -c Release --no-restore
+
+      - name: Smoke-test Avalonia frontend
+        shell: pwsh
+        run: >-
+          dotnet run --project ZedExEss.Avalonia/ZedExEss.Avalonia.csproj
+          -c Release --no-build -- --smoke-test
+
+  package-windows:
+    name: Package Windows ${{ matrix.frontend }}
+    runs-on: windows-2025
+    needs: windows-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - frontend: WPF
+            project: ZedExEss/ZedExEss.csproj
+            artifact: ZedExEss-windows-wpf-win-x64
+          - frontend: Avalonia
+            project: ZedExEss.Avalonia/ZedExEss.Avalonia.csproj
+            artifact: ZedExEss-windows-avalonia-win-x64
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Publish self-contained Windows application
+        shell: pwsh
+        run: >-
+          dotnet publish ${{ matrix.project }}
+          -c Release
+          -r win-x64
+          --self-contained true
+          -o publish/${{ matrix.artifact }}
+
+      - name: Create Windows archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive `
+            -Path "publish/${{ matrix.artifact }}/*" `
+            -DestinationPath "artifacts/${{ matrix.artifact }}.zip" `
+            -CompressionLevel Optimal
+
+      - name: Upload Windows application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifacts/${{ matrix.artifact }}.zip
+          if-no-files-found: error
+
   package:
     name: Package ${{ matrix.runtime }}
     runs-on: ${{ matrix.runner }}
