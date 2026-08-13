@@ -32,6 +32,7 @@ For binary releases for various platforms, see [Releases](https://github.com/pin
 
 | Machine | Status | Notes |
 | --- | --- | --- |
+| ZX80/ZX81 | Supported | 1k and 16k memory profiles |
 | ZX Spectrum 16K | Supported | 16 KB memory profile |
 | ZX Spectrum 48K | Supported | Standard 48K model |
 | ZX Spectrum 128K | Supported | Memory paging and AY audio |
