@@ -28,7 +28,9 @@ public static class SpectrumMachineFactory
         };
         var audio = new SpectrumAudioRenderer(SpectrumAudioTiming.CpuClockHz(model), options.SampleRate);
         var keyboard = new SpectrumKeyboard();
-        var joystick = new SpectrumJoystickDevice(keyboard)
+        var joystick = new SpectrumJoystickDevice(
+            keyboard,
+            useDedicatedKempstonPort: SpectrumModelTraits.HasBeta128Disk(model))
         {
             Type = options.JoystickType
         };
@@ -81,6 +83,7 @@ public static class SpectrumMachineFactory
         IContentionProfile contention = SpectrumContentionProfile.Create(model);
         cpu.ConfigureNoMreqContention(memory, contention);
         cpu.ConfigureIoContention(true, machineTiming.IoWritesLatchAtEndOfCycle);
+        cpu.ConfigureM1Alignment(SpectrumModelTraits.AlignsM1ToEvenTstates(model));
         memory.ConfigureTiming(cpu, contention);
         ports.ConfigureTiming(cpu, contention, memory);
         ports.ConfigureFloatingBus(new SpectrumFloatingBus(model, memory));

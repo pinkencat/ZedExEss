@@ -35,7 +35,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
         private const int InitialReadGapPolls = 1;
         private const int TypeTwoHeadLoadDelayMs = 30;
         private const int MultiSectorGapDelayMs = 20;
-        private const int ReadDataTimeoutMs = 1000;
+        private const int TransferTimeoutMs = 1000;
         private readonly SpectrumBeta128Device _mapper = mapper ?? throw new ArgumentNullException(nameof(mapper));
         private readonly TrdDiskImage?[] _drives = new TrdDiskImage?[4];
         // Data transfers are byte-streamed through the WD data register. The
@@ -60,18 +60,27 @@ namespace ZedExEss.Spectrum.Disk.Beta
         private int _readGapPolls;
         private ulong _readReadyTstate;
         private ulong _readDataTimeoutTstate;
+        private ulong _writeDataTimeoutTstate;
         private ulong _busTstate;
         private int _cpuClockHz = 3_500_000;
         private long _activityCounter;
         private bool _interruptRequest;
         private bool _readAddressTransfer;
+        private bool _readAddressPending;
         private byte _readAddressTrack;
+        private byte _readAddressSide;
+        private byte _readAddressSector;
+        private ulong _readAddressReadyTstate;
+        private bool _readAddressByteReady;
+        private ulong _readAddressNextByteTstate;
         private bool _typeOneStatus = true;
         private bool _headLoaded;
-        private int _indexReadCounter;
         private bool _traceEnabled;
         private string? _tracePath;
         public long ActivityCounter => Interlocked.Read(ref _activityCounter);
+        internal byte LastCommand { get; private set; }
+        internal long CommandCount { get; private set; }
+        internal bool TransferActive => _readCommandActive || _readAddressPending || _readBuffer.Count > 0 || _writeBytesRemaining > 0;
         public void ConfigureCpuClock(int cpuClockHz)
         {
             if (cpuClockHz > 0)
@@ -193,20 +202,24 @@ namespace ZedExEss.Spectrum.Disk.Beta
         }
         private byte ReadStatus()
         {
-            AdvanceDeferredReadSector();
+            AdvanceControllerState();
             _interruptRequest = false;
             // The same status bits have different meanings for type I and type II/III commands.
             // Build the value from current controller state rather than keeping one stale latch.
             byte status = (byte)(_status & unchecked((byte)~(StatusBusy | StatusDrq | StatusNotReady)));
-            if (SelectedDisk == null)
+            // On a Beta 128 the WD1793 HLD output is wired back to READY. Media
+            // presence therefore does not directly drive NOT READY; a loaded head
+            // does. TR-DOS depends on this unusual wiring while probing the drive.
+            if (!_headLoaded)
             {
                 status |= StatusNotReady;
             }
 
+            bool readDrq = HasReadDataRequest;
             if (_readCommandActive || _readBuffer.Count > 0 || _writeBytesRemaining > 0)
             {
                 status |= StatusBusy;
-                if (_readBuffer.Count > 0 || _writeBytesRemaining > 0)
+                if (readDrq || _writeBytesRemaining > 0)
                 {
                     status |= StatusDrq;
                 }
@@ -224,10 +237,6 @@ namespace ZedExEss.Spectrum.Disk.Beta
             {
                 status |= StatusTrackZero;
             }
-            else if (!_typeOneStatus)
-            {
-                status &= unchecked((byte)~StatusTrackZero);
-            }
 
             if (_typeOneStatus)
             {
@@ -236,7 +245,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
                     status |= StatusSpinUp;
                 }
 
-                if (SelectedDisk == null || ((_indexReadCounter++ & 0x0F) == 0))
+                if (IsIndexPulseActive())
                 {
                     status |= StatusDrq;
                 }
@@ -254,9 +263,9 @@ namespace ZedExEss.Spectrum.Disk.Beta
         }
         private byte ReadSystem()
         {
-            AdvanceDeferredReadSector();
+            AdvanceControllerState();
             byte value = 0;
-            if (_readBuffer.Count > 0 || _writeBytesRemaining > 0)
+            if (HasReadDataRequest || _writeBytesRemaining > 0)
             {
                 // TR-DOS watches the system register DRQ mirror as well as the WD status port.
                 value |= 0x40;
@@ -271,13 +280,24 @@ namespace ZedExEss.Spectrum.Disk.Beta
         }
         private byte ReadData()
         {
-            if (_readBuffer.Count == 0)
+            AdvanceControllerState();
+            if (!HasReadDataRequest)
             {
                 return TraceRead("DATA idle", _data);
             }
 
             // Reading the data port consumes exactly one byte from the current WD transfer.
             _data = _readBuffer.Dequeue();
+            if (_readAddressTransfer && _readBuffer.Count > 0)
+            {
+                // The FD1793 drops DRQ after every data-register access and raises
+                // it again when the next byte reaches the data separator. FUSE uses
+                // a 30 us byte interval; exposing the whole six-byte ID continuously
+                // lets direct loaders overrun their polling loop.
+                _readAddressByteReady = false;
+                _readAddressNextByteTstate = _busTstate + MicrosecondsToTstates(30);
+            }
+
             if (_readBuffer.Count == 0)
             {
                 _readDataTimeoutTstate = 0;
@@ -287,6 +307,8 @@ namespace ZedExEss.Spectrum.Disk.Beta
                     _status = 0;
                     _sector = _readAddressTrack;
                     _readAddressTransfer = false;
+                    _readAddressByteReady = false;
+                    _readAddressNextByteTstate = 0;
                     _readCommandActive = false;
                     UpdateTrackZeroStatus();
                     _interruptRequest = true;
@@ -334,6 +356,8 @@ namespace ZedExEss.Spectrum.Disk.Beta
                 return;
             }
 
+            _writeDataTimeoutTstate = 0;
+
             TrdDiskImage? disk = SelectedDisk;
             if (disk == null)
             {
@@ -355,6 +379,8 @@ namespace ZedExEss.Spectrum.Disk.Beta
         }
         private void ExecuteCommand(byte command)
         {
+            LastCommand = command;
+            CommandCount++;
             Trace($"COMMAND value={command:X2} drive={SelectedDrive} side={SelectedSide} track={_track} sector={_sector} data={_data:X2} system={_system:X2}");
             _interruptRequest = false;
             AbortTransfer();
@@ -500,6 +526,11 @@ namespace ZedExEss.Spectrum.Disk.Beta
             _writeSector = _sector;
             // Beta/TR-DOS uses fixed 256-byte sectors, so the write byte count is known up front.
             _writeBytesRemaining = TrdDiskImage.SectorSize;
+            // Fuse gives a type-II transfer five revolutions (one second at
+            // 300 RPM) before terminating it as LOST DATA. Some TR-DOS ROMs
+            // deliberately issue an unserviced write command while probing the
+            // controller and wait for that completion interrupt.
+            _writeDataTimeoutTstate = _busTstate + MillisecondsToTstates(TransferTimeoutMs);
             _status = StatusBusy | StatusDrq;
             UpdateTrackZeroStatus();
             _interruptRequest = false;
@@ -528,30 +559,57 @@ namespace ZedExEss.Spectrum.Disk.Beta
                 return;
             }
 
-            _readBuffer.Enqueue(_track);
-            _readBuffer.Enqueue((byte)SelectedSide);
-            _readBuffer.Enqueue(1);
-            _readBuffer.Enqueue(1);
-            _readBuffer.Enqueue(0);
-            _readBuffer.Enqueue(0);
-            // The emulated ID field is enough for TR-DOS and many direct WD loaders.
-            _readAddressTransfer = true;
+            // READ ADDRESS returns the next physical ID field passing under the head,
+            // not sector 1 on every command. Direct loaders use this rotating sequence
+            // to synchronise with the disk and will wait forever if the ID never moves.
+            ulong sectorSlotTstates = Math.Max(1UL, (ulong)_cpuClockHz / (5UL * TrdDiskImage.SectorsPerTrack));
+            ulong nextSlot = (_busTstate / sectorSlotTstates) + 1;
             _readAddressTrack = _track;
+            _readAddressSide = (byte)SelectedSide;
+            // The deadline is the leading edge of nextSlot, so the ID crossing the
+            // head at that instant belongs to nextSlot itself. Using nextSlot - 1
+            // returned the sector which had just passed while delaying completion
+            // until the following ID. Timing-sensitive protection loops then saw a
+            // permanently one-sector-late rotational stream.
+            int physicalSlot = (int)(nextSlot % TrdDiskImage.SectorsPerTrack);
+            // Fuse expands TRD/SCL media using the standard TR-DOS interleave-2
+            // order: 1,9,2,10,...,8,16. Raw TRD storage remains logical 1..16;
+            // only rotational READ ADDRESS observations use physical ordering.
+            _readAddressSector = (byte)(disk.GetPhysicalSectorId(physicalSlot) | disk.ReadAddressSectorIdMask);
+            _readAddressReadyTstate = nextSlot * sectorSlotTstates;
+            _readAddressPending = true;
             _readCommandActive = true;
-            _status = StatusBusy | StatusDrq;
+            _status = StatusBusy;
             UpdateTrackZeroStatus();
             _interruptRequest = false;
-            Trace($"READ ADDRESS queued drive={SelectedDrive} track={_track} side={SelectedSide} status={_status:X2}");
+            Trace($"READ ADDRESS begin drive={SelectedDrive} track={_readAddressTrack} side={_readAddressSide} sector={_readAddressSector} ready={_readAddressReadyTstate} status={_status:X2}");
         }
         private void WriteSystem(byte value)
         {
             _system = value;
-            if ((value & 0x08) != 0)
+            // Bit 3 is the external HLT input, not the controller's HLD output.
+            // HLD/READY changes as a consequence of WD commands (handled in the
+            // type-I/II/III command paths), so merely selecting HLT must not make
+            // an otherwise idle controller ready.
+            Trace($"WRITE SYSTEM value={value:X2} drive={SelectedDrive} side={SelectedSide} hlt={(value & 0x08) != 0} dden={(value & 0x20) != 0}");
+        }
+
+        private bool IsIndexPulseActive()
+        {
+            if (SelectedDisk == null)
             {
-                _headLoaded = true;
+                // FUSE's FDD layer reports INDEX asserted continuously when no
+                // medium is loaded. Scorpion's 128 TR-DOS startup probe relies on
+                // that state; synthesising a rotating empty spindle leaves it in
+                // the status-poll loop for an apparent eternity.
+                return true;
             }
 
-            Trace($"WRITE SYSTEM value={value:X2} drive={SelectedDrive} side={SelectedSide} hlt={(value & 0x08) != 0} dden={(value & 0x20) != 0}");
+            // A 300 RPM drive completes one revolution in 200 ms and presents an
+            // approximately 10 ms index pulse while media is mounted.
+            ulong revolution = Math.Max(1UL, (ulong)_cpuClockHz / 5UL);
+            ulong pulse = Math.Max(1UL, (ulong)_cpuClockHz / 100UL);
+            return (_busTstate % revolution) < pulse;
         }
         private void AbortTransfer()
         {
@@ -563,16 +621,49 @@ namespace ZedExEss.Spectrum.Disk.Beta
             _readGapPolls = 0;
             _readReadyTstate = 0;
             _readDataTimeoutTstate = 0;
+            _writeDataTimeoutTstate = 0;
             _readAddressTransfer = false;
+            _readAddressPending = false;
+            _readAddressReadyTstate = 0;
+            _readAddressByteReady = false;
+            _readAddressNextByteTstate = 0;
             _status &= unchecked((byte)~(StatusBusy | StatusDrq));
         }
-        private void AdvanceDeferredReadSector()
+        private void AdvanceControllerState()
         {
+            if (_writeDataTimeoutTstate != 0 && _busTstate >= _writeDataTimeoutTstate)
+            {
+                CompleteLostDataTimeout();
+                return;
+            }
+
             if (_readDataTimeoutTstate != 0 && _busTstate >= _readDataTimeoutTstate)
             {
                 // If software does not drain DRQ, WD179x reports lost data rather than
                 // keeping the transfer alive forever.
                 CompleteLostDataTimeout();
+                return;
+            }
+
+            if (_readAddressPending)
+            {
+                if (_busTstate < _readAddressReadyTstate)
+                {
+                    return;
+                }
+
+                QueueReadAddress();
+                return;
+            }
+
+            if (_readAddressTransfer && !_readAddressByteReady && _readBuffer.Count > 0)
+            {
+                if (_busTstate >= _readAddressNextByteTstate)
+                {
+                    _readAddressByteReady = true;
+                    _readAddressNextByteTstate = 0;
+                }
+
                 return;
             }
 
@@ -634,40 +725,106 @@ namespace ZedExEss.Spectrum.Disk.Beta
             }
 
             _status = StatusBusy | StatusDrq;
-            _readDataTimeoutTstate = _busTstate + MillisecondsToTstates(ReadDataTimeoutMs);
+            _readDataTimeoutTstate = _busTstate + MillisecondsToTstates(TransferTimeoutMs);
             UpdateTrackZeroStatus();
             _interruptRequest = false;
             Trace($"READ SECTOR queued drive={SelectedDrive} track={track} side={side} sector={sectorId} bytes={_readBuffer.Count} timeout={_readDataTimeoutTstate} status={_status:X2}");
             return true;
         }
+        private void QueueReadAddress()
+        {
+            _readAddressPending = false;
+            _readAddressReadyTstate = 0;
+            _readAddressTransfer = true;
+            _readAddressByteReady = true;
+            _readAddressNextByteTstate = 0;
+
+            _readBuffer.Enqueue(_readAddressTrack);
+            _readBuffer.Enqueue(_readAddressSide);
+            _readBuffer.Enqueue(_readAddressSector);
+            _readBuffer.Enqueue(1); // 256-byte sector length code.
+
+            // A valid ID field leaves the controller CRC accumulator at zero after
+            // its two on-disk CRC bytes have been folded in. This is what FUSE's
+            // FD1793 data-register path returns for a generated, CRC-valid TRD ID.
+            _readBuffer.Enqueue(0);
+            _readBuffer.Enqueue(0);
+
+            _status = StatusBusy | StatusDrq;
+            _readDataTimeoutTstate = _busTstate + MillisecondsToTstates(TransferTimeoutMs);
+            _interruptRequest = false;
+            Trace($"READ ADDRESS queued drive={SelectedDrive} track={_readAddressTrack} side={_readAddressSide} sector={_readAddressSector} crc=0000 status={_status:X2}");
+        }
+        private static ushort ComputeIdCrc(byte track, byte side, byte sector, byte length, bool doubleDensity)
+        {
+            ushort crc = 0xFFFF;
+            if (doubleDensity)
+            {
+                crc = UpdateCrc16(crc, 0xA1);
+                crc = UpdateCrc16(crc, 0xA1);
+                crc = UpdateCrc16(crc, 0xA1);
+            }
+
+            crc = UpdateCrc16(crc, 0xFE);
+            crc = UpdateCrc16(crc, track);
+            crc = UpdateCrc16(crc, side);
+            crc = UpdateCrc16(crc, sector);
+            return UpdateCrc16(crc, length);
+        }
+        private static ushort UpdateCrc16(ushort crc, byte value)
+        {
+            crc ^= (ushort)(value << 8);
+            for (int bit = 0; bit < 8; bit++)
+            {
+                crc = (ushort)((crc & 0x8000) != 0 ? (crc << 1) ^ 0x1021 : crc << 1);
+            }
+
+            return crc;
+        }
         private void CompleteLostDataTimeout()
         {
             _readBuffer.Clear();
+            _writeBuffer.Clear();
+            _writeBytesRemaining = 0;
             _readCommandActive = false;
             _readMultiSector = false;
             _readReadyTstate = 0;
+            _readAddressPending = false;
+            _readAddressReadyTstate = 0;
+            _readAddressTransfer = false;
+            _readAddressByteReady = false;
+            _readAddressNextByteTstate = 0;
             _readDataTimeoutTstate = 0;
+            _writeDataTimeoutTstate = 0;
             _status = StatusLostData;
             UpdateTrackZeroStatus();
             _interruptRequest = true;
-            Trace($"READ SECTOR lost-data timeout drive={SelectedDrive} track={_readTrack} side={_readSide} sector={_sector} status={_status:X2} intrq={_interruptRequest}");
+            Trace($"TRANSFER lost-data timeout drive={SelectedDrive} track={_readTrack} side={_readSide} sector={_sector} status={_status:X2} intrq={_interruptRequest}");
         }
         private ulong MillisecondsToTstates(int milliseconds)
         {
             return (ulong)((long)_cpuClockHz * milliseconds / 1000);
         }
+
+        private ulong MicrosecondsToTstates(int microseconds)
+        {
+            return Math.Max(1UL, (ulong)((long)_cpuClockHz * microseconds / 1_000_000));
+        }
+
+        private bool HasReadDataRequest =>
+            _readBuffer.Count > 0 && (!_readAddressTransfer || _readAddressByteReady);
         private void UpdateTrackZeroStatus()
         {
+            // Bit 2 is TRACK 0 for type-I status, but LOST DATA for type-II/III.
+            // Do not destroy a latched LOST DATA result while updating track state.
+            if (!_typeOneStatus)
+            {
+                return;
+            }
+
             if (_track == 0)
             {
-                if (_typeOneStatus)
-                {
-                    _status |= StatusTrackZero;
-                }
-                else
-                {
-                    _status &= unchecked((byte)~StatusTrackZero);
-                }
+                _status |= StatusTrackZero;
             }
             else
             {

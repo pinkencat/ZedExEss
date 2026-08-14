@@ -124,6 +124,18 @@ namespace ZedExEss.Spectrum.Core
                 || model == SpectrumModel.SpectrumPlus2;
         }
         /// <summary>
+        /// Returns whether machine glue logic delays opcode M1 cycles onto even
+        /// absolute T-state boundaries.
+        /// </summary>
+        /// <remarks>
+        /// This Scorpion-specific rule is separate from ULA contention. Fuse routes
+        /// ordinary, prefix and repeated HALT M1 cycles through the same alignment.
+        /// </remarks>
+        public static bool AlignsM1ToEvenTstates(SpectrumModel model)
+        {
+            return model == SpectrumModel.Scorpion256;
+        }
+        /// <summary>
         /// Returns whether the machine decodes all eight low address bits for its ULA port.
         /// </summary>
         /// <remarks>

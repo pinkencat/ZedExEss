@@ -29,9 +29,12 @@ namespace ZedExEss.Spectrum.Input
     /// <summary>
     /// Joystick port and keyboard-matrix adapter for Kempston, Sinclair and Cursor/Protek modes.
     /// </summary>
-    public sealed class SpectrumJoystickDevice(SpectrumKeyboard keyboard) : IPortDevice
+    public sealed class SpectrumJoystickDevice(
+        SpectrumKeyboard keyboard,
+        bool useDedicatedKempstonPort = false) : IPortDevice
     {
         private readonly SpectrumKeyboard _keyboard = keyboard ?? throw new ArgumentNullException(nameof(keyboard));
+        private readonly bool _useDedicatedKempstonPort = useDedicatedKempstonPort;
         private SpectrumJoystickType _type;
         private byte _state;
 
@@ -52,7 +55,18 @@ namespace ZedExEss.Spectrum.Input
         }
         public bool HandlesPort(ushort port)
         {
-            return _type == SpectrumJoystickType.Kempston && (port & 0x0020) == 0;
+            if (_type != SpectrumJoystickType.Kempston)
+            {
+                return false;
+            }
+
+            // Pentagon and Scorpion route the shared Beta/Kempston status port
+            // through dedicated glue logic. On those machines the joystick may
+            // respond only at xx1F; allowing the usual loose A5 decode would also
+            // claim Beta aliases such as xx5F before TR-DOS ROMCS becomes active.
+            return _useDedicatedKempstonPort
+                ? (port & 0x00FF) == 0x001F
+                : (port & 0x0020) == 0;
         }
         public byte Read(ushort port)
         {

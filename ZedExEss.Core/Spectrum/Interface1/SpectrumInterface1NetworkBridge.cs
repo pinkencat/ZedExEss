@@ -30,7 +30,10 @@ public sealed class SpectrumInterface1NetworkBridge : IDisposable
     public const ulong TransportLeadTstates = 1_000;
 
     private const int HandshakeSize = 16;
-    private const int TransitionFrameSize = 10;
+    private const int BatchHeaderSize = 3;
+    private const int TransitionEntrySize = 9;
+    private const int MaximumBatchTransitions = 512;
+    private const byte ProtocolVersion = 2;
     private static ReadOnlySpan<byte> ProtocolMagic => "ZXN1"u8;
 
     private readonly object _sync = new();
@@ -47,6 +50,7 @@ public sealed class SpectrumInterface1NetworkBridge : IDisposable
     private ulong _remoteEpoch;
     private ulong _lastRemoteSourceTstate;
     private ulong _lastRemoteTstate;
+    private ulong _remoteDeliveryShift;
     private bool _disposed;
 
     public SpectrumInterface1NetworkBridge(
@@ -218,7 +222,20 @@ public sealed class SpectrumInterface1NetworkBridge : IDisposable
                 client.NoDelay = true;
                 using (client)
                 {
-                    await RunConnectionAsync(client, owner).ConfigureAwait(false);
+                    try
+                    {
+                        await RunConnectionAsync(client, owner).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (owner.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception) when (exception is IOException or SocketException or InvalidDataException)
+                    {
+                        // A listener is a persistent ZX Net endpoint. One peer closing or
+                        // sending a bad handshake must not make the host reopen the menu
+                        // before another emulator can join the cable.
+                    }
                 }
             }
         }
@@ -251,10 +268,15 @@ public sealed class SpectrumInterface1NetworkBridge : IDisposable
 
             _activeClient = client;
             _outgoing = outgoing;
-            _localEpoch = localEpoch;
+            // Keep the imported station history monotonic across a peer disconnect,
+            // reconnect, or emulated reset. The new handshake establishes a fresh
+            // source epoch, while its local epoch starts after everything retained
+            // from the previous connection.
+            _localEpoch = Math.Max(localEpoch, _lastRemoteTstate);
             _remoteEpoch = remoteEpoch;
             _lastRemoteSourceTstate = remoteEpoch;
-            _lastRemoteTstate = localEpoch + TransportLeadTstates;
+            _lastRemoteTstate = _localEpoch + TransportLeadTstates;
+            _remoteDeliveryShift = 0;
             _state = SpectrumInterface1NetworkBridgeState.Connected;
             _lastError = null;
         }
@@ -291,17 +313,25 @@ public sealed class SpectrumInterface1NetworkBridge : IDisposable
 
     private async Task ReadTransitionsAsync(Stream stream, CancellationToken cancellationToken)
     {
-        var frame = new byte[TransitionFrameSize];
+        var header = new byte[BatchHeaderSize];
+        var entries = new byte[MaximumBatchTransitions * TransitionEntrySize];
         while (true)
         {
-            await stream.ReadExactlyAsync(frame, cancellationToken).ConfigureAwait(false);
-            if (frame[0] != 1 || frame[1] > 1)
+            await stream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
+            if (header[0] != 2)
             {
-                throw new InvalidDataException("The ZX Net peer sent an invalid transition frame.");
+                throw new InvalidDataException("The ZX Net peer sent an unsupported transition frame.");
             }
 
-            ulong remoteTstate = BinaryPrimitives.ReadUInt64BigEndian(frame.AsSpan(2));
-            ApplyRemoteOutput(remoteTstate, frame[1] != 0);
+            int count = BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(1));
+            if (count is < 1 or > MaximumBatchTransitions)
+            {
+                throw new InvalidDataException("The ZX Net peer sent an invalid transition batch length.");
+            }
+
+            int entryBytes = count * TransitionEntrySize;
+            await stream.ReadExactlyAsync(entries.AsMemory(0, entryBytes), cancellationToken).ConfigureAwait(false);
+            ApplyRemoteBatch(entries.AsSpan(0, entryBytes), count);
         }
     }
 
@@ -310,42 +340,98 @@ public sealed class SpectrumInterface1NetworkBridge : IDisposable
         ChannelReader<SpectrumInterface1NetworkOutputTransition> reader,
         CancellationToken cancellationToken)
     {
-        var frame = new byte[TransitionFrameSize];
-        frame[0] = 1;
-        await foreach (SpectrumInterface1NetworkOutputTransition transition in reader.ReadAllAsync(cancellationToken))
+        var batch = new SpectrumInterface1NetworkOutputTransition[MaximumBatchTransitions];
+        var frame = new byte[BatchHeaderSize + MaximumBatchTransitions * TransitionEntrySize];
+        frame[0] = 2;
+        while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            frame[1] = transition.DrivesHigh ? (byte)1 : (byte)0;
-            BinaryPrimitives.WriteUInt64BigEndian(frame.AsSpan(2), transition.Tstate);
-            await stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            int count = 0;
+            while (count < batch.Length && reader.TryRead(out SpectrumInterface1NetworkOutputTransition additional))
+            {
+                batch[count++] = additional;
+            }
+
+            // Give the emulated producer one host scheduler turn to finish the
+            // current pulse train. This replaces hundreds of tiny TCP writes with
+            // one ordered batch and lets the receiver preserve a common time shift.
+            await Task.Yield();
+            while (count < batch.Length && reader.TryRead(out SpectrumInterface1NetworkOutputTransition transition))
+            {
+                batch[count++] = transition;
+            }
+
+            BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(1), checked((ushort)count));
+            int offset = BatchHeaderSize;
+            for (int i = 0; i < count; i++)
+            {
+                frame[offset] = batch[i].DrivesHigh ? (byte)1 : (byte)0;
+                BinaryPrimitives.WriteUInt64BigEndian(frame.AsSpan(offset + 1), batch[i].Tstate);
+                offset += TransitionEntrySize;
+            }
+
+            await stream.WriteAsync(frame.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private void ApplyRemoteOutput(ulong remoteTstate, bool drivesHigh)
+    private void ApplyRemoteBatch(ReadOnlySpan<byte> entries, int count)
     {
-        if (remoteTstate < _lastRemoteSourceTstate)
+        ulong firstRemoteTstate = BinaryPrimitives.ReadUInt64BigEndian(entries[1..]);
+        if (firstRemoteTstate < _lastRemoteSourceTstate)
         {
             // A peer can reset or replace its emulated machine without dropping the
             // desktop bridge. Start a new epoch beyond all transitions already queued
             // locally instead of collapsing the reset machine's pulses onto one time.
-            _remoteEpoch = remoteTstate;
+            _remoteEpoch = firstRemoteTstate;
             _localEpoch = Math.Max(_clock(), _lastRemoteTstate);
+            _remoteDeliveryShift = 0;
         }
 
-        _lastRemoteSourceTstate = remoteTstate;
+        ulong firstNominal = MapRemoteTstate(firstRemoteTstate);
+        ulong currentClock = _clock();
+        ulong deliveryFloor = currentClock > ulong.MaxValue - TransportLeadTstates
+            ? ulong.MaxValue
+            : currentClock + TransportLeadTstates;
+        ulong shiftedFirst = firstNominal > ulong.MaxValue - _remoteDeliveryShift
+            ? ulong.MaxValue
+            : firstNominal + _remoteDeliveryShift;
+        if (shiftedFirst < deliveryFloor)
+        {
+            ulong adjustment = deliveryFloor - shiftedFirst;
+            _remoteDeliveryShift = adjustment > ulong.MaxValue - _remoteDeliveryShift
+                ? ulong.MaxValue
+                : _remoteDeliveryShift + adjustment;
+        }
+
+        int offset = 0;
+        for (int i = 0; i < count; i++)
+        {
+            bool drivesHigh = entries[offset] != 0;
+            ulong remoteTstate = BinaryPrimitives.ReadUInt64BigEndian(entries[(offset + 1)..]);
+            _lastRemoteSourceTstate = remoteTstate;
+            ulong nominal = MapRemoteTstate(remoteTstate);
+            ulong mapped = nominal > ulong.MaxValue - _remoteDeliveryShift
+                ? ulong.MaxValue
+                : nominal + _remoteDeliveryShift;
+            if (mapped < _lastRemoteTstate)
+            {
+                mapped = _lastRemoteTstate;
+            }
+
+            _lastRemoteTstate = mapped;
+            _remoteStation.SetOutput(!drivesHigh, networkSelected: true, mapped);
+            offset += TransitionEntrySize;
+        }
+    }
+
+    private ulong MapRemoteTstate(ulong remoteTstate)
+    {
         ulong delta = remoteTstate >= _remoteEpoch ? remoteTstate - _remoteEpoch : 0;
         ulong mappedDelta = delta > ulong.MaxValue - TransportLeadTstates
             ? ulong.MaxValue
             : delta + TransportLeadTstates;
-        ulong mapped = mappedDelta > ulong.MaxValue - _localEpoch
+        return mappedDelta > ulong.MaxValue - _localEpoch
             ? ulong.MaxValue
             : _localEpoch + mappedDelta;
-        if (mapped < _lastRemoteTstate)
-        {
-            mapped = _lastRemoteTstate;
-        }
-
-        _lastRemoteTstate = mapped;
-        _remoteStation.SetOutput(!drivesHigh, networkSelected: true, mapped);
     }
 
     private void ReleaseRemoteLine()
@@ -382,14 +468,14 @@ public sealed class SpectrumInterface1NetworkBridge : IDisposable
     {
         var bytes = new byte[HandshakeSize];
         ProtocolMagic.CopyTo(bytes);
-        bytes[4] = 1;
+        bytes[4] = ProtocolVersion;
         BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(8), epoch);
         return bytes;
     }
 
     private static ulong ParseHandshake(ReadOnlySpan<byte> bytes)
     {
-        if (bytes.Length != HandshakeSize || !bytes[..4].SequenceEqual(ProtocolMagic) || bytes[4] != 1)
+        if (bytes.Length != HandshakeSize || !bytes[..4].SequenceEqual(ProtocolMagic) || bytes[4] != ProtocolVersion)
         {
             throw new InvalidDataException("The TCP peer is not a compatible ZedExEss ZX Net bridge.");
         }

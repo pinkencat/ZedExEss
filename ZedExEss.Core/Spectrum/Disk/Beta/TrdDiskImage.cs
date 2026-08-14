@@ -27,15 +27,17 @@ namespace ZedExEss.Spectrum.Disk.Beta
         private const int DefaultSides = 2;
         private const int DefaultDataStartLogicalTrack = 1;
         private const int MaximumDirectoryEntries = DirectorySectors * SectorSize / DirectoryEntrySize;
+        private const int DiskInformationOffset = DirectorySectors * SectorSize;
+        private const int DiskTitleOffset = DiskInformationOffset + 0xF5;
 
         private readonly byte[] _data;
-
         private TrdDiskImage(string path, byte[] data, int tracks, int sides)
         {
             Path = path;
             _data = data;
             TrackCount = tracks;
             SideCount = sides;
+            ReadAddressSectorIdMask = DetectAmdDirectLoaderSectorIds(data) ? (byte)0x40 : (byte)0x00;
         }
 
         public string Path { get; private set; }
@@ -43,6 +45,37 @@ namespace ZedExEss.Spectrum.Disk.Beta
         public int SideCount { get; }
         public bool SupportsRawWriteback { get; private set; }
         public bool IsWriteProtected { get; set; }
+
+        internal byte ReadAddressSectorIdMask { get; }
+
+        /// <summary>
+        /// Returns the sector ID which a rotational READ ADDRESS command sees in
+        /// the requested physical slot.
+        /// </summary>
+        /// <remarks>
+        /// TRD stores sector payloads only, so ID fields are reconstructed using the
+        /// standard TR-DOS interleave used by FUSE: 1,9,2,10,...,8,16.
+        /// </remarks>
+        public byte GetPhysicalSectorId(int physicalSlot)
+        {
+            if ((uint)physicalSlot >= SectorsPerTrack)
+            {
+                throw new ArgumentOutOfRangeException(nameof(physicalSlot));
+            }
+
+            int logicalSector = (physicalSlot & 1) == 0
+                ? (physicalSlot >> 1) + 1
+                : (physicalSlot >> 1) + 9;
+            return (byte)logicalSector;
+        }
+
+        private static bool DetectAmdDirectLoaderSectorIds(ReadOnlySpan<byte> data)
+        {
+            ReadOnlySpan<byte> label = "AMD4ever"u8;
+            return data.Length >= DiskTitleOffset + label.Length &&
+                   data.Slice(DiskTitleOffset, label.Length).SequenceEqual(label);
+        }
+
         public static TrdDiskImage Load(string path)
         {
             byte[] data = File.ReadAllBytes(path);
@@ -274,6 +307,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
             ReadOnlySpan<byte> signature = "SINCLAIR"u8;
             return data.Length >= signature.Length && data[..signature.Length].SequenceEqual(signature);
         }
+
         private static void WriteFileSectors(
             byte[] disk,
             int sides,
@@ -318,7 +352,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
         }
         private static void WriteDiskInformation(byte[] disk, int tracks, int sides, int fileCount, int deletedFileCount, int firstFreeTrack, int firstFreeSector)
         {
-            int infoOffset = (DirectorySectors * SectorSize);
+            int infoOffset = DiskInformationOffset;
             disk[infoOffset] = 0x00;
             disk[infoOffset + 0xE1] = (byte)firstFreeSector;
             disk[infoOffset + 0xE2] = (byte)firstFreeTrack;

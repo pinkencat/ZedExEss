@@ -148,6 +148,31 @@ public static class Interface1VerificationRunner
             "The receiving Interface 1 could not sample the bridged asserted level.");
         Require(!receiverStation.Sample(expectedStart + pulseLength),
             "The receiving Interface 1 did not see the bridged pulse release.");
+
+        senderBridge.Disconnect();
+        RequireEventually(
+            () => receiverBridge.State == SpectrumInterface1NetworkBridgeState.Listening,
+            "The ZX Net listener did not resume listening after its peer disconnected.");
+
+        senderClock += 10_000;
+        receiverClock += 10_000;
+        int transitionsBeforeReconnect = receiverBus.CopyTransitions().Count;
+        senderBridge.Connect(IPAddress.Loopback.ToString(), port);
+        RequireEventually(
+            () => senderBridge.State == SpectrumInterface1NetworkBridgeState.Connected &&
+                  receiverBridge.State == SpectrumInterface1NetworkBridgeState.Connected,
+            "The ZX Net bridges did not reconnect.");
+        senderStation.SetOutput(ulaOutputHigh: false, networkSelected: true, senderClock + 250);
+        senderStation.SetOutput(ulaOutputHigh: true, networkSelected: true, senderClock + 600);
+        RequireEventually(
+            () => receiverBus.CopyTransitions().Count >= transitionsBeforeReconnect + 2,
+            "The reconnected TCP bridge did not deliver a second pulse.");
+
+        received = receiverBus.CopyTransitions();
+        rising = received[^2];
+        falling = received[^1];
+        Require(rising.LineHigh && !falling.LineHigh && falling.Tstate - rising.Tstate == 350,
+            "Reconnect changed the polarity or width of the second ZX Net pulse.");
     }
 
     private static int ReserveTcpPort()
@@ -1000,19 +1025,23 @@ public static class Interface1VerificationRunner
         sender.Cpu.PC = FindSendPacketEntry(firmware);
         receiver.Cpu.PC = FindGetPacketEntry(firmware);
 
-        int instructions = 0;
+        var realtime = Stopwatch.StartNew();
         RunLockstep(
             sender,
             0x8000,
             receiver,
             0x8001,
             maximumInstructions: 4_000_000,
-            observe: (_, _) =>
+            observe: (sendingMachine, receivingMachine) =>
             {
                 // The production hosts are realtime-paced. The diagnostic CPUs are
-                // otherwise fast enough to outrun a background TCP thread before its
-                // short transport lead elapses, so yield a small amount of wall time.
-                if ((++instructions & 0x1F) == 0)
+                // otherwise fast enough to outrun a background TCP thread. Pace this
+                // acceptance path against the same 3.5 MHz wall-clock relationship
+                // without using coarse operating-system sleeps.
+                long targetTicks = (long)(
+                    Math.Max(sendingMachine.Cpu.Cyc, receivingMachine.Cpu.Cyc) *
+                    (double)Stopwatch.Frequency / 3_500_000.0);
+                while (realtime.ElapsedTicks < targetTicks)
                 {
                     Thread.Yield();
                 }

@@ -30,6 +30,7 @@ namespace ZedExEss.Z80CPU
         private bool _hasNoMreqContention;
         private bool _hasIoContentionBeforeCycle;
         private bool _ioWritesLatchAtEndOfCycle;
+        private bool _alignM1ToEvenTstates;
         private IZ80DebugHook? _debugHook;
         private bool _hasDebugHook;
         private IZ80TapeAccelerationHook? _tapeAccelerationHook;
@@ -78,6 +79,15 @@ namespace ZedExEss.Z80CPU
         {
             _hasIoContentionBeforeCycle = enabled;
             _ioWritesLatchAtEndOfCycle = writesLatchAtEndOfCycle;
+        }
+
+        /// <summary>
+        /// Enables the Scorpion gate-array wait which moves an odd-T-state M1 start
+        /// to the next even T-state for opcode fetches from RAM (4000-FFFF).
+        /// </summary>
+        public void ConfigureM1Alignment(bool alignToEvenTstates)
+        {
+            _alignM1ToEvenTstates = alignToEvenTstates;
         }
 
         public void ConfigureDebugHook(IZ80DebugHook? debugHook)
@@ -170,11 +180,26 @@ namespace ZedExEss.Z80CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private byte FetchOpcode()
         {
+            ApplyM1AlignmentBeforeFetch(PC);
             byte value = _memory.FetchOpcode(PC);
             ConsumeCycles(4);
             PC++;
             IncR();
             return value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ApplyM1AlignmentBeforeFetch(ushort address)
+        {
+            // The Scorpion's even-M1 gate is qualified by A15/A14. UnrealSpeccy
+            // expresses the hardware rule as `(PCH & C0) && (T & 1)`: the low
+            // 16K ROM window is unaffected, while an odd fetch anywhere in RAM
+            // is delayed before M1 begins. Applying this globally or after the
+            // bus read changes raster phase and interrupt entry timing.
+            if (_alignM1ToEvenTstates && (address & 0xC000) != 0 && (Cyc & 1UL) != 0)
+            {
+                AddWaitStates(1);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -241,9 +266,17 @@ namespace ZedExEss.Z80CPU
 
             if (_hasIoContentionBeforeCycle)
             {
+                // Most Spectrum outputs become observable after T1. Scorpion's FE
+                // latch is clocked independently on a four-T-state grid, so its bus
+                // implementation must be able to queue the upcoming value before
+                // T1 in case the selected latch edge is the I/O-cycle start itself.
+                bool handledAtCycleStart = _ports.TryWriteAtStartOfIoCycle(port, value);
                 ConsumeIoCycle(port, 0);
                 FlushBatchedInstructionTstates();
-                _ports.WriteUncontended(port, value);
+                if (!handledAtCycleStart)
+                {
+                    _ports.WriteUncontended(port, value);
+                }
                 if (_hasDebugHook && _debugHook!.AccessWatchpointsEnabled)
                 {
                     _debugHook.OnPortWrite(port, value);
@@ -3104,6 +3137,7 @@ namespace ZedExEss.Z80CPU
             if (Halted)
             {
                 BeginInstruction(4, 0);
+                ApplyM1AlignmentBeforeFetch(PC);
                 _ = _memory.Read(PC);
                 ConsumeCycles(4);
                 IncR();

@@ -17,6 +17,16 @@ public interface IZ80PortBus
     byte ReadUncontended(ushort port);
     void WriteUncontended(ushort port, byte value);
     void ApplyIoContentionBeforeCycle(ushort port, int phase);
+
+    /// <summary>
+    /// Gives hardware with an independently clocked output latch an opportunity
+    /// to queue the write before the first I/O T-state is consumed.
+    /// </summary>
+    /// <returns>
+    /// True when the bus has accepted the complete write and the normal post-T1
+    /// <see cref="WriteUncontended"/> call must be skipped.
+    /// </returns>
+    bool TryWriteAtStartOfIoCycle(ushort port, byte value) => false;
 }
 
 /// <summary>

@@ -232,12 +232,47 @@ namespace ZedExEss.Spectrum.Ports
             // The observable write happens during the I/O cycle, before the CPU has consumed
             // the full instruction timing. Queue it so the scheduler exposes it at that point.
             ulong applyAt = ApplyWriteContentionEarly(port, out long tstate, out bool contendedPage);
+            if (_model == SpectrumModel.Scorpion256 && IsUlaPort(port))
+            {
+                // The Scorpion ULA samples FE on a four-T-state grid. UnrealSpeccy
+                // models the renderer phase as (t + 6) & ~3. Convert that phase
+                // to this scheduler's timestamp convention in the shared helper.
+                applyAt = GetScorpionUlaLatchTstate(applyAt);
+            }
+
             _pendingWrites.Enqueue(new PendingWrite(applyAt, port, value));
             ApplyWriteContentionLate(port, ref tstate, contendedPage);
         }
         public void WriteUncontended(ushort port, byte value)
         {
+            if (_model == SpectrumModel.Scorpion256 && IsUlaPort(port) && _cpu != null)
+            {
+                // CPU I/O uses this direct path after T1. The Scorpion gate array
+                // does not expose FE immediately. Queueing lets the central scheduler
+                // reach the translated four-T-state latch edge without adding Z80 waits.
+                ulong applyAt = GetScorpionUlaLatchTstate(_cpu.Cyc);
+                _pendingWrites.Enqueue(new PendingWrite(applyAt, port, value));
+                return;
+            }
+
             ApplyWrite(port, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool TryWriteAtStartOfIoCycle(ushort port, byte value)
+        {
+            if (_model != SpectrumModel.Scorpion256 || !IsUlaPort(port) || _cpu == null)
+            {
+                return false;
+            }
+
+            // The Scorpion FE latch runs on a four-T-state clock independent of
+            // the CPU's I/O phases. Queue at the next grid edge before consuming
+            // T1; waiting until the normal post-T1 callback can make an edge at
+            // the cycle start impossible to render without changing the past.
+            ulong applyAt = (_cpu.Cyc + 3UL) & ~3UL;
+            _pendingWrites.Enqueue(new PendingWrite(applyAt, port, value));
+            return true;
         }
         public void ApplyIoContentionBeforeCycle(ushort port, int phase)
         {
@@ -419,6 +454,15 @@ namespace ZedExEss.Spectrum.Ports
         private void ApplyWrite(ushort port, byte value)
         {
             ApplyWrite(port, value, _cpu?.Cyc ?? 0);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong GetScorpionUlaLatchTstate(ulong ioTstate)
+        {
+            // Fallback translation for callers which enter through the traditional
+            // post-T1 path. CPU-driven Scorpion FE writes use
+            // TryWriteAtStartOfIoCycle so an edge at the cycle start is not missed.
+            return (ioTstate + 2UL) & ~3UL;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

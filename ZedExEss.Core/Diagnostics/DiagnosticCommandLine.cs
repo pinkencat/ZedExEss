@@ -31,6 +31,9 @@ namespace ZedExEss.Diagnostics
             "  --verify-settings\n" +
             "  --verify-tape-acceleration\n" +
             "  --verify-tape-game <path>\n" +
+            "  --diagnose-trdos [--trdos-disk <path>] [--trdos-model <model>]\n" +
+            "                   [--trdos-menu-down <n>] [--trdos-type <letters>]\n" +
+            "                   [--trdos-frames <n>] [--trdos-fdc-trace]\n" +
             "  --raxoft-z80full | --raxoft-z80memptr\n" +
             "  --raxoft-z80flags | --raxoft-z80ccf\n" +
             "  --benchmark\n" +
@@ -52,6 +55,22 @@ namespace ZedExEss.Diagnostics
 
             var options = new Options();
             Parse(args, options);
+
+            if (options.RunTrDosDiagnostic)
+            {
+                exitCode = TrDosDiagnosticRunner.Run(new TrDosDiagnosticOptions
+                {
+                    Model = options.TrDosModel,
+                    DiskPath = options.TrDosDiskPath,
+                    OutputPath = options.OutputPath,
+                    MenuDownPresses = options.TrDosMenuDown,
+                    TypeAfterBoot = options.TrDosType,
+                    RunFrames = options.TrDosFrames,
+                    FdcTrace = options.TrDosFdcTrace,
+                    EnterAfterFrames = options.TrDosEnterAt
+                });
+                return true;
+            }
 
             if (options.RunRaxoft)
             {
@@ -266,6 +285,39 @@ namespace ZedExEss.Diagnostics
                     case "--verify-tape-game":
                         options.TapeGamePath = RequireValue(args, ref i, arg);
                         break;
+                    case "--diagnose-trdos":
+                        options.RunTrDosDiagnostic = true;
+                        break;
+                    case "--trdos-disk":
+                        options.TrDosDiskPath = RequireValue(args, ref i, arg);
+                        options.RunTrDosDiagnostic = true;
+                        break;
+                    case "--trdos-model":
+                        string trdosModel = RequireValue(args, ref i, arg);
+                        // Only Beta 128 capable clones are meaningful here, and the
+                        // benchmark parser does not cover them.
+                        options.TrDosModel = trdosModel.Trim().ToLowerInvariant() switch
+                        {
+                            "pentagon" or "pentagon128" => SpectrumModel.Pentagon128,
+                            "scorpion" or "scorpion256" => SpectrumModel.Scorpion256,
+                            _ => throw new ArgumentException($"Invalid {arg} value '{trdosModel}'. Use pentagon or scorpion.")
+                        };
+                        break;
+                    case "--trdos-menu-down":
+                        options.TrDosMenuDown = ParseNonNegativeInt(RequireValue(args, ref i, arg), arg);
+                        break;
+                    case "--trdos-type":
+                        options.TrDosType = RequireValue(args, ref i, arg);
+                        break;
+                    case "--trdos-frames":
+                        options.TrDosFrames = ParsePositiveInt(RequireValue(args, ref i, arg), arg);
+                        break;
+                    case "--trdos-fdc-trace":
+                        options.TrDosFdcTrace = true;
+                        break;
+                    case "--trdos-enter-at":
+                        options.TrDosEnterAt = ParsePositiveInt(RequireValue(args, ref i, arg), arg);
+                        break;
                     case "--tape-game-model":
                         string tapeModel = RequireValue(args, ref i, arg);
                         if (!SpectrumBenchmarkRunner.TryParseModel(tapeModel, out SpectrumModel parsedTapeModel))
@@ -390,6 +442,14 @@ namespace ZedExEss.Diagnostics
             public bool RunSessionVerification { get; set; }
             public bool RunSettingsVerification { get; set; }
             public string? TapeGamePath { get; set; }
+            public bool RunTrDosDiagnostic { get; set; }
+            public string? TrDosDiskPath { get; set; }
+            public SpectrumModel TrDosModel { get; set; } = SpectrumModel.Scorpion256;
+            public int TrDosMenuDown { get; set; }
+            public string? TrDosType { get; set; }
+            public int TrDosFrames { get; set; } = 1_200;
+            public bool TrDosFdcTrace { get; set; }
+            public int TrDosEnterAt { get; set; }
             public string? Interface1RomPath { get; set; }
             public string? Zx8xRomDirectory { get; set; }
             public SpectrumModel TapeGameModel { get; set; } = SpectrumModel.Spectrum48K;
