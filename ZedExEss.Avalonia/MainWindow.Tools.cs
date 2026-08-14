@@ -145,13 +145,7 @@ public sealed partial class MainWindow
 
     private void OnDebuggerClicked(object? sender, RoutedEventArgs e)
     {
-        if (_zx8xMachine != null)
-        {
-            _statusText.Text = "The debugger is not yet connected to the ZX80/ZX81 machine bus.";
-            return;
-        }
-
-        if (_machine == null)
+        if (_machine == null && _zx8xMachine == null)
         {
             return;
         }
@@ -192,6 +186,7 @@ public sealed partial class MainWindow
         }
 
         _machine?.Emulator.SetPaused(true);
+        _zx8xMachine?.SetPaused(true);
         RequestDebuggerPause();
         return true;
     }
@@ -207,6 +202,7 @@ public sealed partial class MainWindow
         if (_debugger.IsPaused)
         {
             _machine?.Emulator.SetPaused(true);
+            _zx8xMachine?.SetPaused(true);
             RequestDebuggerPause();
         }
     }
@@ -225,6 +221,21 @@ public sealed partial class MainWindow
 
     private void UpdateDebuggerHooks()
     {
+        Zx8x.Core.Zx8xMachine? zx8x = _zx8xMachine;
+        if (zx8x != null)
+        {
+            if (_closing)
+            {
+                return;
+            }
+
+            zx8x.ConfigureCpuStepHooks(
+                _debugger.Enabled ? BeforeDebuggerCpuStep : null,
+                _debugger.Enabled ? AfterDebuggerCpuStep : null);
+            zx8x.Cpu.ConfigureDebugHook(_debugger.AccessWatchpointsEnabled ? _debugger : null);
+            return;
+        }
+
         SpectrumMachine? machine = _machine;
         if (machine == null || _closing)
         {
@@ -258,13 +269,15 @@ public sealed partial class MainWindow
     private void PauseForDebugger(string reason, bool notifyController)
     {
         SpectrumMachine? machine = _machine;
-        if (machine == null)
+        Zx8x.Core.Zx8xMachine? zx8x = _zx8xMachine;
+        if (machine == null && zx8x == null)
         {
             return;
         }
 
         StopExecutionOwner();
-        machine.Emulator.SetPaused(true);
+        machine?.Emulator.SetPaused(true);
+        zx8x?.SetPaused(true);
         if (notifyController)
         {
             _debugger.Pause(reason);
@@ -272,35 +285,49 @@ public sealed partial class MainWindow
 
         UpdateDebuggerHooks();
         UpdatePauseCommandState(paused: true);
-        _statusText.Text = $"{FormatModel(machine.Model)} — {reason}";
+        _statusText.Text = machine != null
+            ? $"{FormatModel(machine.Model)} — {reason}"
+            : $"{FormatZx8xModel(zx8x!.Model)} — {reason}";
         _debuggerWindow?.RefreshAll(followPc: true);
     }
 
     private void ResumeFromDebugger()
     {
         SpectrumMachine? machine = _machine;
-        if (machine == null)
+        Zx8x.Core.Zx8xMachine? zx8x = _zx8xMachine;
+        if (machine == null && zx8x == null)
         {
             return;
         }
 
         _debugger.Run();
-        machine.Emulator.SetPaused(false);
+        machine?.Emulator.SetPaused(false);
+        zx8x?.SetPaused(false);
         UpdateDebuggerHooks();
         if (!HasExecutionOwner())
         {
-            _ = StartSelectedExecution(machine);
+            if (machine != null)
+            {
+                _ = StartSelectedExecution(machine);
+            }
+            else
+            {
+                _ = StartSelectedZx8xExecution(zx8x!);
+            }
         }
 
         UpdatePauseCommandState(paused: false);
-        _statusText.Text = $"{FormatModel(machine.Model)} — {GetExecutionModeText()} — keyboard active";
+        _statusText.Text = machine != null
+            ? $"{FormatModel(machine.Model)} — {GetExecutionModeText()} — keyboard active"
+            : $"{FormatZx8xModel(zx8x!.Model)} — {GetExecutionModeText()} — keyboard active";
         _debuggerWindow?.RefreshAll(followPc: true);
     }
 
     private void StepDebuggerInto()
     {
         SpectrumMachine? machine = _machine;
-        if (machine == null)
+        Zx8x.Core.Zx8xMachine? zx8x = _zx8xMachine;
+        if (machine == null && zx8x == null)
         {
             return;
         }
@@ -308,8 +335,17 @@ public sealed partial class MainWindow
         PauseForDebugger("Step", notifyController: false);
         _debugger.PrepareStepInto();
         UpdateDebuggerHooks();
-        machine.Emulator.StepInstruction();
-        machine.Emulator.SetPaused(true);
+        if (machine != null)
+        {
+            machine.Emulator.StepInstruction();
+            machine.Emulator.SetPaused(true);
+        }
+        else
+        {
+            zx8x!.SetPaused(false);
+            zx8x.StepInstruction();
+            zx8x.SetPaused(true);
+        }
         UpdateDebuggerHooks();
         _debuggerWindow?.RefreshAll(followPc: true);
     }
@@ -317,7 +353,8 @@ public sealed partial class MainWindow
     private void StepDebuggerOver()
     {
         SpectrumMachine? machine = _machine;
-        if (machine == null)
+        Zx8x.Core.Zx8xMachine? zx8x = _zx8xMachine;
+        if (machine == null && zx8x == null)
         {
             return;
         }
@@ -327,8 +364,17 @@ public sealed partial class MainWindow
         UpdateDebuggerHooks();
         if (_debugger.Mode == DebuggerRunMode.StepInto)
         {
-            machine.Emulator.StepInstruction();
-            machine.Emulator.SetPaused(true);
+            if (machine != null)
+            {
+                machine.Emulator.StepInstruction();
+                machine.Emulator.SetPaused(true);
+            }
+            else
+            {
+                zx8x!.SetPaused(false);
+                zx8x.StepInstruction();
+                zx8x.SetPaused(true);
+            }
             UpdateDebuggerHooks();
             _debuggerWindow?.RefreshAll(followPc: true);
             return;

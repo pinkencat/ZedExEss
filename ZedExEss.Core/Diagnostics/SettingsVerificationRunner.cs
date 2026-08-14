@@ -4,6 +4,7 @@ using System.Text;
 using ZedExEss.Hosting;
 using ZedExEss.Spectrum.Input;
 using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
 
 namespace ZedExEss.Diagnostics;
 
@@ -100,6 +101,8 @@ public static class SettingsVerificationRunner
         Require(!settings.SemanticLoaderAccelerationEnabled, "Experimental semantic acceleration must default off.");
         Require(settings.Zx8xRamConfiguration == Zx8xRamConfiguration.Expansion16K,
             "ZX80/ZX81 RAM should default to the common 16 KiB expansion.");
+        Require(settings.Zx8xHighResolutionMode == Zx8xHighResolutionMode.Sinclair,
+            "Optional WRX hardware must default off.");
     }
 
     private static void VerifyRoundTrip(ISettingsStore store, string settingsPath)
@@ -119,7 +122,8 @@ public static class SettingsVerificationRunner
             GigascreenBlendEnabled = true,
             Interface1Enabled = true,
             Interface1RomRevision = Spectrum.Interface1.SpectrumInterface1RomRevision.Revision1,
-            Zx8xRamConfiguration = Zx8xRamConfiguration.Internal1K
+            Zx8xRamConfiguration = Zx8xRamConfiguration.Internal1K,
+            Zx8xHighResolutionMode = Zx8xHighResolutionMode.Wrx
         };
 
         store.Save(expected);

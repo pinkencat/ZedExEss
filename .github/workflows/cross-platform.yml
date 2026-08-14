@@ -50,6 +50,7 @@ jobs:
           dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-session
           dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-settings
           dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-tape-acceleration
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-build -- --verify-zx8x --zx8x-rom-directory ZedExEss/ROMs
           dotnet run --project ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -c Release --no-build -- --smoke-test
 
   windows-build:
@@ -70,6 +71,7 @@ jobs:
         run: |
           dotnet restore ZedExEss/ZedExEss.csproj
           dotnet restore ZedExEss.Avalonia/ZedExEss.Avalonia.csproj
+          dotnet restore ZedExEss.Headless/ZedExEss.Headless.csproj
 
       - name: Build WPF frontend
         shell: pwsh
@@ -78,6 +80,17 @@ jobs:
       - name: Build Avalonia frontend for Windows
         shell: pwsh
         run: dotnet build ZedExEss.Avalonia/ZedExEss.Avalonia.csproj -c Release --no-restore
+
+      - name: Build headless verification runner
+        shell: pwsh
+        run: dotnet build ZedExEss.Headless/ZedExEss.Headless.csproj -c Release --no-restore
+
+      - name: Verify ZX80/ZX81 tape transport
+        shell: pwsh
+        run: >-
+          dotnet run --project ZedExEss.Headless/ZedExEss.Headless.csproj
+          -c Release --no-build -- --verify-zx8x
+          --zx8x-rom-directory ZedExEss/ROMs
 
       - name: Smoke-test Avalonia frontend
         shell: pwsh

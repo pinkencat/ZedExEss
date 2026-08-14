@@ -14,7 +14,7 @@ namespace ZedExEss.Spectrum.Memory
     /// <summary>
     /// Model-aware memory map, including ROM/RAM paging, expansion overlays and delayed screen-write visibility.
     /// </summary>
-    public sealed class SpectrumMemory : IMemoryBus, IContendedPageProvider, IScreenMemoryProvider, IScreenWriteSynchronizer, IZ80MemoryBus
+    public sealed class SpectrumMemory : IMemoryBus, IContendedPageProvider, IScreenMemoryProvider, IScreenWriteSynchronizer, IZ80MemoryBus, IZ80DebuggerMemory
     {
         private const int PageSize = 16 * 1024;
         private const int ScreenSize = 0x1B00;
@@ -81,7 +81,7 @@ namespace ZedExEss.Spectrum.Memory
         public SpectrumModel Model => _model;
 
         public int CurrentRomBank => _currentRomBank;
-        public SpectrumMemoryMapping GetMapping(ushort address)
+        public DebuggerMemoryMapping GetMapping(ushort address)
         {
             // This is a debugger description only. It must not perform a bus read,
             // trigger automapping, or consume contention time.
@@ -90,7 +90,7 @@ namespace ZedExEss.Spectrum.Memory
             int bank = _pageBankIndex[page];
             bool isOpenBus = ReferenceEquals(_mappedPages[page], _openBusPage);
             bool isRom = _pageReadOnly[page] && bank < 0 && !isOpenBus;
-            return new SpectrumMemoryMapping(
+            return new DebuggerMemoryMapping(
                 address,
                 page,
                 bank >= 0,
@@ -101,7 +101,7 @@ namespace ZedExEss.Spectrum.Memory
                 bank,
                 offset,
                 isRom && page == 0 ? _currentRomBank : -1,
-                _model);
+                _model.ToString());
         }
         public bool CanWriteDirect(ushort address)
         {

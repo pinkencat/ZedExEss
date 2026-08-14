@@ -12,6 +12,8 @@ namespace ZedExEss.Zx8x.Core;
 public sealed class Zx8xMachine : IEmulatedMachine, IAudioSource
 {
     private long _observedCompletedFrame;
+    private Func<bool>? _beforeCpuStep;
+    private Action? _afterCpuStep;
 
     internal Zx8xMachine(
         Zx8xModel model,
@@ -82,11 +84,17 @@ public sealed class Zx8xMachine : IEmulatedMachine, IAudioSource
     /// <summary>Executes one instruction and applies any line-boundary NMI it crossed.</summary>
     public void StepInstruction()
     {
-        StepInstruction(publishFrame: true);
+        _ = StepInstruction(publishFrame: true);
     }
 
-    private void StepInstruction(bool publishFrame)
+    private bool StepInstruction(bool publishFrame)
     {
+        if (_beforeCpuStep?.Invoke() == true)
+        {
+            IsPaused = true;
+            return false;
+        }
+
         Cpu.Z80Step();
         Tape.AdvanceTo(Cpu.Cyc);
         VideoTiming.AdvanceAfterInstruction(Cpu);
@@ -104,6 +112,19 @@ public sealed class Zx8xMachine : IEmulatedMachine, IAudioSource
                 FrameCompleted?.Invoke();
             }
         }
+
+        _afterCpuStep?.Invoke();
+        return true;
+    }
+
+    /// <summary>
+    /// Installs instruction-boundary hooks for host tooling. Null delegates remove
+    /// the calls entirely from normal execution except for the predictable null check.
+    /// </summary>
+    public void ConfigureCpuStepHooks(Func<bool>? beforeCpuStep, Action? afterCpuStep)
+    {
+        _beforeCpuStep = beforeCpuStep;
+        _afterCpuStep = afterCpuStep;
     }
 
     /// <summary>
@@ -126,10 +147,19 @@ public sealed class Zx8xMachine : IEmulatedMachine, IAudioSource
 
         Audio.BeginCapture(Cpu.Cyc);
         int total = Audio.DrainSamples(buffer, offset, count);
-        while (total < count)
+        while (total < count && !IsPaused)
         {
-            StepInstruction();
+            if (!StepInstruction(publishFrame: true))
+            {
+                break;
+            }
+
             total += Audio.DrainSamples(buffer, offset + total, count - total);
+        }
+
+        if (total < count)
+        {
+            Array.Clear(buffer, offset + total, count - total);
         }
 
         return count;
@@ -139,9 +169,12 @@ public sealed class Zx8xMachine : IEmulatedMachine, IAudioSource
     {
         ArgumentOutOfRangeException.ThrowIfNegative(minimumTstates);
         ulong target = Cpu.Cyc + (ulong)minimumTstates;
-        while (Cpu.Cyc < target)
+        while (!IsPaused && Cpu.Cyc < target)
         {
-            StepInstruction(publishFrame: true);
+            if (!StepInstruction(publishFrame: true))
+            {
+                break;
+            }
         }
     }
 
@@ -159,7 +192,10 @@ public sealed class Zx8xMachine : IEmulatedMachine, IAudioSource
         ulong cycleLimit = Cpu.Cyc + (ulong)TstatesPerFrame;
         while (!IsPaused && Renderer.CompletedFrameNumber == initialFrame && Cpu.Cyc < cycleLimit)
         {
-            StepInstruction(presentFrame);
+            if (!StepInstruction(presentFrame))
+            {
+                break;
+            }
         }
     }
 

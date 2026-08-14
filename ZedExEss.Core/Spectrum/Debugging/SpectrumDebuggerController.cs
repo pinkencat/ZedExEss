@@ -20,10 +20,10 @@ namespace ZedExEss.Spectrum.Debugging
     public sealed class SpectrumDebuggerController : IZ80DebugHook
     {
         private readonly object _sync = new();
-        private Z80? _cpu;
-        private SpectrumMemory? _memory;
-        private SpectrumPortBus? _ports;
-        private SpectrumTimingModel _timing;
+        private IZ80DebuggerCpu? _cpu;
+        private IZ80DebuggerMemory? _memory;
+        private int _tstatesPerFrame;
+        private int _tstatesPerLine;
         private SpectrumModel _model;
         private int _nextBreakpointId = 1;
         private DebuggerBreakHit? _pendingWatchHit;
@@ -46,24 +46,41 @@ namespace ZedExEss.Spectrum.Debugging
 
         public bool AccessWatchpointsEnabled { get; private set; }
 
-        public Z80? Cpu => _cpu;
+        public IZ80DebuggerCpu? Cpu => _cpu;
 
-        public SpectrumMemory? Memory => _memory;
+        public IZ80DebuggerMemory? Memory => _memory;
 
         public SpectrumModel Model => _model;
 
-        public SpectrumTimingModel Timing => _timing;
+        public SpectrumTimingModel Timing => SpectrumTimingModel.ForModel(_model);
         public void Attach(Z80 cpu, SpectrumMemory memory, SpectrumPortBus ports, SpectrumModel model)
         {
             ArgumentNullException.ThrowIfNull(cpu);
             ArgumentNullException.ThrowIfNull(memory);
             ArgumentNullException.ThrowIfNull(ports);
 
+            SpectrumTimingModel timing = SpectrumTimingModel.ForModel(model);
+            _model = model;
+            Attach(cpu, memory, timing.TstatesPerFrame, timing.TstatesPerLine);
+        }
+
+        /// <summary>Attaches the debugger to any concrete Z80 machine family.</summary>
+        public void Attach(
+            IZ80DebuggerCpu cpu,
+            IZ80DebuggerMemory memory,
+            int tstatesPerFrame,
+            int tstatesPerLine)
+        {
+            ArgumentNullException.ThrowIfNull(cpu);
+            ArgumentNullException.ThrowIfNull(memory);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tstatesPerFrame);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tstatesPerLine);
+
+            _cpu?.ConfigureDebugHook(null);
             _cpu = cpu;
             _memory = memory;
-            _ports = ports;
-            _model = model;
-            _timing = SpectrumTimingModel.ForModel(model);
+            _tstatesPerFrame = tstatesPerFrame;
+            _tstatesPerLine = tstatesPerLine;
             cpu.ConfigureDebugHook(this);
             RecomputeActiveHooks();
         }
@@ -149,8 +166,8 @@ namespace ZedExEss.Spectrum.Debugging
         public void PrepareStepOver(Z80Disassembler disassembler)
         {
             ArgumentNullException.ThrowIfNull(disassembler);
-            Z80? cpu = _cpu;
-            SpectrumMemory? memory = _memory;
+            IZ80DebuggerCpu? cpu = _cpu;
+            IZ80DebuggerMemory? memory = _memory;
             if (cpu == null || memory == null)
             {
                 PrepareStepInto();
@@ -168,8 +185,8 @@ namespace ZedExEss.Spectrum.Debugging
         }
         public bool BeforeCpuStep()
         {
-            Z80? cpu = _cpu;
-            SpectrumMemory? memory = _memory;
+            IZ80DebuggerCpu? cpu = _cpu;
+            IZ80DebuggerMemory? memory = _memory;
             if (cpu == null || memory == null)
             {
                 return false;
@@ -192,7 +209,7 @@ namespace ZedExEss.Spectrum.Debugging
                 return true;
             }
 
-            SpectrumMemoryMapping mapping = memory.GetMapping(cpu.PC);
+            DebuggerMemoryMapping mapping = memory.GetMapping(cpu.PC);
             DebuggerBreakpoint? breakpoint = FindAddressBreakpoint(DebuggerBreakType.Execute, cpu.PC, mapping);
             if (breakpoint != null)
             {
@@ -206,7 +223,7 @@ namespace ZedExEss.Spectrum.Debugging
         {
             if (_mode == DebuggerRunMode.StepInto)
             {
-                Z80? cpu = _cpu;
+                IZ80DebuggerCpu? cpu = _cpu;
                 Hit(new DebuggerBreakHit(DebuggerBreakType.Execute, cpu?.PC ?? 0, 0, null, cpu?.Cyc ?? 0, "Step complete", null));
                 return;
             }
@@ -239,18 +256,18 @@ namespace ZedExEss.Spectrum.Debugging
         {
             get
             {
-                if (_cpu == null || _timing.TstatesPerFrame <= 0)
+                if (_cpu == null || _tstatesPerFrame <= 0)
                 {
                     return 0;
                 }
 
-                return (int)(_cpu.Cyc % (ulong)_timing.TstatesPerFrame);
+                return (int)(_cpu.Cyc % (ulong)_tstatesPerFrame);
             }
         }
 
-        public int CurrentLine => _timing.TstatesPerLine <= 0 ? 0 : CurrentFrameTstate / _timing.TstatesPerLine;
+        public int CurrentLine => _tstatesPerLine <= 0 ? 0 : CurrentFrameTstate / _tstatesPerLine;
 
-        public int CurrentLineTstate => _timing.TstatesPerLine <= 0 ? 0 : CurrentFrameTstate % _timing.TstatesPerLine;
+        public int CurrentLineTstate => _tstatesPerLine <= 0 ? 0 : CurrentFrameTstate % _tstatesPerLine;
         private DebuggerBreakpoint AddBreakpoint(DebuggerBreakpoint breakpoint)
         {
             breakpoint.Id = _nextBreakpointId++;
@@ -265,8 +282,8 @@ namespace ZedExEss.Spectrum.Debugging
                 return;
             }
 
-            SpectrumMemory? memory = _memory;
-            Z80? cpu = _cpu;
+            IZ80DebuggerMemory? memory = _memory;
+            IZ80DebuggerCpu? cpu = _cpu;
             if (memory == null || cpu == null)
             {
                 return;
@@ -287,7 +304,7 @@ namespace ZedExEss.Spectrum.Debugging
                 return;
             }
 
-            Z80? cpu = _cpu;
+            IZ80DebuggerCpu? cpu = _cpu;
             DebuggerBreakpoint? breakpoint = Breakpoints.FirstOrDefault(bp => bp.Type == type && bp.MatchesPort(port));
             if (breakpoint == null)
             {
@@ -296,7 +313,7 @@ namespace ZedExEss.Spectrum.Debugging
 
             _pendingWatchHit = new DebuggerBreakHit(type, 0, port, value, cpu?.Cyc ?? 0, $"{type} {port:X4} = {value:X2}", breakpoint);
         }
-        private DebuggerBreakpoint? FindAddressBreakpoint(DebuggerBreakType type, ushort address, SpectrumMemoryMapping mapping)
+        private DebuggerBreakpoint? FindAddressBreakpoint(DebuggerBreakType type, ushort address, DebuggerMemoryMapping mapping)
         {
             return Breakpoints.FirstOrDefault(bp => bp.Type == type && bp.MatchesAddress(address, mapping));
         }

@@ -1048,6 +1048,10 @@ public sealed class TzxLoader : ITapePlayback, ITapeEdgeSource
         else
         {
             SetCurrentBlockIndex(FindBlockIndexForPulse(_pulseIndex), raiseEvent: false);
+            // Direct-recording and generalized-data blocks carry an absolute
+            // first level; it is not necessarily the decoder's usual low idle
+            // state. Reassert it whenever transport resumes from reset/stop.
+            _ear.SetEarLevel(_pulses[_pulseIndex].Level);
         }
 
         _playing = true;

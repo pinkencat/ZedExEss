@@ -5,6 +5,7 @@ using ZedExEss.Spectrum.Input;
 using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Zx8x.Core;
 using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
 
 namespace ZedExEss.AvaloniaHost;
 
@@ -31,6 +32,7 @@ public sealed partial class MainWindow
     private bool _interface1Enabled;
     private SpectrumInterface1RomRevision _interface1RomRevision = SpectrumInterface1RomRevision.Revision2;
     private Zx8xRamConfiguration _zx8xRamConfiguration = Zx8xRamConfiguration.Expansion16K;
+    private Zx8xHighResolutionMode _zx8xHighResolutionMode = Zx8xHighResolutionMode.Sinclair;
 
     private static ISettingsStore CreateSettingsStore()
     {
@@ -65,6 +67,9 @@ public sealed partial class MainWindow
         _zx8xRamConfiguration = Enum.IsDefined(typeof(Zx8xRamConfiguration), _hostSettings.Zx8xRamConfiguration)
             ? _hostSettings.Zx8xRamConfiguration
             : Zx8xRamConfiguration.Expansion16K;
+        _zx8xHighResolutionMode = Enum.IsDefined(typeof(Zx8xHighResolutionMode), _hostSettings.Zx8xHighResolutionMode)
+            ? _hostSettings.Zx8xHighResolutionMode
+            : Zx8xHighResolutionMode.Sinclair;
     }
 
     private void SaveHostSettings()
@@ -83,7 +88,8 @@ public sealed partial class MainWindow
             GigascreenBlendEnabled = _gigascreenBlendEnabled,
             Interface1Enabled = _interface1Enabled,
             Interface1RomRevision = _interface1RomRevision,
-            Zx8xRamConfiguration = _zx8xRamConfiguration
+            Zx8xRamConfiguration = _zx8xRamConfiguration,
+            Zx8xHighResolutionMode = _zx8xHighResolutionMode
         };
 
         try
@@ -153,7 +159,7 @@ public sealed partial class MainWindow
     {
         if (_zx8xMachine != null)
         {
-            if (_closing || _replacingMachine)
+            if (_closing || _replacingMachine || _debugger.IsPaused)
             {
                 return;
             }

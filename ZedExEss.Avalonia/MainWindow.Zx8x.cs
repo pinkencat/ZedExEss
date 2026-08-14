@@ -4,6 +4,7 @@ using ZedExEss.Zx8x.Core;
 using ZedExEss.Zx8x.Input;
 using ZedExEss.Zx8x.Media;
 using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
 
 namespace ZedExEss.AvaloniaHost;
 
@@ -65,7 +66,8 @@ public sealed partial class MainWindow
             Zx8xMachine replacement = Zx8xMachineFactory.Create(
                 model,
                 Path.Combine(AppContext.BaseDirectory, "ROMs"),
-                ramConfiguration: _zx8xRamConfiguration);
+                ramConfiguration: _zx8xRamConfiguration,
+                highResolutionMode: _zx8xHighResolutionMode);
             ClearPressedKeys();
             StopRunnerAndDetachMachine();
             _machine = null;
@@ -77,6 +79,12 @@ public sealed partial class MainWindow
             _oscilloscopeWindow?.AttachAudioRenderer(null);
             _debuggerWindow?.Close();
             _debuggerWindow = null;
+            _debugger.Attach(
+                replacement.Cpu,
+                replacement.Memory,
+                replacement.TstatesPerFrame,
+                replacement.VideoTiming.Timing.TstatesPerLine);
+            UpdateDebuggerHooks();
 
             replacement.Tape.PlaybackStopped += OnTapePlaybackStopped;
             if (preservedTapePath != null)
@@ -122,6 +130,11 @@ public sealed partial class MainWindow
 
     private string StartSelectedZx8xExecution(Zx8xMachine machine)
     {
+        if (_debugger.IsPaused)
+        {
+            return "debugger paused";
+        }
+
         // A turbo owner never drains PCM. Rebase before either owner starts so
         // returning to realtime cannot spend seconds replaying a stale queue.
         machine.Audio.DiscardPendingSamples(machine.Cpu.Cyc);

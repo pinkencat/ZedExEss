@@ -24,6 +24,13 @@ public sealed class SpectrumInterface1Device : IPortDevice
     public const int RomSize = 8 * 1024;
     public const int DriveCount = 8;
 
+    // The IF1 ULA inverts these two control-register outputs. A clear R/W
+    // bit therefore selects the write head, while a clear ERASE bit enables
+    // the erase head mounted slightly ahead of it. The Sinclair ROM uses
+    // EEh (read), E6h (erase lead-in), E2h (erase + write), then E6h/EEh.
+    private const byte ReadWriteMask = 0x04;
+    private const byte EraseMask = 0x08;
+
     private readonly byte[] _rom;
     private readonly DriveTransport[] _drives = new DriveTransport[DriveCount];
     private bool _paged;
@@ -53,6 +60,8 @@ public sealed class SpectrumInterface1Device : IPortDevice
     public bool IsPaged => _paged;
     public byte MotorMask => _motorMask;
     public byte Control => _control;
+    public bool MicrodriveWriteEnabled => (_control & ReadWriteMask) == 0;
+    public bool MicrodriveEraseEnabled => (_control & EraseMask) == 0;
     public byte NetworkOutput => _networkOutput;
     public MicrodriveActivityState Activity => _activity;
 
@@ -243,6 +252,15 @@ public sealed class SpectrumInterface1Device : IPortDevice
 
     private void WriteMicrodriveData(byte value)
     {
+        // Writes to the data register cannot reach the head while R/W is in
+        // read mode. This matters for custom IF1 software which may touch E7h
+        // while polling; treating every access as a physical write can damage
+        // the logical sector stream and differs from the real ULA.
+        if (!MicrodriveWriteEnabled)
+        {
+            return;
+        }
+
         if (HasSelectedCartridge())
         {
             SetActivity(MicrodriveActivityState.Writing);
@@ -257,6 +275,7 @@ public sealed class SpectrumInterface1Device : IPortDevice
     private void WriteControl(byte value)
     {
         byte oldMotorMask = _motorMask;
+        bool oldMediaWriteActive = MicrodriveWriteEnabled || MicrodriveEraseEnabled;
         bool oldClockHigh = (_control & 0x02) != 0;
         bool newClockHigh = (value & 0x02) != 0;
         if (oldClockHigh && !newClockHigh)
@@ -273,6 +292,19 @@ public sealed class SpectrumInterface1Device : IPortDevice
 
         _control = value;
         RestartTransports();
+
+        bool newMediaWriteActive = MicrodriveWriteEnabled || MicrodriveEraseEnabled;
+        if (HasSelectedCartridge() && newMediaWriteActive)
+        {
+            // E6h starts the erase head before the write head is enabled, so
+            // the host-visible activity is already a write operation here.
+            SetActivity(MicrodriveActivityState.Writing);
+        }
+        else if (oldMediaWriteActive && !newMediaWriteActive &&
+                 _activity == MicrodriveActivityState.Writing)
+        {
+            SetActivity(MicrodriveActivityState.Idle);
+        }
 
         if (_motorMask != oldMotorMask)
         {

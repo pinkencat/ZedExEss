@@ -1,6 +1,7 @@
 using ZedExEss.Spectrum.Input;
 using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
 
 namespace ZedExEss.Hosting;
 
@@ -27,4 +28,5 @@ public sealed record EmulatorHostSettings
     public bool Interface1Enabled { get; init; }
     public SpectrumInterface1RomRevision Interface1RomRevision { get; init; } = SpectrumInterface1RomRevision.Revision2;
     public Zx8xRamConfiguration Zx8xRamConfiguration { get; init; } = Zx8xRamConfiguration.Expansion16K;
+    public Zx8xHighResolutionMode Zx8xHighResolutionMode { get; init; } = Zx8xHighResolutionMode.Sinclair;
 }

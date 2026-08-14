@@ -33,6 +33,7 @@ namespace ZedExEss.Spectrum.Ports
         private readonly List<IPortDevice> _fallbackDevices = [];
         private readonly SpectrumModel _model = model;
         private readonly bool _writebackOnRead = SpectrumModelTraits.HasPagingWritebackOnRead(model);
+        private readonly bool _ulaUsesFullPortDecode = SpectrumModelTraits.HasFullyDecodedUlaPort(model);
         private Z80? _cpu = cpu;
         private IContentionProfile? _contention = contention;
         private IContendedPageProvider? _contendedPages = contendedPages;
@@ -107,7 +108,7 @@ namespace ZedExEss.Spectrum.Ports
             bool handled = false;
 
             // Spectrum I/O is mostly wired-AND: multiple devices can respond and clear bits.
-            if ((port & 0x0001) == 0 && _ula != null)
+            if (IsUlaPort(port) && _ula != null)
             {
                 handled = true;
                 value &= _ula.Read(port);
@@ -370,11 +371,19 @@ namespace ZedExEss.Spectrum.Ports
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool IsUlaPort(ushort port)
+        {
+            return _ulaUsesFullPortDecode
+                ? (port & 0x00FF) == 0x00FE
+                : (port & 0x0001) == 0;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ApplyWrite(ushort port, byte value, ulong applyAt)
         {
             // Order matters when devices share decode ranges. ULA/border updates happen first,
             // then paging/disk/audio/expansion devices see the same bus write.
-            if ((port & 0x0001) == 0)
+            if (IsUlaPort(port))
             {
                 _ula?.Write(port, value);
             }

@@ -126,7 +126,7 @@ internal sealed partial class DebuggerWindow : Window
         FindRequiredControl<Button>("DisassemblyGoButton").Click += (_, _) => NavigateDisassembly();
         FindRequiredControl<Button>("DisassemblyPreviousButton").Click += (_, _) =>
         {
-            SpectrumMemory? memory = _view.Debugger.Memory;
+            IZ80DebuggerMemory? memory = _view.Debugger.Memory;
             if (memory == null)
             {
                 return;
@@ -483,7 +483,7 @@ internal sealed partial class DebuggerWindow : Window
             return;
         }
 
-        SpectrumMemory? memory = _view.Debugger.Memory;
+        IZ80DebuggerMemory? memory = _view.Debugger.Memory;
         if (memory == null || _disassembly.Count == 0)
         {
             return;
@@ -570,7 +570,7 @@ internal sealed partial class DebuggerWindow : Window
         }, DispatcherPriority.Loaded);
     }
 
-    private ushort FindPreviousDisassemblyStart(SpectrumMemory memory, ushort currentStart, int linesBack)
+    private ushort FindPreviousDisassemblyStart(IZ80DebuggerMemory memory, ushort currentStart, int linesBack)
     {
         const int searchBytes = 2048;
         ushort scan = unchecked((ushort)(currentStart - searchBytes));

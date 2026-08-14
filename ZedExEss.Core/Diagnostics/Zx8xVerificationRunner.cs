@@ -51,6 +51,10 @@ public static class Zx8xVerificationRunner
         Check("ZX8x turbo-to-realtime audio handoff", VerifyAudioOwnerHandoff, ref failed);
         Check("ZX8x ROM-driven cassette feedback", VerifyCassetteFeedback, ref failed);
         Check("ZX8x TZX clock conversion and transport", VerifyTzxPlayback, ref failed);
+        Check("ZX8x TZX pulse-sequence drift", VerifyTzxPulseSequenceDrift, ref failed);
+        Check("ZX8x TZX direct recording", VerifyTzxDirectRecording, ref failed);
+        Check("ZX8x TZX generalized data", VerifyTzxGeneralizedData, ref failed);
+        Check("ZX8x TZX EAR sample boundary", VerifyTzxEarSampleBoundary, ref failed);
         Check("ZX81 retrace and NMI controls", VerifyZx81IoControls, ref failed);
         Check("ZX8x specialized CPU execution", VerifyCpuExecution, ref failed);
         Check("ZX8x display-file M1 substitution", VerifyDisplayFetch, ref failed);
@@ -59,6 +63,9 @@ public static class Zx8xVerificationRunner
         Check("ZX81 FAST mode and vertical-retrace hold", VerifyFastModeTiming, ref failed);
         Check("ZX8x frame and short-retrace classification", VerifyRetraceClassification, ref failed);
         Check("ZX8x character raster generation", VerifyCharacterRaster, ref failed);
+        Check("ZX81 pseudo-hires reference raster", VerifyPseudoHiResRaster, ref failed);
+        Check("ZX81 WRX true-hires reference raster", VerifyWrxHiResRaster, ref failed);
+        Check("ZX81 WRX preserves normal character video", VerifyWrxInactiveRaster, ref failed);
         Check("ZX8x host frame surface", VerifyHostFrameSurface, ref failed);
         Check("ZX80 O and ZX81 P/81 program images", VerifyProgramImages, ref failed);
         if (!string.IsNullOrWhiteSpace(options.RomDirectory))
@@ -256,6 +263,201 @@ public static class Zx8xVerificationRunner
             session.Eject(0);
             File.Delete(path);
         }
+    }
+
+    private static void VerifyTzxPulseSequenceDrift()
+    {
+        string path = WriteTemporaryTzx(writer =>
+        {
+            writer.Write((byte)0x13);
+            writer.Write((byte)251);
+            for (int pulse = 0; pulse < 251; pulse++)
+            {
+                writer.Write((ushort)17);
+            }
+        });
+
+        var cassette = new Zx8xCassetteDevice(new Zx8xIoDevice(Zx8xModel.Zx81));
+        var session = new Zx8xTapeSession(cassette);
+        try
+        {
+            session.LoadTzx(path, 0);
+            session.Play(0);
+
+            // 251 * 17 reference T-states converts to ceil(4267 * 13 / 14)
+            // = 3963 machine T-states. A rounded duration per pulse would drift
+            // by hundreds of T-states over this deliberately awkward sequence.
+            session.AdvanceTo(3962);
+            Require(session.Loader?.IsPlaying == true,
+                "Pulse-sequence playback accumulated a negative clock-conversion error.");
+            session.AdvanceTo(3963);
+            Require(session.Loader?.IsPlaying == false,
+                "Pulse-sequence playback accumulated clock-conversion drift.");
+        }
+        finally
+        {
+            session.Eject(0);
+            File.Delete(path);
+        }
+    }
+
+    private static void VerifyTzxDirectRecording()
+    {
+        string path = WriteTemporaryTzx(writer =>
+        {
+            writer.Write((byte)0x15);
+            writer.Write((ushort)14); // One sample occupies exactly 13 ZX8x T-states.
+            writer.Write((ushort)0);
+            writer.Write((byte)8);
+            WriteUInt24(writer, 1);
+            writer.Write((byte)0b1110_0010); // high x3, low x3, high, low
+        });
+
+        var cassette = new Zx8xCassetteDevice(new Zx8xIoDevice(Zx8xModel.Zx81));
+        var session = new Zx8xTapeSession(cassette);
+        try
+        {
+            session.LoadTzx(path, 0);
+            session.Play(0);
+            Require(cassette.InputHigh,
+                "Direct recording did not assert its absolute initial high level.");
+
+            session.AdvanceTo(38);
+            Require(cassette.InputHigh, "Direct recording changed before its first run ended.");
+            session.AdvanceTo(39);
+            Require(!cassette.InputHigh, "Direct recording missed the high-to-low sample edge.");
+            session.AdvanceTo(78);
+            Require(cassette.InputHigh, "Direct recording missed the low-to-high sample edge.");
+            session.AdvanceTo(91);
+            Require(!cassette.InputHigh, "Direct recording missed its final level transition.");
+            session.AdvanceTo(104);
+            Require(session.Loader?.IsPlaying == false,
+                "Direct recording did not stop at its exact sampled duration.");
+        }
+        finally
+        {
+            session.Eject(0);
+            File.Delete(path);
+        }
+    }
+
+    private static void VerifyTzxGeneralizedData()
+    {
+        string path = WriteTemporaryTzx(writer =>
+        {
+            using var payloadStream = new MemoryStream();
+            using (var payload = new BinaryWriter(payloadStream, Encoding.ASCII, leaveOpen: true))
+            {
+                payload.Write((ushort)0); // pause
+                payload.Write((uint)1);   // pilot runs
+                payload.Write((byte)1);   // maximum pilot pulses per symbol
+                payload.Write((byte)1);   // pilot alphabet size
+                payload.Write((uint)2);   // two data symbols in the stream
+                payload.Write((byte)2);   // maximum data pulses per symbol
+                payload.Write((byte)2);   // data alphabet size
+
+                payload.Write((byte)3);   // pilot symbol starts explicitly high
+                payload.Write((ushort)28);
+                payload.Write((byte)0);   // pilot symbol index
+                payload.Write((ushort)2); // repetitions
+
+                payload.Write((byte)0);   // data symbol 0
+                payload.Write((ushort)14);
+                payload.Write((ushort)0);
+                payload.Write((byte)0);   // data symbol 1
+                payload.Write((ushort)28);
+                payload.Write((ushort)0);
+                payload.Write((byte)0x40); // packed symbols 0, 1
+            }
+
+            byte[] payloadBytes = payloadStream.ToArray();
+            writer.Write((byte)0x19);
+            writer.Write((uint)payloadBytes.Length);
+            writer.Write(payloadBytes);
+        });
+
+        var cassette = new Zx8xCassetteDevice(new Zx8xIoDevice(Zx8xModel.Zx81));
+        var session = new Zx8xTapeSession(cassette);
+        try
+        {
+            session.LoadTzx(path, 0);
+            session.Play(0);
+            Require(cassette.InputHigh,
+                "Generalized-data pilot polarity was not applied at playback start.");
+
+            session.AdvanceTo(51);
+            Require(cassette.InputHigh, "Generalized-data pilot ended early.");
+            session.AdvanceTo(52);
+            Require(!cassette.InputHigh, "Generalized-data symbol 0 started at the wrong time.");
+            session.AdvanceTo(65);
+            Require(cassette.InputHigh, "Generalized-data symbol 1 started at the wrong time.");
+            session.AdvanceTo(91);
+            Require(session.Loader?.IsPlaying == false,
+                "Generalized-data playback did not end at the decoded symbol boundary.");
+        }
+        finally
+        {
+            session.Eject(0);
+            File.Delete(path);
+        }
+    }
+
+    private static void VerifyTzxEarSampleBoundary()
+    {
+        Require((SampleFirstInInstruction(10) & 0x80) != 0,
+            "An EAR edge at the IN sample T-state was observed one instruction late.");
+        Require((SampleFirstInInstruction(11) & 0x80) == 0,
+            "An EAR edge after the IN sample T-state was observed too early.");
+
+        static byte SampleFirstInInstruction(ushort firstPulse)
+        {
+            string path = WriteTemporaryTzx(writer =>
+            {
+                writer.Write((byte)0x13);
+                writer.Write((byte)2);
+                writer.Write(firstPulse);
+                writer.Write((ushort)100);
+            });
+
+            try
+            {
+                Zx8xRomDescriptor descriptor = Zx8xModelDescriptors.GetRom(Zx8xModel.Zx81);
+                byte[] rom = new byte[descriptor.SizeBytes];
+                rom[0] = 0xDB; // IN A,(FE), sampled at instruction T10.
+                rom[1] = 0xFE;
+                Zx8xMachine machine = Zx8xMachineFactory.Create(
+                    Zx8xModel.Zx81,
+                    Zx8xRomImage.Load(rom, descriptor));
+                machine.Tape.LoadTzx(path, machine.Cpu.Cyc);
+                machine.Tape.Play(machine.Cpu.Cyc);
+                machine.StepInstruction();
+                return machine.Cpu.A;
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    private static string WriteTemporaryTzx(Action<BinaryWriter> writeBlocks)
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"zedexess-zx8x-{Guid.NewGuid():N}.tzx");
+        using var stream = File.Create(path);
+        using var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: false);
+        writer.Write(Encoding.ASCII.GetBytes("ZXTape!"));
+        writer.Write((byte)0x1A);
+        writer.Write((byte)1);
+        writer.Write((byte)20);
+        writeBlocks(writer);
+        return path;
+    }
+
+    private static void WriteUInt24(BinaryWriter writer, int value)
+    {
+        writer.Write((byte)value);
+        writer.Write((byte)(value >> 8));
+        writer.Write((byte)(value >> 16));
     }
 
     private static void VerifyRomSizeRejection()
@@ -699,6 +901,187 @@ public static class Zx8xVerificationRunner
         machine.PortBus.WriteUncontended(0x00FF, 0);
         Require(machine.VideoTiming.FrameNumber == 1,
             "A sustained vertical retrace did not begin a new frame.");
+    }
+
+    /// <summary>
+    /// Reproduces the software-only pseudo-hires arrangement: every television
+    /// line resets the ULA row counter and therefore displays row zero from 32
+    /// selected Sinclair glyphs. The expected bitmap is calculated from the ROM
+    /// bytes rather than from renderer output.
+    /// </summary>
+    private static void VerifyPseudoHiResRaster()
+    {
+        Zx8xRomDescriptor descriptor = Zx8xModelDescriptors.GetRom(Zx8xModel.Zx81);
+        byte[] rom = new byte[descriptor.SizeBytes];
+        for (int character = 0; character < 64; character++)
+        {
+            rom[0x1E00 + character * 8] = (byte)((character * 37) ^ 0xA5);
+        }
+
+        Zx8xMachine machine = Zx8xMachineFactory.Create(
+            Zx8xModel.Zx81,
+            Zx8xRomImage.Load(rom, descriptor),
+            highResolutionMode: Zx8xHighResolutionMode.Sinclair);
+        machine.Renderer.BeginFrame(1);
+
+        for (int y = 0; y < Zx8xMonochromeRenderer.Height; y++)
+        {
+            for (int column = 0; column < Zx8xMonochromeRenderer.Width / 8; column++)
+            {
+                byte character = (byte)((y * 11 + column * 7) & 0x3F);
+                bool inverse = ((y + column) & 1) != 0;
+                var display = new Zx8xDisplayFetch(
+                    (ulong)(y * machine.VideoTiming.Timing.TstatesPerLine + column * 4),
+                    (ushort)(0xC000 + column),
+                    (byte)(character | (inverse ? 0x80 : 0)),
+                    0x1F, // Odd I must still select the Sinclair 1E00h glyph page.
+                    (byte)(0xDF + column));
+                var raster = new Zx8xRasterFetch(
+                    display,
+                    machine.VideoTiming.Timing.UpperBorderLines + y,
+                    column * 4,
+                    CharacterLine: 0);
+                machine.Renderer.OnRasterFetch(in raster);
+            }
+        }
+
+        machine.Renderer.BeginFrame(2);
+        ReadOnlySpan<byte> frame = machine.Renderer.FrameBuffer.Span;
+        for (int y = 0; y < Zx8xMonochromeRenderer.Height; y++)
+        {
+            for (int column = 0; column < Zx8xMonochromeRenderer.Width / 8; column++)
+            {
+                byte character = (byte)((y * 11 + column * 7) & 0x3F);
+                byte expected = rom[0x1E00 + character * 8];
+                if (((y + column) & 1) != 0)
+                {
+                    expected = (byte)~expected;
+                }
+
+                RequireRasterByte(frame, y, column, expected, "pseudo-hires");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates the WRX refresh-memory modification using its canonical 6144
+    /// byte, 32-by-192 layout. Each displayed byte is addressed by IR directly;
+    /// neither the display character code nor the ULA character-row counter may
+    /// influence the result.
+    /// </summary>
+    private static void VerifyWrxHiResRaster()
+    {
+        Zx8xRomDescriptor descriptor = Zx8xModelDescriptors.GetRom(Zx8xModel.Zx81);
+        Zx8xMachine machine = Zx8xMachineFactory.Create(
+            Zx8xModel.Zx81,
+            Zx8xRomImage.Load(new byte[descriptor.SizeBytes], descriptor),
+            ramConfiguration: Zx8xRamConfiguration.Expansion16K,
+            highResolutionMode: Zx8xHighResolutionMode.Wrx);
+        const ushort bitmapStart = 0x6000;
+
+        for (int y = 0; y < Zx8xMonochromeRenderer.Height; y++)
+        {
+            for (int column = 0; column < Zx8xMonochromeRenderer.Width / 8; column++)
+            {
+                ushort address = (ushort)(bitmapStart + y * 32 + column);
+                machine.Memory.Write(address, (byte)((y * 29 + column * 13) ^ 0x5A));
+            }
+        }
+
+        machine.Renderer.BeginFrame(1);
+        for (int y = 0; y < Zx8xMonochromeRenderer.Height; y++)
+        {
+            for (int column = 0; column < Zx8xMonochromeRenderer.Width / 8; column++)
+            {
+                ushort address = (ushort)(bitmapStart + y * 32 + column);
+                var display = new Zx8xDisplayFetch(
+                    (ulong)(y * machine.VideoTiming.Timing.TstatesPerLine
+                        + Zx8xVideoTiming.DisplayStartTstate + column * 4),
+                    (ushort)(0xC000 + column),
+                    DisplayByte: 0x2D, // Must not act as a WRX character selector.
+                    I: (byte)(address >> 8),
+                    R: (byte)address);
+                var raster = new Zx8xRasterFetch(
+                    display,
+                    machine.VideoTiming.Timing.UpperBorderLines + y,
+                    LineTstate: Zx8xVideoTiming.DisplayStartTstate + column * 4,
+                    CharacterLine: (byte)(y & 7));
+                machine.Renderer.OnRasterFetch(in raster);
+            }
+        }
+
+        machine.Renderer.BeginFrame(2);
+        ReadOnlySpan<byte> frame = machine.Renderer.FrameBuffer.Span;
+        for (int y = 0; y < Zx8xMonochromeRenderer.Height; y++)
+        {
+            for (int column = 0; column < Zx8xMonochromeRenderer.Width / 8; column++)
+            {
+                ushort address = (ushort)(bitmapStart + y * 32 + column);
+                RequireRasterByte(frame, y, column, machine.Memory.Read(address), "WRX true-hires");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enabling the WRX hardware must not immediately reinterpret the ROM's
+    /// normal I=1Eh/1Fh display refreshes as bitmap addresses. This reproduces
+    /// the transition which otherwise erases a ZX81 screen one character row at
+    /// a time as the ordinary display loop runs.
+    /// </summary>
+    private static void VerifyWrxInactiveRaster()
+    {
+        Zx8xRomDescriptor descriptor = Zx8xModelDescriptors.GetRom(Zx8xModel.Zx81);
+        byte[] rom = new byte[descriptor.SizeBytes];
+        const byte character = 0x12;
+        const byte characterLine = 3;
+        const byte expectedGlyph = 0xA5;
+        rom[0x1E00 + character * 8 + characterLine] = expectedGlyph;
+        rom[0x1F5F] = 0x3C; // Value the erroneous unconditional WRX path would read.
+
+        Zx8xMachine machine = Zx8xMachineFactory.Create(
+            Zx8xModel.Zx81,
+            Zx8xRomImage.Load(rom, descriptor),
+            highResolutionMode: Zx8xHighResolutionMode.Wrx);
+
+        machine.Renderer.BeginFrame(1);
+        var display = new Zx8xDisplayFetch(
+            TState: 0,
+            Address: 0xC000,
+            DisplayByte: character,
+            I: 0x1F,
+            R: FirstDisplayRefreshForTest);
+        var raster = new Zx8xRasterFetch(
+            display,
+            machine.VideoTiming.Timing.UpperBorderLines,
+            LineTstate: 0,
+            CharacterLine: characterLine);
+        machine.Renderer.OnRasterFetch(in raster);
+        machine.Renderer.BeginFrame(2);
+
+        RequireRasterByte(
+            machine.Renderer.FrameBuffer.Span,
+            y: 0,
+            byteColumn: 0,
+            expectedGlyph,
+            "WRX inactive Sinclair character");
+    }
+
+    private const byte FirstDisplayRefreshForTest = 0x5F;
+
+    private static void RequireRasterByte(
+        ReadOnlySpan<byte> frame,
+        int y,
+        int byteColumn,
+        byte expected,
+        string mode)
+    {
+        int offset = y * Zx8xMonochromeRenderer.Width + byteColumn * 8;
+        for (int bit = 0; bit < 8; bit++)
+        {
+            byte expectedPixel = (expected & (0x80 >> bit)) != 0 ? (byte)0x00 : (byte)0xFF;
+            Require(frame[offset + bit] == expectedPixel,
+                $"{mode} raster differs at ({byteColumn * 8 + bit},{y}).");
+        }
     }
 
     private static Zx8xMachine CreateTestMachine(Zx8xModel model)

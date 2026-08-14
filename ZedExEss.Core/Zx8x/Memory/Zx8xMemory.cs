@@ -1,4 +1,5 @@
 using ZedExEss.Zx8x.Core;
+using ZedExEss.Spectrum.Debugging;
 
 namespace ZedExEss.Zx8x.Memory;
 
@@ -23,7 +24,7 @@ public enum Zx8xRamConfiguration
 /// upper half also drive display generation; that bus behaviour deliberately does
 /// not live here because an ordinary data read must still return memory unchanged.
 /// </remarks>
-public sealed class Zx8xMemory
+public sealed class Zx8xMemory : IZ80DebuggerMemory
 {
     private const int AddressHalfMask = 0x7FFF;
     private const int RamWindowStart = 0x4000;
@@ -76,6 +77,33 @@ public sealed class Zx8xMemory
         {
             _ram[(decodedAddress - RamWindowStart) & _ramMask] = value;
         }
+    }
+
+    public byte ReadDirect(ushort address) => Read(address);
+
+    public void WriteDirect(ushort address, byte value) => Write(address, value);
+
+    public bool CanWriteDirect(ushort address) => (address & AddressHalfMask) >= RamWindowStart;
+
+    public DebuggerMemoryMapping GetMapping(ushort address)
+    {
+        int decodedAddress = address & AddressHalfMask;
+        bool isRam = decodedAddress >= RamWindowStart;
+        int offset = isRam
+            ? (decodedAddress - RamWindowStart) & _ramMask
+            : decodedAddress % _rom.Length;
+        return new DebuggerMemoryMapping(
+            address,
+            address >> 14,
+            isRam,
+            !isRam,
+            isOpenBus: false,
+            isReadOnly: !isRam,
+            isContended: false,
+            bankIndex: isRam ? 0 : -1,
+            offset,
+            romBank: isRam ? -1 : 0,
+            Model.ToString());
     }
 
     /// <summary>Clears physical RAM while leaving the immutable ROM untouched.</summary>

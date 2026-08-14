@@ -123,6 +123,19 @@ namespace ZedExEss.Spectrum.Core
                 || model == SpectrumModel.Spectrum128K
                 || model == SpectrumModel.SpectrumPlus2;
         }
+        /// <summary>
+        /// Returns whether the machine decodes all eight low address bits for its ULA port.
+        /// </summary>
+        /// <remarks>
+        /// Sinclair machines decode only A0, exposing the ULA on every even port. Pentagon
+        /// and Scorpion clones use a 74LS138-style full low-byte decode and respond only when
+        /// the low byte is FEh. This describes device selection, independently of contention.
+        /// </remarks>
+        public static bool HasFullyDecodedUlaPort(SpectrumModel model)
+        {
+            return model == SpectrumModel.Pentagon128
+                || model == SpectrumModel.Scorpion256;
+        }
         public static bool IsContendedRamBank(SpectrumModel model, int bankIndex)
         {
             return model switch

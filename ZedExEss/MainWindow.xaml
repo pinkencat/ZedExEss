@@ -64,6 +64,7 @@
                     <MenuItem x:Name="Zx8xRam1KMenu" Header="_1 KiB internal" Tag="Internal1K" IsCheckable="True" Click="OnZx8xRamMenuClick" />
                     <MenuItem x:Name="Zx8xRam16KMenu" Header="_16 KiB expansion" Tag="Expansion16K" IsCheckable="True" Click="OnZx8xRamMenuClick" />
                 </MenuItem>
+                <MenuItem x:Name="Zx8xWrxMenu" Header="ZX80/ZX81 _WRX true hi-res" IsCheckable="True" Click="OnZx8xWrxMenuClick" />
                 <Separator />
                 <MenuItem Header="_Disk">
                     <MenuItem Header="_+3 Drive A">

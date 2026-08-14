@@ -10,6 +10,7 @@ using ZedExEss.Spectrum.Input;
 using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Zx8x.Core;
 using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
 using ShapePath = Avalonia.Controls.Shapes.Path;
 
 namespace ZedExEss.AvaloniaHost;
@@ -48,6 +49,7 @@ public sealed partial class MainWindow
     private MenuItem _autoLoadTapeMenuItem = null!;
     private MenuItem _autoTapePlayMenuItem = null!;
     private MenuItem _gigascreenBlendMenuItem = null!;
+    private MenuItem _zx8xWrxMenuItem = null!;
     private SpectrumDivExpansionMode _divExpansionMode = SpectrumDivExpansionMode.Disabled;
     private bool _mediaBrowserVisible = true;
     private bool _updatingCommandChecks;
@@ -74,6 +76,7 @@ public sealed partial class MainWindow
         _autoLoadTapeMenuItem = FindRequiredControl<MenuItem>("AutoLoadTapeMenuItem");
         _autoTapePlayMenuItem = FindRequiredControl<MenuItem>("AutoTapePlayMenuItem");
         _gigascreenBlendMenuItem = FindRequiredControl<MenuItem>("GigascreenBlendMenuItem");
+        _zx8xWrxMenuItem = FindRequiredControl<MenuItem>("Zx8xWrxMenuItem");
 
         FindRequiredControl<Button>("QuickOpenButton").Click += OnOpenMediaClicked;
         FindRequiredControl<Button>("QuickResetButton").Click += OnResetClicked;
@@ -109,6 +112,24 @@ public sealed partial class MainWindow
         RegisterZx8xModelMenuItem("ModelZx81MenuItem", Zx8xModel.Zx81);
         RegisterZx8xRamMenuItem("Zx8xRam1KMenuItem", Zx8xRamConfiguration.Internal1K);
         RegisterZx8xRamMenuItem("Zx8xRam16KMenuItem", Zx8xRamConfiguration.Expansion16K);
+        _zx8xWrxMenuItem.Click += (_, _) =>
+        {
+            if (_updatingCommandChecks)
+            {
+                return;
+            }
+
+            _zx8xHighResolutionMode = _zx8xWrxMenuItem.IsChecked
+                ? Zx8xHighResolutionMode.Wrx
+                : Zx8xHighResolutionMode.Sinclair;
+            if (_zx8xModel.HasValue)
+            {
+                ReplaceZx8xMachine(_zx8xModel.Value);
+            }
+
+            UpdateZx8xRamMenuState();
+            Focus();
+        };
         RegisterJoystickMenuItem("JoystickNoneMenuItem", SpectrumJoystickType.None);
         RegisterJoystickMenuItem("JoystickKempstonMenuItem", SpectrumJoystickType.Kempston);
         RegisterJoystickMenuItem("JoystickSinclair1MenuItem", SpectrumJoystickType.Sinclair1);
@@ -526,6 +547,8 @@ public sealed partial class MainWindow
             {
                 item.IsChecked = configuration == _zx8xRamConfiguration;
             }
+
+            _zx8xWrxMenuItem.IsChecked = _zx8xHighResolutionMode == Zx8xHighResolutionMode.Wrx;
         }
         finally
         {

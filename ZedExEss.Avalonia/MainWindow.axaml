@@ -66,6 +66,7 @@
           <MenuItem x:Name="Zx8xRam1KMenuItem" Header="_1 KiB internal" ToggleType="Radio" GroupName="Zx8xRam" />
           <MenuItem x:Name="Zx8xRam16KMenuItem" Header="_16 KiB expansion" ToggleType="Radio" GroupName="Zx8xRam" />
         </MenuItem>
+        <MenuItem x:Name="Zx8xWrxMenuItem" Header="ZX80/ZX81 _WRX true hi-res" ToggleType="CheckBox" />
         <Separator />
         <MenuItem Header="_Interface 1">
           <MenuItem x:Name="Interface1EnabledMenuItem" Header="_Enabled" ToggleType="CheckBox" />

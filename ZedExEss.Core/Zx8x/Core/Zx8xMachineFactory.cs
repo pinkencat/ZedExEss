@@ -14,6 +14,7 @@ public static class Zx8xMachineFactory
         string romDirectory,
         Zx81RomRevision romRevision = Zx81RomRevision.Standard,
         Zx8xRamConfiguration ramConfiguration = Zx8xRamConfiguration.Expansion16K,
+        Zx8xHighResolutionMode highResolutionMode = Zx8xHighResolutionMode.Sinclair,
         bool is50Hz = true,
         int sampleRate = 44_100)
     {
@@ -23,7 +24,7 @@ public static class Zx8xMachineFactory
         Zx8xRomDescriptor descriptor = Zx8xModelDescriptors.GetRom(model, romRevision);
         string romPath = Path.Combine(Path.GetFullPath(romDirectory), descriptor.FileName);
         Zx8xRomImage rom = Zx8xRomImage.Load(romPath, descriptor);
-        return Create(model, rom, romRevision, ramConfiguration, is50Hz, sampleRate);
+        return Create(model, rom, romRevision, ramConfiguration, highResolutionMode, is50Hz, sampleRate);
     }
 
     public static Zx8xMachine Create(
@@ -31,6 +32,7 @@ public static class Zx8xMachineFactory
         Zx8xRomImage rom,
         Zx81RomRevision romRevision = Zx81RomRevision.Standard,
         Zx8xRamConfiguration ramConfiguration = Zx8xRamConfiguration.Expansion16K,
+        Zx8xHighResolutionMode highResolutionMode = Zx8xHighResolutionMode.Sinclair,
         bool is50Hz = true,
         int sampleRate = 44_100)
     {
@@ -48,7 +50,7 @@ public static class Zx8xMachineFactory
         var cpu = new Zx8xCpu(memoryBus, portBus);
         Zx8xVideoTiming timing = Zx8xVideoTiming.ForRegion(is50Hz);
         var videoTiming = new Zx8xVideoTimingController(model, io, timing);
-        var renderer = new Zx8xMonochromeRenderer(memory, timing);
+        var renderer = new Zx8xMonochromeRenderer(memory, timing, highResolutionMode);
 
         cassette.ConfigureOutputSink(audio);
         cassette.OutputLevelChanged += renderer.OnCassetteOutputLevelChanged;

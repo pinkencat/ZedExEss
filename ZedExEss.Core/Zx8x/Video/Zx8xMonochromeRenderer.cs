@@ -7,7 +7,10 @@ namespace ZedExEss.Zx8x.Video;
 /// Builds the 256x192 monochrome picture directly from timed display-file M1
 /// fetches. A byte per pixel keeps the portable core independent of host pixel formats.
 /// </summary>
-public sealed class Zx8xMonochromeRenderer(Zx8xMemory memory, Zx8xVideoTiming timing) : IZx8xRasterSink
+public sealed class Zx8xMonochromeRenderer(
+    Zx8xMemory memory,
+    Zx8xVideoTiming timing,
+    Zx8xHighResolutionMode highResolutionMode = Zx8xHighResolutionMode.Sinclair) : IZx8xRasterSink
 {
     public const int Width = 256;
     public const int Height = 192;
@@ -21,6 +24,7 @@ public sealed class Zx8xMonochromeRenderer(Zx8xMemory memory, Zx8xVideoTiming ti
 
     private readonly Zx8xMemory _memory = memory ?? throw new ArgumentNullException(nameof(memory));
     private readonly Zx8xVideoTiming _timing = timing;
+    private readonly Zx8xHighResolutionMode _highResolutionMode = highResolutionMode;
     private readonly object _frameLock = new();
     private byte[] _frontBuffer = CreateBlankBuffer();
     private byte[] _backBuffer = CreateBlankBuffer();
@@ -35,6 +39,7 @@ public sealed class Zx8xMonochromeRenderer(Zx8xMemory memory, Zx8xVideoTiming ti
     public long CompletedFrameNumber { get; private set; }
     public long DisplayFetchCount { get; private set; }
     public ReadOnlyMemory<byte> FrameBuffer => _frontBuffer;
+    public Zx8xHighResolutionMode HighResolutionMode => _highResolutionMode;
 
     public void BeginFrame(long frameNumber)
     {
@@ -126,16 +131,48 @@ public sealed class Zx8xMonochromeRenderer(Zx8xMemory memory, Zx8xVideoTiming ti
         }
 
         Zx8xDisplayFetch displayFetch = fetch.Fetch;
-        int column = (displayFetch.R & 0x7F) - FirstDisplayRefresh;
-        if ((uint)column >= Width / 8)
+        int x;
+        ushort glyphAddress;
+        // Installing/enabling WRX does not disable the Sinclair character
+        // generator. The modification only supplies refresh-addressed pixel
+        // data after software moves I to 20h or above; the ROM's normal 1Eh/
+        // 1Fh character pages must continue to render conventionally.
+        bool wrxRasterActive = _highResolutionMode == Zx8xHighResolutionMode.Wrx
+            && displayFetch.I >= 0x20;
+        if (wrxRasterActive)
+        {
+            // WRX does not use the display byte as a character number. The RAM
+            // modification responds during refresh, so IR itself selects one
+            // eight-pixel value. Unlike the ROM display loop, R is therefore an
+            // address byte rather than a reliable horizontal column counter.
+            // LineTstate is measured from the end of horizontal sync, whereas
+            // the host surface is cropped to the 256-pixel active picture. The
+            // normal character path implicitly removes this lead-in through its
+            // R-based column counter; WRX must remove it explicitly.
+            x = (fetch.LineTstate - Zx8xVideoTiming.DisplayStartTstate)
+                * Zx8xVideoTiming.PixelClocksPerTstate;
+            glyphAddress = (ushort)((displayFetch.I << 8) | displayFetch.R);
+        }
+        else
+        {
+            int column = (displayFetch.R & 0x7F) - FirstDisplayRefresh;
+            if ((uint)column >= Width / 8)
+            {
+                return;
+            }
+
+            x = column * 8;
+            // Character code drives A3-A8, so I bit 0 is not part of the ROM
+            // page selection. Masking it also matches odd-I pseudo-hires code.
+            glyphAddress = (ushort)(((displayFetch.I & 0xFE) << 8)
+                | (displayFetch.CharacterCode << 3)
+                | fetch.CharacterLine);
+        }
+
+        if ((uint)x > Width - 8)
         {
             return;
         }
-
-        int x = column * 8;
-        ushort glyphAddress = (ushort)((displayFetch.I << 8)
-            | (displayFetch.CharacterCode << 3)
-            | fetch.CharacterLine);
         byte glyph = _memory.Read(glyphAddress);
         bool inverse = displayFetch.Inverse;
         int destination = y * Width + x;

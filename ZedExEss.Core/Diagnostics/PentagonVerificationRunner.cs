@@ -99,7 +99,20 @@ namespace ZedExEss.Diagnostics
                 log.Check("TR-DOS catalogue writeback path", () => VerifyTrDosCatalogueWriteback(betaRom, outputDirectory ?? root));
                 log.Check("Pentagon boot executes frames", () => VerifyBootRuns(SpectrumModel.Pentagon128, roms, betaRom, options.BootFrames));
                 log.Check("Scorpion #7FFD/#1FFD paging", () => VerifyScorpionPaging(scorpionRoms ?? throw new InvalidOperationException("Scorpion ROM must be loaded before paging verification.")));
+                log.Check("Scorpion built-in TR-DOS ROMCS", () => VerifyScorpionBuiltInTrDos(
+                    scorpionRoms ?? throw new InvalidOperationException("Scorpion ROM must be loaded before ROMCS verification.")));
+                log.Check("Scorpion Beta/Kempston port ownership", () => VerifyScorpionBetaKempstonConflict(
+                    scorpionRoms ?? throw new InvalidOperationException("Scorpion ROM must be loaded before port verification.")));
+                log.Check("Pentagon/Scorpion full ULA port decode", VerifyCloneUlaPortDecode);
+                log.Check("Scorpion frame timing and open bus", VerifyScorpionTimingAndOpenBus);
+                log.Check("Scorpion AY clock, ports and mono routing", VerifyScorpionAyRouting);
                 log.Check("Scorpion boot executes frames", () => VerifyBootRuns(SpectrumModel.Scorpion256, scorpionRoms ?? throw new InvalidOperationException("Scorpion ROM must be loaded before boot verification."), scorpionTrdosRom ?? throw new InvalidOperationException("Scorpion TR-DOS ROM must be loaded before boot verification."), options.BootFrames));
+                log.Check("Scorpion ROM menu enters 128 BASIC", () => VerifyScorpion128BasicBoot(
+                    scorpionRoms ?? throw new InvalidOperationException("Scorpion ROM must be loaded before 128 BASIC verification."),
+                    scorpionTrdosRom ?? throw new InvalidOperationException("Scorpion TR-DOS ROM must be loaded before 128 BASIC verification.")));
+                log.Check("Scorpion ROM menu enters 128 TR-DOS", () => VerifyScorpion128TrDosBoot(
+                    scorpionRoms ?? throw new InvalidOperationException("Scorpion ROM must be loaded before TR-DOS verification."),
+                    scorpionTrdosRom ?? throw new InvalidOperationException("Scorpion TR-DOS ROM must be loaded before TR-DOS verification.")));
 
                 log.WriteLine(string.Empty);
                 log.WriteLine(log.Failed == 0
@@ -220,6 +233,7 @@ namespace ZedExEss.Diagnostics
         private static void VerifyScorpionPaging(RomSet roms)
         {
             var memory = new SpectrumMemory(SpectrumModel.Scorpion256, roms);
+            var paging = new SpectrumPagingDevice(memory, SpectrumPagingPortMode.Scorpion);
             for (int bank = 0; bank < 16; bank++)
             {
                 byte[] data = new byte[RamBankSize];
@@ -227,25 +241,186 @@ namespace ZedExEss.Diagnostics
                 memory.LoadRamBank(bank, data);
             }
 
-            memory.WritePort7FFD(0x07);
+            Require(paging.HandlesPort(0x7FFD), "Scorpion should decode #7FFD through the +3-style A15/A14/A1 mask.");
+            Require(paging.HandlesPort(0x5FFD), "Scorpion should accept the documented #7FFD mirror decode.");
+            Require(paging.HandlesPort(0x1FFD), "Scorpion should decode the secondary #1FFD paging port.");
+            Require(!paging.HandlesPort(0x3FFD), "#3FFD must not alias the Scorpion #1FFD latch.");
+
+            paging.Write(0x7FFD, 0x07);
             Require(memory.ReadDirect(0xC000) == 0xB7, "Scorpion should page RAM bank 7 at C000h via #7FFD.");
 
-            memory.WritePort1FFD(0x10);
+            paging.Write(0x1FFD, 0x10);
             Require(memory.ReadDirect(0xC000) == 0xBF, "Scorpion #1FFD bit 4 should select RAM banks 8-15.");
 
-            memory.WritePort7FFD(0x08);
+            paging.Write(0x7FFD, 0x08);
             Require(memory.ReadScreen(0x4000) == 0xB7, "Scorpion alternate screen should read from RAM bank 7.");
 
             int rom2Probe = FindFirstDifference(roms.GetBank(0).Span, roms.GetBank(2).Span);
             Require(rom2Probe >= 0, "Scorpion ROM bank 2 must differ from ROM bank 0 for paging verification.");
-            memory.WritePort1FFD(0x02);
+            paging.Write(0x1FFD, 0x02);
             Require(memory.CurrentRomBank == 2, "Scorpion #1FFD bit 1 should select ROM bank 2.");
             Require(memory.ReadDirect((ushort)rom2Probe) == roms.GetBank(2).Span[rom2Probe], "Scorpion ROM bank 2 should be visible at 0000h.");
 
-            memory.WritePort1FFD(0x01);
+            paging.Write(0x1FFD, 0x01);
             Require(memory.ReadDirect(0x0000) == 0xB0, "Scorpion #1FFD bit 0 should map RAM bank 0 at 0000h.");
             memory.WriteDirect(0x0000, 0x5A);
             Require(memory.ReadDirect(0x0000) == 0x5A, "Scorpion low-memory RAM mapping should be writable.");
+
+            memory.Reset();
+            paging.Write(0x7FFD, 0x23); // Bank 3 plus the one-way paging lock.
+            paging.Write(0x1FFD, 0x10);
+            paging.Write(0x7FFD, 0x07);
+            Require(memory.ReadDirect(0xC000) == 0xB3, "Scorpion paging lock should reject later #7FFD and #1FFD writes until reset.");
+        }
+        private static void VerifyScorpionBuiltInTrDos(RomSet roms)
+        {
+            byte[] builtInTrDos = roms.GetBank(3).ToArray();
+            var memory = new SpectrumMemory(SpectrumModel.Scorpion256, roms);
+            var beta = new SpectrumBeta128Device(builtInTrDos);
+            memory.ConfigureBeta128(beta);
+
+            // Scorpion bank 3 is wired to the built-in Beta interface's ROMCS input. The
+            // ordinary paging equations can select ROMs 0, 1 and 2, but never bank 3.
+            memory.WritePort7FFD(0x10);
+            memory.WritePort1FFD(0x02);
+            Require(memory.CurrentRomBank == 2, "Scorpion service ROM should be primary ROM bank 2, not the TR-DOS bank.");
+            memory.WritePort1FFD(0x00);
+            Require(memory.CurrentRomBank == 1, "Scorpion #7FFD bit 4 should restore primary ROM bank 1.");
+
+            int probe = FindFirstDifference(roms.GetBank(1).Span, builtInTrDos);
+            Require(probe >= 0, "Scorpion ROM bank 1 and built-in TR-DOS bank 3 must differ.");
+            Require(memory.ReadDirect((ushort)probe) == roms.GetBank(1).Span[probe], "TR-DOS bank 3 must not appear through ordinary ROM paging.");
+
+            memory.FetchOpcode(0x3D00);
+            Require(beta.IsPaged, "A 3Dxx opcode fetch from Scorpion ROM 1 should assert built-in Beta ROMCS.");
+            Require(memory.ReadDirect((ushort)probe) == builtInTrDos[probe], "Built-in Scorpion ROM bank 3 should be visible while Beta ROMCS is asserted.");
+
+            memory.FetchOpcode(0x4000);
+            Require(!beta.IsPaged, "The first RAM opcode fetch should release late Scorpion Beta ROMCS.");
+            Require(memory.ReadDirect((ushort)probe) == roms.GetBank(1).Span[probe], "Primary ROM bank 1 should return after Beta ROMCS is released.");
+
+            beta.Reset();
+            memory.Reset();
+            memory.FetchOpcode(0x3D00);
+            Require(!beta.IsPaged, "A 3Dxx fetch from Scorpion ROM 0 must not page the Beta ROM.");
+
+            memory.WritePort1FFD(0x02);
+            memory.FetchOpcode(0x3D00);
+            Require(beta.IsPaged, "Fuse-compatible late Beta decode treats Scorpion service ROM 2 as a ROMCS-capable ROM.");
+        }
+        private static void VerifyScorpionBetaKempstonConflict(RomSet roms)
+        {
+            var memory = new SpectrumMemory(SpectrumModel.Scorpion256, roms);
+            var beta = new SpectrumBeta128Device(roms.GetBank(3).Span);
+            var controller = new SpectrumBeta128DiskController(beta);
+            var keyboard = new SpectrumKeyboard();
+            var joystick = new SpectrumJoystickDevice(keyboard)
+            {
+                Type = SpectrumJoystickType.Kempston
+            };
+            joystick.SetButtonState(SpectrumJoystickButton.Fire, pressed: true);
+
+            var ports = new SpectrumPortBus(SpectrumModel.Scorpion256, contendedPages: memory);
+            ports.AddDevice(controller);
+            ports.AddDevice(joystick);
+
+            Require(ports.ReadUncontended(0x001F) == 0x10, "Kempston should own #1F while Scorpion Beta ROMCS is inactive.");
+
+            beta.BeforeOpcodeFetch(0x3D00, allowRomTrap: true);
+            Require(controller.HandlesPort(0x001F), "Beta status port should become visible with ROMCS active.");
+            Require(ports.ReadUncontended(0x001F) == 0x86, "Active Beta status must take priority over the overlapping Kempston #1F decode.");
+        }
+        private static void VerifyCloneUlaPortDecode()
+        {
+            VerifyCloneUlaPortDecode(SpectrumModel.Pentagon128);
+            VerifyCloneUlaPortDecode(SpectrumModel.Scorpion256);
+
+            // Preserve the Sinclair partial decode: a non-FE even port must still reach
+            // the ULA on a 48K machine.
+            var sinclairMemory = new SpectrumMemory(SpectrumModel.Spectrum48K, RomSet.CreateBlank(1));
+            var sinclairRenderer = new SpectrumUlaRenderer(SpectrumModel.Spectrum48K, sinclairMemory);
+            var sinclairUla = new SpectrumUla(SpectrumModel.Spectrum48K, sinclairRenderer);
+            var sinclairPorts = new SpectrumPortBus(SpectrumModel.Spectrum48K, contendedPages: sinclairMemory);
+            sinclairPorts.AddDevice(sinclairUla);
+            sinclairPorts.WriteUncontended(0x00FC, 0x03);
+            Require(sinclairRenderer.BorderColorIndex == 3, "Sinclair ULA should retain its every-even-port partial decode.");
+        }
+        private static void VerifyCloneUlaPortDecode(SpectrumModel model)
+        {
+            var memory = new SpectrumMemory(model, RomSet.CreateBlank(SpectrumModelTraits.RomBankCount(model)));
+            var renderer = new SpectrumUlaRenderer(model, memory);
+            var ula = new SpectrumUla(model, renderer);
+            var ports = new SpectrumPortBus(model, contendedPages: memory);
+            ports.AddDevice(ula);
+
+            Require(ula.HandlesPort(0x00FE), $"{model} ULA should respond at xxFE.");
+            Require(ula.HandlesPort(0x7FFE), $"{model} ULA should ignore the high address byte at xxFE.");
+            Require(!ula.HandlesPort(0x00FC), $"{model} ULA should not respond to a different even low byte.");
+
+            ports.WriteUncontended(0x00FC, 0x03);
+            Require(renderer.BorderColorIndex == 0, $"{model} non-FE even write must not alter the border.");
+            ports.WriteUncontended(0x7FFE, 0x05);
+            Require(renderer.BorderColorIndex == 5, $"{model} xxFE write should alter the border.");
+        }
+        private static void VerifyScorpionTimingAndOpenBus()
+        {
+            const SpectrumModel Model = SpectrumModel.Scorpion256;
+            SpectrumTimingModel timing = SpectrumTimingModel.ForModel(Model);
+            SpectrumUlaTiming ula = SpectrumUlaTiming.ForModel(Model);
+
+            // These are the Scorpion frame constants used by libspectrum/Fuse:
+            // 24+128+32+40 = 224 T-states per line and 48+192+48+24 = 312 lines.
+            Require(SpectrumModelTraits.CpuClockHz(Model) == 3500000, "Scorpion CPU clock should be 3.5 MHz.");
+            Require(SpectrumAudioTiming.AyClockHz(Model) == 1750000, "Scorpion AY clock should be 1.75 MHz.");
+            Require(timing.TstatesPerLine == 224, "Scorpion line should contain 224 T-states.");
+            Require(timing.LinesPerFrame == 312, "Scorpion frame should contain 312 lines.");
+            Require(timing.TstatesPerFrame == 69888, "Scorpion frame should contain 69888 T-states.");
+            Require(timing.LeftBorderTstates == 24, "Scorpion paper should start after 24 left-border T-states.");
+            Require(timing.HorizontalScreenTstates == 128, "Scorpion paper should occupy 128 T-states per line.");
+            Require(timing.TopLeftPixelTstate == 14336, "Scorpion top-left paper pixel should occur 14336 T-states after INT.");
+            Require(timing.InterruptPulseTstates == 36, "Scorpion INT pulse should last 36 T-states.");
+            Require(!timing.FloatingBusEnabled, "Scorpion unattached ports should expose an idle FF bus, not ULA fetch data.");
+            Require(ula.FirstDisplayLine == 64, "Scorpion first paper line should be physical frame line 64.");
+            Require(ula.VisibleFirstLine == 16, "The 48-line host crop should begin at physical frame line 16.");
+            Require(ula.DisplayStartTstate == 24, "Scorpion paper should begin at line T-state 24.");
+
+            var contention = SpectrumContentionProfile.Create(Model);
+            for (ulong tstate = 0; tstate < (ulong)timing.TstatesPerFrame; tstate++)
+            {
+                Require(contention.GetMemoryDelay(tstate) == 0, "Scorpion RAM must remain uncontended.");
+                Require(contention.GetNoMreqDelay(tstate) == 0, "Scorpion no-MREQ cycles must remain uncontended.");
+            }
+
+            var memory = new SpectrumMemory(Model, RomSet.CreateBlank(SpectrumModelTraits.RomBankCount(Model)));
+            var floatingBus = new SpectrumFloatingBus(Model, memory);
+            Require(floatingBus.Read(0xFFFF, (ulong)timing.TopLeftPixelTstate + 2) == 0xFF,
+                "Scorpion open-bus reads must return FF even while the ULA is fetching screen data.");
+        }
+        private static void VerifyScorpionAyRouting()
+        {
+            const SpectrumModel Model = SpectrumModel.Scorpion256;
+            var ay = new AY38912(SpectrumAudioTiming.AyClockHz(Model), SpectrumAudioTiming.DefaultSampleRate, outputAmplitude: 9000);
+            var device = new SpectrumAyDevice(ay);
+            var ports = new SpectrumPortBus(Model);
+            ports.AddDevice(device);
+
+            ports.WriteUncontended(0xFFFD, 0x08);
+            ports.WriteUncontended(0xBFFD, 0x0F);
+            Require(ports.ReadUncontended(0xFFFD) == 0x0F, "Scorpion AY should use the standard FFFD/BFFD register path.");
+
+            // Base Scorpion hardware exposes the AY's mono mix. Fuse's ACB/ABC stereo
+            // separation is an optional host setting rather than a machine requirement.
+            ports.WriteUncontended(0xFFFD, 0x07);
+            ports.WriteUncontended(0xBFFD, 0x3E); // Tone A only; disable noise and channels B/C.
+            short[] stereo = ay.GenerateSamples(SpectrumAudioTiming.DefaultSampleRate, 128);
+            bool audible = false;
+            for (int i = 0; i < stereo.Length; i += 2)
+            {
+                Require(stereo[i] == stereo[i + 1], "Base Scorpion AY output should be duplicated equally to both host channels.");
+                audible |= stereo[i] != 0;
+            }
+
+            Require(audible, "Scorpion AY routing test should produce an audible channel-A signal.");
         }
         private static void VerifyAyPorts()
         {
@@ -459,29 +634,112 @@ namespace ZedExEss.Diagnostics
         private static void VerifyBootRuns(SpectrumModel model, RomSet roms, byte[] trdosRom, int frames)
         {
             using var machine = CreateMachine(model, roms, trdosRom);
-            int frameCount = Math.Max(1, frames);
+            RunFrames(machine, Math.Max(1, frames));
+
+            Require(machine.Cpu.Cyc > 0, "CPU should advance while running the boot ROM.");
+        }
+
+        private static void VerifyScorpion128BasicBoot(RomSet roms, byte[] trdosRom)
+        {
+            using var machine = CreateMachine(SpectrumModel.Scorpion256, roms, trdosRom);
+            RunFrames(machine, 200);
+
+            uint menuFrame = HashFrame(machine.Machine.Renderer.FrameBuffer);
+            Require(!machine.Beta.IsPaged, "Scorpion startup menu should not leave TR-DOS ROMCS asserted.");
+
+            // The Scorpion menu starts on 128 TR-DOS. One cursor-down chord selects
+            // 128 BASIC; the deliberately long key/release periods match a real matrix key.
+            PressChord(machine, [SpectrumKey.CapsShift, SpectrumKey.D6]);
+            PressChord(machine, [SpectrumKey.Enter]);
+            RunFrames(machine, 100);
+
+            ushort prog = ReadSystemVariableWord(machine.Machine.Memory, 0x5C53);
+            ushort vars = ReadSystemVariableWord(machine.Machine.Memory, 0x5C4B);
+            Require(machine.Machine.Memory.CurrentRomBank == 0, "128 BASIC should execute from Scorpion ROM bank 0.");
+            Require(!machine.Beta.IsPaged, "128 BASIC must run with TR-DOS ROMCS released.");
+            Require(prog is >= 0x5CCB and < 0xC000, "128 BASIC should initialise a sane PROG system variable.");
+            Require(vars >= prog && vars < 0xC000, "128 BASIC should initialise VARS at or above PROG.");
+            Require(HashFrame(machine.Machine.Renderer.FrameBuffer) != menuFrame, "Selecting 128 BASIC should leave the Scorpion startup menu.");
+        }
+
+        private static void VerifyScorpion128TrDosBoot(RomSet roms, byte[] trdosRom)
+        {
+            using var machine = CreateMachine(SpectrumModel.Scorpion256, roms, trdosRom);
+            RunFrames(machine, 200);
+
+            uint menuFrame = HashFrame(machine.Machine.Renderer.FrameBuffer);
+            Require(!machine.Beta.IsPaged, "Scorpion startup menu should begin with TR-DOS ROMCS released.");
+
+            // 128 TR-DOS is the default menu item, so Enter must execute the genuine
+            // ROM menu path and assert the built-in Beta interface's ROMCS latch.
+            PressChord(machine, [SpectrumKey.Enter]);
+            RunFrames(machine, 100);
+
+            Require(machine.Beta.IsPaged, "Selecting 128 TR-DOS should assert the built-in Beta ROMCS latch.");
+            Require(machine.Cpu.PC is >= 0x3D00 and <= 0x3DFF, "TR-DOS should reach its ROM-resident idle/input loop.");
+            Require(machine.Machine.Memory.CurrentRomBank == 1, "128 TR-DOS should retain Scorpion BASIC ROM bank 1 beneath ROMCS.");
+            Require(machine.Machine.Memory.ReadDirect(0x0100) == trdosRom[0x0100], "TR-DOS ROM contents should be visible while ROMCS is asserted.");
+            Require(HashFrame(machine.Machine.Renderer.FrameBuffer) != menuFrame, "Selecting 128 TR-DOS should leave the Scorpion startup menu.");
+        }
+
+        private static void RunFrames(HeadlessMachine machine, int frameCount)
+        {
             for (int frame = 0; frame < frameCount; frame++)
             {
                 machine.Emulator.RunFrame(presentFrame: false);
             }
-
-            Require(machine.Cpu.Cyc > 0, "CPU should advance while running the boot ROM.");
         }
+
+        private static void PressChord(HeadlessMachine machine, ReadOnlySpan<SpectrumKey> keys)
+        {
+            foreach (SpectrumKey key in keys)
+            {
+                machine.Machine.Keyboard.SetKeyState(key, pressed: true);
+            }
+
+            RunFrames(machine, 10);
+
+            foreach (SpectrumKey key in keys)
+            {
+                machine.Machine.Keyboard.SetKeyState(key, pressed: false);
+            }
+
+            RunFrames(machine, 10);
+        }
+
+        private static ushort ReadSystemVariableWord(SpectrumMemory memory, ushort address)
+        {
+            return (ushort)(memory.ReadDirect(address) | (memory.ReadDirect((ushort)(address + 1)) << 8));
+        }
+
+        private static uint HashFrame(ReadOnlySpan<int> frame)
+        {
+            uint hash = 2166136261;
+            foreach (int pixel in frame)
+            {
+                hash ^= unchecked((uint)pixel);
+                hash *= 16777619;
+            }
+
+            return hash;
+        }
+
         private static HeadlessMachine CreateMachine(SpectrumModel model, RomSet roms, byte[] trdosRom)
         {
+            SpectrumBeta128Device? beta = null;
             SpectrumMachine machine = SpectrumMachineFactory.Create(new SpectrumMachineOptions
             {
                 Model = model,
                 Roms = roms,
                 ConfigureDevices = context =>
                 {
-                    var beta = new SpectrumBeta128Device(trdosRom);
+                    beta = new SpectrumBeta128Device(trdosRom);
                     context.Memory.ConfigureBeta128(beta);
                     context.Ports.AddDevice(new SpectrumBeta128DiskController(beta));
                 }
             });
             machine.AttachTape(null);
-            return new HeadlessMachine(machine.Cpu, machine.Emulator);
+            return new HeadlessMachine(machine, beta ?? throw new InvalidOperationException("Beta 128 device was not configured."));
         }
         private static int FindFirstDifference(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
         {
@@ -616,10 +874,12 @@ namespace ZedExEss.Diagnostics
                 WriteTstate = tstateProvider();
             }
         }
-        private sealed class HeadlessMachine(Z80 cpu, SpectrumEmulator emulator) : IDisposable
+        private sealed class HeadlessMachine(SpectrumMachine machine, SpectrumBeta128Device beta) : IDisposable
         {
-            public Z80 Cpu { get; } = cpu;
-            public SpectrumEmulator Emulator { get; } = emulator;
+            public SpectrumMachine Machine { get; } = machine;
+            public SpectrumBeta128Device Beta { get; } = beta;
+            public Z80 Cpu => Machine.Cpu;
+            public SpectrumEmulator Emulator => Machine.Emulator;
             public void Dispose()
             {
                 Emulator.VideoEnabled = true;

@@ -11,6 +11,7 @@ using ZedExEss.Zx8x.Core;
 using ZedExEss.Zx8x.Input;
 using ZedExEss.Zx8x.Media;
 using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
 
 namespace ZedExEss;
 
@@ -87,6 +88,7 @@ public partial class MainWindow
                 model,
                 Path.Combine(AppContext.BaseDirectory, "ROMs"),
                 ramConfiguration: _zx8xRamConfiguration,
+                highResolutionMode: _zx8xHighResolutionMode,
                 sampleRate: SpectrumAudioTiming.DefaultSampleRate);
         }
         catch (Exception ex)
@@ -117,6 +119,12 @@ public partial class MainWindow
 
         _zx8xModel = model;
         _zx8xMachine = replacement;
+        _debugger.Attach(
+            replacement.Cpu,
+            replacement.Memory,
+            replacement.TstatesPerFrame,
+            replacement.VideoTiming.Timing.TstatesPerLine);
+        UpdateCpuStepHooks();
         replacement.Tape.PlaybackStopped += OnTapePlaybackStopped;
         if (preservedTapePath != null)
         {
@@ -200,6 +208,23 @@ public partial class MainWindow
         }
 
         _zx8xRamConfiguration = configuration;
+        if (_zx8xModel.HasValue)
+        {
+            InitializeZx8xMachine(_zx8xModel.Value);
+        }
+        else
+        {
+            UpdateModelMenuChecks();
+        }
+
+        Focus();
+    }
+
+    private void OnZx8xWrxMenuClick(object sender, RoutedEventArgs e)
+    {
+        _zx8xHighResolutionMode = Zx8xWrxMenu.IsChecked
+            ? Zx8xHighResolutionMode.Wrx
+            : Zx8xHighResolutionMode.Sinclair;
         if (_zx8xModel.HasValue)
         {
             InitializeZx8xMachine(_zx8xModel.Value);

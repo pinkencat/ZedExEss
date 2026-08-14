@@ -30,7 +30,9 @@ namespace ZedExEss.Spectrum.Video
         public SpectrumUlaRenderer Renderer => _renderer;
         public bool HandlesPort(ushort port)
         {
-            return (port & 0x0001) == 0;
+            return SpectrumModelTraits.HasFullyDecodedUlaPort(_model)
+                ? (port & 0x00FF) == 0x00FE
+                : (port & 0x0001) == 0;
         }
         public byte Read(ushort port)
         {

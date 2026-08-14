@@ -46,7 +46,7 @@ public static class Interface1VerificationRunner
         Check("Eight-drive motor shift register", VerifyMotorShiftRegister, ref failed);
         Check("MDR image validation and round trip", VerifyMdrImage, ref failed);
         Check("Microdrive GAP/SYNC and byte transport", VerifyMicrodriveReadTransport, ref failed);
-        Check("Microdrive write and write protection", VerifyMicrodriveWriteTransport, ref failed);
+        Check("Microdrive write/erase gates and write protection", VerifyMicrodriveWriteTransport, ref failed);
         Check("Persistent Microdrive session state", VerifyPersistentMediaState, ref failed);
         Check("Dirty MDR shutdown flush and reload", VerifyDirtyMediaFlush, ref failed);
 
@@ -143,15 +143,15 @@ public static class Interface1VerificationRunner
         var device = new SpectrumInterface1Device(CreatePatternedRom());
 
         // Clock high then low with active-low DATA starts drive 1.
-        device.Write(0x00EF, 0x02);
-        device.Write(0x00EF, 0x00);
+        device.Write(0x00EF, 0xEE);
+        device.Write(0x00EF, 0xEC);
         Require(device.MotorMask == 0x01 && device.IsMotorRunning(1), "Drive 1 did not start on a falling clock edge.");
         Require(device.SelectedDriveNumber == 1, "Selected-drive status did not identify drive 1.");
         Require(device.Activity == MicrodriveActivityState.Idle, "Selecting a drive incorrectly reported data activity.");
 
         // Shift drive 1 to drive 2 while inserting an off state for drive 1.
-        device.Write(0x00EF, 0x03);
-        device.Write(0x00EF, 0x01);
+        device.Write(0x00EF, 0xEF);
+        device.Write(0x00EF, 0xED);
         Require(device.MotorMask == 0x02, "Motor state did not shift from drive 1 to drive 2.");
         Require(!device.IsMotorRunning(1) && device.IsMotorRunning(2), "Shifted motor selection is incorrect.");
         Require(device.SelectedDriveNumber == 2, "Selected-drive status did not follow the motor shift register.");
@@ -234,6 +234,32 @@ public static class Interface1VerificationRunner
         device.InsertCartridge(1, cartridge);
         SelectDriveOne(device);
 
+        Require(!device.MicrodriveWriteEnabled && !device.MicrodriveEraseEnabled,
+            "Drive selection did not leave the IF1 in its EEh read state.");
+
+        // The data register is electrically disconnected from the write head
+        // in read mode. An E7h output must therefore leave the cartridge and
+        // transport untouched.
+        byte originalFirstByte = cartridge.ReadByte(0);
+        WritePreamble(device);
+        device.Write(0x00E7, 0x35);
+        Require(cartridge.ReadByte(0) == originalFirstByte,
+            "A data-port write modified the cartridge while R/W selected read mode.");
+
+        // E6h starts the leading erase head, but does not yet enable the data
+        // write head. MDR images contain logical sectors rather than raw flux,
+        // so this phase is represented by its gate/activity state only.
+        device.Write(0x00EF, 0xE6);
+        Require(!device.MicrodriveWriteEnabled && device.MicrodriveEraseEnabled,
+            "E6h did not select the erase-only lead-in state.");
+        device.Write(0x00E7, 0x35);
+        Require(cartridge.ReadByte(0) == originalFirstByte,
+            "Erase-only mode incorrectly routed a data byte to the write head.");
+
+        device.Write(0x00EF, 0xE2);
+        Require(device.MicrodriveWriteEnabled && device.MicrodriveEraseEnabled,
+            "E2h did not enable the Microdrive write and erase heads.");
+
         byte[] header = Enumerable.Range(0, MicrodriveCartridge.HeaderLength)
             .Select(static i => (byte)(0x80 + i))
             .ToArray();
@@ -248,12 +274,17 @@ public static class Interface1VerificationRunner
             Require(cartridge.ReadByte(i) == header[i], $"Written header byte {i} was not stored.");
         }
 
+        device.Write(0x00EF, 0xEE);
+        Require(!device.MicrodriveWriteEnabled && !device.MicrodriveEraseEnabled,
+            "EEh did not return the Microdrive to read mode.");
+
         cartridge.SetWriteProtected(true);
         _ = device.Read(0x00EF); // Move transport to the record-header half.
         Require(device.Read(0x00EF) == 0xE6, "Write-protect status bit is not active-low.");
 
         int recordOffset = MicrodriveCartridge.HeaderLength;
         byte before = cartridge.ReadByte(recordOffset);
+        device.Write(0x00EF, 0xE2);
         WritePreamble(device);
         device.Write(0x00E7, 0x35);
         Require(cartridge.ReadByte(recordOffset) == before, "Write-protected media was modified.");
@@ -422,8 +453,10 @@ public static class Interface1VerificationRunner
 
     private static void SelectDriveOne(SpectrumInterface1Device device)
     {
-        device.Write(0x00EF, 0x02);
-        device.Write(0x00EF, 0x00);
+        // Preserve the ROM's idle/read gate state while clocking an active-low
+        // COMMS DATA bit into drive 1's motor-selection shift register.
+        device.Write(0x00EF, 0xEE);
+        device.Write(0x00EF, 0xEC);
         Require(device.IsMotorRunning(1), "Drive 1 was not selected.");
     }
 

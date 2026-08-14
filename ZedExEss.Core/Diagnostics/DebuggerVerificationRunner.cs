@@ -11,6 +11,8 @@ using ZedExEss.Spectrum.Memory;
 using ZedExEss.Spectrum.Ports;
 using ZedExEss.Spectrum.Video;
 using ZedExEss.Z80CPU;
+using ZedExEss.Zx8x.Core;
+using ZedExEss.Zx8x.Memory;
 
 namespace ZedExEss.Diagnostics
 {
@@ -55,6 +57,7 @@ namespace ZedExEss.Diagnostics
                 log.Check("Step-over uses temporary breakpoint after CALL", VerifyStepOver);
                 log.Check("Memory and port watchpoints pause after instruction", VerifyWatchpoints);
                 log.Check("Project and patch debugger state through the portable view service", VerifyPortableViewService);
+                log.Check("Debug ZX80/ZX81 execution and memory through the shared debugger", VerifyZx8xDebugger);
 
                 log.WriteLine(string.Empty);
                 log.WriteLine(log.Failed == 0 ? "Result: PASS" : $"Result: FAIL ({log.Failed} failed checks)");
@@ -222,6 +225,65 @@ namespace ZedExEss.Diagnostics
                 && export.Contains("LD BC,5678", StringComparison.Ordinal),
                 "Portable disassembly export was incorrect.");
         }
+        private static void VerifyZx8xDebugger()
+        {
+            Zx8xRomDescriptor descriptor = Zx8xModelDescriptors.GetRom(Zx8xModel.Zx81);
+            Zx8xMachine machine = Zx8xMachineFactory.Create(
+                Zx8xModel.Zx81,
+                Zx8xRomImage.Load(new byte[descriptor.SizeBytes], descriptor),
+                ramConfiguration: Zx8xRamConfiguration.Expansion16K);
+            Write(machine.Memory, 0x4000, 0x00, 0x00);
+            machine.Cpu.PC = 0x4000;
+            machine.Cpu.SetInterruptState(0, false, false);
+            machine.Cpu.SetHalted(false);
+
+            var debugger = new SpectrumDebuggerController();
+            debugger.Attach(
+                machine.Cpu,
+                machine.Memory,
+                machine.TstatesPerFrame,
+                machine.VideoTiming.Timing.TstatesPerLine);
+            machine.ConfigureCpuStepHooks(debugger.BeforeCpuStep, debugger.AfterCpuStep);
+            debugger.AddExecuteBreakpoint(0x4000);
+            debugger.Run();
+            machine.StepInstruction();
+            Require(debugger.IsPaused && machine.Cpu.PC == 0x4000,
+                "ZX8x execute breakpoint did not stop before the opcode fetch.");
+
+            debugger.RemoveBreakpoint(debugger.Breakpoints.Single());
+            debugger.PrepareStepInto();
+            machine.SetPaused(false);
+            machine.StepInstruction();
+            Require(debugger.IsPaused && machine.Cpu.PC == 0x4001,
+                "ZX8x single-step did not execute exactly one instruction.");
+
+            Write(machine.Memory, 0x4001, 0x3E, 0x55, 0x32, 0x00, 0x41);
+            machine.Cpu.PC = 0x4001;
+            debugger.AddMemoryBreakpoint(DebuggerBreakType.MemoryWrite, 0x4100, 0x4100);
+            debugger.Run();
+            machine.Cpu.ConfigureDebugHook(debugger);
+            machine.SetPaused(false);
+            for (int guard = 0; !debugger.IsPaused && guard < 4; guard++)
+            {
+                machine.StepInstruction();
+            }
+
+            Require(machine.Memory.ReadDirect(0x4100) == 0x55
+                && debugger.LastHit?.Type == DebuggerBreakType.MemoryWrite,
+                "ZX8x memory watchpoint did not stop after the write instruction.");
+
+            var view = new SpectrumDebuggerViewService(
+                debugger,
+                new Z80Disassembler(),
+                new Z80InlineAssembler());
+            Require(view.GetMemoryText(0x4000, 1).StartsWith("4000: 00 3E 55 32", StringComparison.Ordinal),
+                "ZX8x debugger memory projection was incorrect.");
+            Require(view.TryPatchBytes(0x4000, "C9", out string error), error);
+            Require(!view.TryPatchBytes(0x0000, "00", out _),
+                "ZX8x debugger allowed a ROM patch through the RAM-only editor.");
+            Require(machine.Memory.GetMapping(0x4000).DisplayName.StartsWith("RAM", StringComparison.Ordinal),
+                "ZX8x RAM mapping was not exposed to the disassembly view.");
+        }
         private static DebugMachine CreateDebugMachine()
         {
             SpectrumModel model = SpectrumModel.Spectrum48K;
@@ -251,6 +313,13 @@ namespace ZedExEss.Diagnostics
             return new SpectrumMemory(SpectrumModel.Spectrum48K, RomSet.CreateBlank(1));
         }
         private static void Write(SpectrumMemory memory, ushort address, params byte[] bytes)
+        {
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                memory.WriteDirect(unchecked((ushort)(address + i)), bytes[i]);
+            }
+        }
+        private static void Write(Zx8xMemory memory, ushort address, params byte[] bytes)
         {
             for (int i = 0; i < bytes.Length; i++)
             {

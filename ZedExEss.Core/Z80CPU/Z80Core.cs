@@ -10,7 +10,7 @@ namespace ZedExEss.Z80CPU
     /// instruction implementation without putting a runtime family branch in every
     /// memory and I/O access made by the Spectrum hot path.
     /// </remarks>
-    public partial class Z80Core<TMemory, TPorts>
+    public partial class Z80Core<TMemory, TPorts> : Spectrum.Debugging.IZ80DebuggerCpu
         where TMemory : class, IZ80MemoryBus
         where TPorts : class, IZ80PortBus
     {

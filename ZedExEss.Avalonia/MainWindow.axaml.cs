@@ -318,6 +318,13 @@ public sealed partial class MainWindow : Window
     {
         if (_zx8xMachine != null)
         {
+            if (_debugger.IsPaused)
+            {
+                ResumeFromDebugger();
+                Focus();
+                return;
+            }
+
             bool zxPaused = !_zx8xMachine.IsPaused;
             _zx8xMachine.SetPaused(zxPaused);
             RefreshExecutionOwner();

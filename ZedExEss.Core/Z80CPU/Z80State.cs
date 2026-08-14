@@ -6,6 +6,14 @@ namespace ZedExEss.Z80CPU
         where TMemory : class, IZ80MemoryBus
         where TPorts : class, IZ80PortBus
     {
+        ulong Spectrum.Debugging.IZ80DebuggerCpu.Cyc => Cyc;
+        ushort Spectrum.Debugging.IZ80DebuggerCpu.PC => PC;
+        ushort Spectrum.Debugging.IZ80DebuggerCpu.SP => SP;
+        ushort Spectrum.Debugging.IZ80DebuggerCpu.IX => IX;
+        ushort Spectrum.Debugging.IZ80DebuggerCpu.IY => IY;
+        byte Spectrum.Debugging.IZ80DebuggerCpu.I => I;
+        byte Spectrum.Debugging.IZ80DebuggerCpu.R => R;
+
         public byte GetFlags()
         {
             return GetF();

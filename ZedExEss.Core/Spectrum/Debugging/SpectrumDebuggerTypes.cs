@@ -1,6 +1,4 @@
 using System;
-using ZedExEss.Spectrum.Core;
-
 namespace ZedExEss.Spectrum.Debugging
 {
     /// <summary>The bus event that can stop debugger execution.</summary>
@@ -19,8 +17,50 @@ namespace ZedExEss.Spectrum.Debugging
         Running,
         StepInto
     }
+
+    /// <summary>
+    /// Read-only CPU state and debug-hook controls shared by every machine-family
+    /// specialization of the Z80 core.
+    /// </summary>
+    public interface IZ80DebuggerCpu
+    {
+        ulong Cyc { get; }
+        ushort PC { get; }
+        ushort SP { get; }
+        ushort IX { get; }
+        ushort IY { get; }
+        ushort AF { get; }
+        ushort BC { get; }
+        ushort DE { get; }
+        ushort HL { get; }
+        ushort AF_ { get; }
+        ushort BC_ { get; }
+        ushort DE_ { get; }
+        ushort HL_ { get; }
+        byte I { get; }
+        byte R { get; }
+        byte InterruptModeValue { get; }
+        bool Iff1 { get; }
+        bool Iff2 { get; }
+        bool IsHalted { get; }
+        byte GetFlags();
+        void ConfigureDebugHook(IZ80DebugHook? debugHook);
+    }
+
+    /// <summary>
+    /// Side-effect-free logical memory access used solely by debugger tools.
+    /// These operations must not add contention, advance time, or trigger ROMCS.
+    /// </summary>
+    public interface IZ80DebuggerMemory
+    {
+        byte ReadDirect(ushort address);
+        void WriteDirect(ushort address, byte value);
+        bool CanWriteDirect(ushort address);
+        DebuggerMemoryMapping GetMapping(ushort address);
+    }
+
     /// <summary>Physical ROM/RAM mapping behind one logical Z80 address.</summary>
-    public readonly struct SpectrumMemoryMapping(
+    public readonly struct DebuggerMemoryMapping(
         ushort address,
         int page,
         bool isRam,
@@ -31,7 +71,7 @@ namespace ZedExEss.Spectrum.Debugging
         int bankIndex,
         int offset,
         int romBank,
-        SpectrumModel model)
+        string machineName)
     {
         public ushort Address { get; } = address;
         public int Page { get; } = page;
@@ -43,7 +83,7 @@ namespace ZedExEss.Spectrum.Debugging
         public int BankIndex { get; } = bankIndex;
         public int Offset { get; } = offset;
         public int RomBank { get; } = romBank;
-        public SpectrumModel Model { get; } = model;
+        public string MachineName { get; } = machineName;
 
         public string DisplayName
         {
@@ -88,7 +128,7 @@ namespace ZedExEss.Spectrum.Debugging
             : $"{Port:X4}/{PortMask:X4}";
 
         public string Summary => $"{Id}: {Type} {AddressText}{(Enabled ? string.Empty : " (disabled)")}";
-        public bool MatchesAddress(ushort address, SpectrumMemoryMapping mapping)
+        public bool MatchesAddress(ushort address, DebuggerMemoryMapping mapping)
         {
             if (!Enabled || !IsMemoryType)
             {
@@ -154,7 +194,7 @@ namespace ZedExEss.Spectrum.Debugging
         int length,
         bool isCurrent,
         bool hasBreakpoint,
-        SpectrumMemoryMapping mapping)
+        DebuggerMemoryMapping mapping)
     {
         public ushort Address { get; } = address;
         public byte[] Bytes { get; } = bytes;
@@ -162,7 +202,7 @@ namespace ZedExEss.Spectrum.Debugging
         public int Length { get; } = length;
         public bool IsCurrent { get; } = isCurrent;
         public bool HasBreakpoint { get; } = hasBreakpoint;
-        public SpectrumMemoryMapping Mapping { get; } = mapping;
+        public DebuggerMemoryMapping Mapping { get; } = mapping;
         public string AddressText => $"{Address:X4}";
         public string BytesText => BitConverter.ToString(Bytes).Replace("-", " ");
         public string EditableBytesText { get; set; } = BitConverter.ToString(bytes).Replace("-", " ");

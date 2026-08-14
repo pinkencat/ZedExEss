@@ -93,8 +93,8 @@ namespace ZedExEss
         }
         public void RefreshAll(bool followPc)
         {
-            Z80? cpu = _debugger.Cpu;
-            SpectrumMemory? memory = _debugger.Memory;
+            IZ80DebuggerCpu? cpu = _debugger.Cpu;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
             if (cpu == null || memory == null)
             {
                 StatusText.Text = "No machine attached";
@@ -113,7 +113,7 @@ namespace ZedExEss
             RefreshStack(cpu, memory);
             StatusText.Text = _debugger.LastHit?.Reason ?? _debugger.Mode.ToString();
         }
-        private void RefreshRegisters(Z80 cpu)
+        private void RefreshRegisters(IZ80DebuggerCpu cpu)
         {
             byte f = cpu.GetFlags();
             string flags =
@@ -126,7 +126,7 @@ namespace ZedExEss
                 $"I {cpu.I:X2}  R {cpu.R:X2}  IM {cpu.InterruptModeValue}  IFF {Bool(cpu.Iff1)}/{Bool(cpu.Iff2)}  HALT {Bool(cpu.IsHalted)}\n" +
                 $"F {flags}  T {cpu.Cyc}  frame {_debugger.CurrentFrameTstate}  line {_debugger.CurrentLine}:{_debugger.CurrentLineTstate}";
         }
-        private void RefreshDisassembly(SpectrumMemory memory, ushort currentPc, bool followCurrent)
+        private void RefreshDisassembly(IZ80DebuggerMemory memory, ushort currentPc, bool followCurrent)
         {
             DisassemblyAddressText.Text = _disassemblyStart.ToString("X4", CultureInfo.InvariantCulture);
             _suppressSelectionRangeUpdate = true;
@@ -149,8 +149,8 @@ namespace ZedExEss
         }
         private void NavigateDisassembly(ushort address)
         {
-            SpectrumMemory? memory = _debugger.Memory;
-            Z80? cpu = _debugger.Cpu;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
+            IZ80DebuggerCpu? cpu = _debugger.Cpu;
             if (memory == null || cpu == null)
             {
                 return;
@@ -167,7 +167,7 @@ namespace ZedExEss
         }
         private void RefreshMemory()
         {
-            SpectrumMemory? memory = _debugger.Memory;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
             if (memory == null)
             {
                 return;
@@ -192,7 +192,7 @@ namespace ZedExEss
 
             MemoryText.Text = builder.ToString();
         }
-        private void RefreshStack(Z80 cpu, SpectrumMemory memory)
+        private void RefreshStack(IZ80DebuggerCpu cpu, IZ80DebuggerMemory memory)
         {
             var builder = new StringBuilder();
             for (int i = 0; i < 32; i++)
@@ -248,7 +248,7 @@ namespace ZedExEss
         }
         private void OnMemoryApply(object sender, RoutedEventArgs e)
         {
-            SpectrumMemory? memory = _debugger.Memory;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
             if (memory == null)
             {
                 MessageBox.Show(this, "Invalid memory address.", "Debugger", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -345,7 +345,7 @@ namespace ZedExEss
                 return;
             }
 
-            SpectrumMemory? memory = _debugger.Memory;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
             if (memory == null)
             {
                 return;
@@ -419,7 +419,7 @@ namespace ZedExEss
                 return;
             }
 
-            SpectrumMemory? memory = _debugger.Memory;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
             if (memory == null)
             {
                 return;
@@ -520,7 +520,7 @@ namespace ZedExEss
         {
             text = string.Empty;
             error = string.Empty;
-            SpectrumMemory? memory = _debugger.Memory;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
             if (memory == null)
             {
                 error = "No memory is attached.";
@@ -576,8 +576,8 @@ namespace ZedExEss
                 return;
             }
 
-            SpectrumMemory? memory = _debugger.Memory;
-            Z80? cpu = _debugger.Cpu;
+            IZ80DebuggerMemory? memory = _debugger.Memory;
+            IZ80DebuggerCpu? cpu = _debugger.Cpu;
             if (memory == null || cpu == null || _disassembly.Count == 0)
             {
                 return;
@@ -642,7 +642,7 @@ namespace ZedExEss
             MemoryText.ScrollToLine(Math.Clamp(line, 0, MemoryRows - 1));
             _uiDispatcher.TryPost(() => _suppressMemoryScroll = false);
         }
-        private ushort FindPreviousDisassemblyStart(SpectrumMemory memory, ushort currentStart, int linesBack)
+        private ushort FindPreviousDisassemblyStart(IZ80DebuggerMemory memory, ushort currentStart, int linesBack)
         {
             const int searchBytes = 2048;
             ushort scan = unchecked((ushort)(currentStart - searchBytes));

@@ -28,6 +28,7 @@ using ZedExEss.Spectrum.Tape;
 using ZedExEss.Spectrum.Video;
 using ZedExEss.Z80CPU;
 using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
 
 namespace ZedExEss
 {
@@ -123,6 +124,7 @@ namespace ZedExEss
         private EmulationRunState? _quickPauseRunState;
         private string? _tapePath => _zx8xMachine?.Tape.Path ?? _session.TapePath;
         private Zx8xRamConfiguration _zx8xRamConfiguration = Zx8xRamConfiguration.Expansion16K;
+        private Zx8xHighResolutionMode _zx8xHighResolutionMode = Zx8xHighResolutionMode.Sinclair;
         private readonly ObservableCollection<BlockInfo> _tapeBlocks = [];
         private bool _tapeBrowserVisible = true;
         private const double DefaultScreenZoom = 2.0;
@@ -261,6 +263,9 @@ namespace ZedExEss
             _zx8xRamConfiguration = Enum.IsDefined(typeof(Zx8xRamConfiguration), settings.Zx8xRamConfiguration)
                 ? settings.Zx8xRamConfiguration
                 : Zx8xRamConfiguration.Expansion16K;
+            _zx8xHighResolutionMode = Enum.IsDefined(typeof(Zx8xHighResolutionMode), settings.Zx8xHighResolutionMode)
+                ? settings.Zx8xHighResolutionMode
+                : Zx8xHighResolutionMode.Sinclair;
         }
         private void SaveHostSettings()
         {
@@ -279,7 +284,8 @@ namespace ZedExEss
                 GigascreenBlendEnabled = _gigascreenBlendEnabled,
                 Interface1Enabled = _interface1Enabled,
                 Interface1RomRevision = _interface1RomRevision,
-                Zx8xRamConfiguration = _zx8xRamConfiguration
+                Zx8xRamConfiguration = _zx8xRamConfiguration,
+                Zx8xHighResolutionMode = _zx8xHighResolutionMode
             };
 
             try
@@ -2549,6 +2555,7 @@ namespace ZedExEss
             ModelZx81Menu.IsChecked = _zx8xModel == Zx8x.Core.Zx8xModel.Zx81;
             Zx8xRam1KMenu.IsChecked = _zx8xRamConfiguration == Zx8xRamConfiguration.Internal1K;
             Zx8xRam16KMenu.IsChecked = _zx8xRamConfiguration == Zx8xRamConfiguration.Expansion16K;
+            Zx8xWrxMenu.IsChecked = _zx8xHighResolutionMode == Zx8xHighResolutionMode.Wrx;
         }
         private void UpdateJoystickMenuChecks()
         {
@@ -3048,6 +3055,13 @@ namespace ZedExEss
         {
             if (_zx8xMachine != null)
             {
+                if (_debugger.IsPaused)
+                {
+                    ResumeFromDebugger();
+                    UpdateQuickAccessState();
+                    return;
+                }
+
                 _zx8xMachine.SetPaused(!_zx8xMachine.IsPaused);
                 UpdateQuickAccessState();
                 return;
@@ -3475,13 +3489,8 @@ namespace ZedExEss
         }
         private void ShowDebuggerWindow()
         {
-            if (_zx8xMachine != null)
+            if (_emulator == null && _zx8xMachine == null)
             {
-                MessageBox.Show(
-                    "The debugger is not yet connected to the ZX80/ZX81 machine bus.",
-                    "Debugger",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
                 return;
             }
 
@@ -3537,6 +3546,17 @@ namespace ZedExEss
             TryStartTapeForRomLoader();
             return false;
         }
+        private bool BeforeZx8xDebuggerCpuStep()
+        {
+            if (!_debugger.Enabled || !_debugger.BeforeCpuStep())
+            {
+                return false;
+            }
+
+            _zx8xMachine?.SetPaused(true);
+            RequestDebuggerPauseOnUiThread();
+            return true;
+        }
         private void AdvanceAutoLoadInjector()
         {
             AutoLoadKeyboardInjector? injector = _autoLoadInjector;
@@ -3573,8 +3593,32 @@ namespace ZedExEss
                 RequestDebuggerPauseOnUiThread();
             }
         }
+        private void AfterZx8xDebuggerCpuStep()
+        {
+            if (!_debugger.Enabled)
+            {
+                return;
+            }
+
+            _debugger.AfterCpuStep();
+            if (_debugger.IsPaused)
+            {
+                _zx8xMachine?.SetPaused(true);
+                RequestDebuggerPauseOnUiThread();
+            }
+        }
         private void UpdateCpuStepHooks()
         {
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.ConfigureCpuStepHooks(
+                    _debugger.Enabled ? BeforeZx8xDebuggerCpuStep : null,
+                    _debugger.Enabled ? AfterZx8xDebuggerCpuStep : null);
+                _zx8xMachine.Cpu.ConfigureDebugHook(
+                    _debugger.AccessWatchpointsEnabled ? _debugger : null);
+                return;
+            }
+
             if (_emulator == null)
             {
                 return;
@@ -3610,6 +3654,29 @@ namespace ZedExEss
         }
         private void PauseForDebugger(string reason, bool notifyController = true)
         {
+            if (_zx8xMachine != null)
+            {
+                _debuggerSuspendedRunState ??= new EmulationRunState(
+                    _turboEnabled,
+                    _audioPlayer != null || _zx8xFastTapeRunner != null);
+                _zx8xTurboRunner?.Dispose();
+                _zx8xTurboRunner = null;
+                _zx8xFastTapeRunner?.Dispose();
+                _zx8xFastTapeRunner = null;
+                _audioPlayer?.Dispose();
+                _audioPlayer = null;
+                _zx8xMachine.SetPaused(true);
+                if (notifyController)
+                {
+                    _debugger.Pause(reason);
+                }
+
+                UpdateCpuStepHooks();
+                _debuggerWindow?.RefreshAll(followPc: true);
+                UpdateQuickAccessState();
+                return;
+            }
+
             if (_emulator == null)
             {
                 return;
@@ -3637,6 +3704,28 @@ namespace ZedExEss
         }
         private void ResumeFromDebugger()
         {
+            if (_zx8xMachine != null)
+            {
+                _debugger.Run();
+                _zx8xMachine.SetPaused(false);
+                UpdateCpuStepHooks();
+                EmulationRunState zxState = _debuggerSuspendedRunState
+                    ?? new EmulationRunState(_turboEnabled, true);
+                _debuggerSuspendedRunState = null;
+                if (zxState.WasTurboEnabled)
+                {
+                    SetTurboMode(true);
+                }
+                else if (zxState.HadAudioPlayer)
+                {
+                    SetTurboMode(false);
+                }
+
+                _debuggerWindow?.RefreshAll(followPc: true);
+                UpdateQuickAccessState();
+                return;
+            }
+
             if (_emulator == null)
             {
                 return;
@@ -3654,6 +3743,19 @@ namespace ZedExEss
         }
         private void StepDebuggerInto()
         {
+            if (_zx8xMachine != null)
+            {
+                PauseForDebugger("Step", notifyController: false);
+                _debugger.PrepareStepInto();
+                UpdateCpuStepHooks();
+                _zx8xMachine.SetPaused(false);
+                _zx8xMachine.StepInstruction();
+                _zx8xMachine.SetPaused(true);
+                UpdateCpuStepHooks();
+                _debuggerWindow?.RefreshAll(followPc: true);
+                return;
+            }
+
             if (_emulator == null)
             {
                 return;
@@ -3670,6 +3772,25 @@ namespace ZedExEss
         }
         private void StepDebuggerOver()
         {
+            if (_zx8xMachine != null)
+            {
+                PauseForDebugger("Step over", notifyController: false);
+                _debugger.PrepareStepOver(_debuggerDisassembler);
+                UpdateCpuStepHooks();
+                if (_debugger.Mode == DebuggerRunMode.StepInto)
+                {
+                    _zx8xMachine.SetPaused(false);
+                    _zx8xMachine.StepInstruction();
+                    _zx8xMachine.SetPaused(true);
+                    UpdateCpuStepHooks();
+                    _debuggerWindow?.RefreshAll(followPc: true);
+                    return;
+                }
+
+                ResumeFromDebugger();
+                return;
+            }
+
             if (_emulator == null)
             {
                 return;

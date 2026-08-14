@@ -43,7 +43,7 @@ namespace ZedExEss.Spectrum.Debugging
             [0xB0] = "LDIR", [0xB1] = "CPIR", [0xB2] = "INIR", [0xB3] = "OTIR",
             [0xB8] = "LDDR", [0xB9] = "CPDR", [0xBA] = "INDR", [0xBB] = "OTDR"
         };
-        public Z80DisassembledInstruction Disassemble(SpectrumMemory memory, ushort address)
+        public Z80DisassembledInstruction Disassemble(IZ80DebuggerMemory memory, ushort address)
         {
             ArgumentNullException.ThrowIfNull(memory);
 
@@ -75,14 +75,14 @@ namespace ZedExEss.Spectrum.Debugging
             byte[] bytes = ReadBytes(memory, address, length);
             return new Z80DisassembledInstruction(address, bytes, text, length, callLike);
         }
-        public IReadOnlyList<Z80DisassemblyLine> DisassembleWindow(SpectrumMemory memory, ushort start, ushort currentPc, int count, SpectrumDebuggerController debugger)
+        public IReadOnlyList<Z80DisassemblyLine> DisassembleWindow(IZ80DebuggerMemory memory, ushort start, ushort currentPc, int count, SpectrumDebuggerController debugger)
         {
             var lines = new List<Z80DisassemblyLine>(count);
             ushort pc = start;
             for (int i = 0; i < count; i++)
             {
                 Z80DisassembledInstruction instruction = Disassemble(memory, pc);
-                SpectrumMemoryMapping mapping = memory.GetMapping(pc);
+                DebuggerMemoryMapping mapping = memory.GetMapping(pc);
                 bool hasBreakpoint = debugger.Breakpoints.Any(bp => bp.Type == DebuggerBreakType.Execute && bp.MatchesAddress(pc, mapping));
                 lines.Add(new Z80DisassemblyLine(pc, instruction.Bytes, instruction.Text, instruction.Length, pc == currentPc, hasBreakpoint, mapping));
                 pc = unchecked((ushort)(pc + Math.Max(1, instruction.Length)));
@@ -90,8 +90,8 @@ namespace ZedExEss.Spectrum.Debugging
 
             return lines;
         }
-        public int GetInstructionLength(SpectrumMemory memory, ushort address) => Disassemble(memory, address).Length;
-        private static string DecodeBase(SpectrumMemory memory, ushort address, byte op, string hl, string[] r, string[] rp, string[] rpAf, out int length, out bool callLike)
+        public int GetInstructionLength(IZ80DebuggerMemory memory, ushort address) => Disassemble(memory, address).Length;
+        private static string DecodeBase(IZ80DebuggerMemory memory, ushort address, byte op, string hl, string[] r, string[] rp, string[] rpAf, out int length, out bool callLike)
         {
             length = 1;
             callLike = false;
@@ -267,7 +267,7 @@ namespace ZedExEss.Spectrum.Debugging
                 _ => $"SET {y},{r[z]}"
             };
         }
-        private static string DecodeEd(SpectrumMemory memory, ushort address, byte op, out int length)
+        private static string DecodeEd(IZ80DebuggerMemory memory, ushort address, byte op, out int length)
         {
             length = 2;
             if (EdInstructions.TryGetValue(op, out string? text))
@@ -307,7 +307,7 @@ namespace ZedExEss.Spectrum.Debugging
 
             return $"ED {op:X2}";
         }
-        private static string DecodeIndexed(SpectrumMemory memory, ushort address, string index, out int length, out bool callLike)
+        private static string DecodeIndexed(IZ80DebuggerMemory memory, ushort address, string index, out int length, out bool callLike)
         {
             byte op = Read(memory, (ushort)(address + 1));
             length = 2;
@@ -377,7 +377,7 @@ namespace ZedExEss.Spectrum.Debugging
 
             return text;
         }
-        private static byte[] ReadBytes(SpectrumMemory memory, ushort address, int length)
+        private static byte[] ReadBytes(IZ80DebuggerMemory memory, ushort address, int length)
         {
             byte[] bytes = new byte[length];
             for (int i = 0; i < bytes.Length; i++)
@@ -387,8 +387,8 @@ namespace ZedExEss.Spectrum.Debugging
 
             return bytes;
         }
-        private static byte Read(SpectrumMemory memory, ushort address) => memory.ReadDirect(address);
-        private static ushort Word(SpectrumMemory memory, int address)
+        private static byte Read(IZ80DebuggerMemory memory, ushort address) => memory.ReadDirect(address);
+        private static ushort Word(IZ80DebuggerMemory memory, int address)
         {
             byte lo = Read(memory, unchecked((ushort)address));
             byte hi = Read(memory, unchecked((ushort)(address + 1)));

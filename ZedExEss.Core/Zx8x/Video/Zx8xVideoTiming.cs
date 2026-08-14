@@ -16,6 +16,10 @@ public readonly record struct Zx8xVideoTiming(
     int VerticalSyncLines)
 {
     public const int PixelClocksPerTstate = 2;
+    // The 64-T horizontal blank is split around the active picture. Following
+    // the line-ending sync pulse, 21 T-states elapse before the first ordinary
+    // display-file byte; the 128-T visible window therefore spans T21..T148.
+    public const int DisplayStartTstate = 21;
 
     public int NominalLinesPerFrame => UpperBorderLines + DisplayLines + LowerBorderLines + VerticalSyncLines;
     public int NominalTstatesPerFrame => NominalLinesPerFrame * TstatesPerLine;

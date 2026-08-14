@@ -18,7 +18,7 @@ public sealed class SpectrumDebuggerViewService(
 
     public string GetRegistersText()
     {
-        Z80? cpu = Debugger.Cpu;
+        IZ80DebuggerCpu? cpu = Debugger.Cpu;
         if (cpu == null)
         {
             return "No machine attached";
@@ -38,7 +38,7 @@ public sealed class SpectrumDebuggerViewService(
 
     public IReadOnlyList<Z80DisassemblyLine> GetDisassembly(ushort start, int count)
     {
-        SpectrumMemory memory = Debugger.Memory
+        IZ80DebuggerMemory memory = Debugger.Memory
             ?? throw new InvalidOperationException("No debugger memory is attached.");
         ushort currentPc = Debugger.Cpu?.PC ?? 0;
         return Disassembler.DisassembleWindow(memory, start, currentPc, count, Debugger);
@@ -49,7 +49,7 @@ public sealed class SpectrumDebuggerViewService(
     {
         text = string.Empty;
         error = string.Empty;
-        SpectrumMemory? memory = Debugger.Memory;
+        IZ80DebuggerMemory? memory = Debugger.Memory;
         if (memory == null)
         {
             error = "No debugger memory is attached.";
@@ -97,7 +97,7 @@ public sealed class SpectrumDebuggerViewService(
 
     public string GetMemoryText(ushort start, int rows)
     {
-        SpectrumMemory memory = Debugger.Memory
+        IZ80DebuggerMemory memory = Debugger.Memory
             ?? throw new InvalidOperationException("No debugger memory is attached.");
         var builder = new StringBuilder(rows * 72);
         Span<char> ascii = stackalloc char[16];
@@ -120,9 +120,9 @@ public sealed class SpectrumDebuggerViewService(
 
     public string GetStackText(int words = 32)
     {
-        SpectrumMemory memory = Debugger.Memory
+        IZ80DebuggerMemory memory = Debugger.Memory
             ?? throw new InvalidOperationException("No debugger memory is attached.");
-        Z80 cpu = Debugger.Cpu
+        IZ80DebuggerCpu cpu = Debugger.Cpu
             ?? throw new InvalidOperationException("No debugger CPU is attached.");
         var builder = new StringBuilder(words * 12);
         for (int index = 0; index < words; index++)
@@ -146,7 +146,7 @@ public sealed class SpectrumDebuggerViewService(
             return false;
         }
 
-        SpectrumMemory? memory = Debugger.Memory;
+        IZ80DebuggerMemory? memory = Debugger.Memory;
         if (memory == null)
         {
             error = "No debugger memory is attached.";
@@ -183,7 +183,7 @@ public sealed class SpectrumDebuggerViewService(
             return false;
         }
 
-        SpectrumMemory? memory = Debugger.Memory;
+        IZ80DebuggerMemory? memory = Debugger.Memory;
         if (memory == null)
         {
             error = "No debugger memory is attached.";
