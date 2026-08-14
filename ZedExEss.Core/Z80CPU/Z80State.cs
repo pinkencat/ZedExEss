@@ -38,6 +38,91 @@ namespace ZedExEss.Z80CPU
         public bool Iff2 => IFF2;
 
         public bool IsHalted => Halted;
+
+        /// <summary>Captures CPU-owned state at the current instruction boundary.</summary>
+        public Z80SnapshotState CaptureSnapshotState()
+        {
+            FlushBatchedInstructionTstates();
+            return new Z80SnapshotState(
+                Cyc,
+                PC,
+                SP,
+                IX,
+                IY,
+                MemPtr,
+                A,
+                _f,
+                B,
+                C,
+                D,
+                E,
+                H,
+                L,
+                A_,
+                F_,
+                B_,
+                C_,
+                D_,
+                E_,
+                H_,
+                L_,
+                I,
+                R,
+                InterruptMode,
+                IFF1,
+                IFF2,
+                Halted,
+                IffDelay,
+                IntData,
+                IntPending,
+                NmiPending,
+                _q,
+                _lastQ);
+        }
+
+        /// <summary>Restores CPU-owned state without performing bus cycles.</summary>
+        public void RestoreSnapshotState(Z80SnapshotState state)
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            FlushBatchedInstructionTstates();
+
+            Cyc = state.Cycles;
+            PC = state.PC;
+            SP = state.SP;
+            IX = state.IX;
+            IY = state.IY;
+            MemPtr = state.MemPtr;
+            A = state.A;
+            _f = state.F;
+            B = state.B;
+            C = state.C;
+            D = state.D;
+            E = state.E;
+            H = state.H;
+            L = state.L;
+            A_ = state.AlternateA;
+            F_ = state.AlternateF;
+            B_ = state.AlternateB;
+            C_ = state.AlternateC;
+            D_ = state.AlternateD;
+            E_ = state.AlternateE;
+            H_ = state.AlternateH;
+            L_ = state.AlternateL;
+            I = state.I;
+            R = state.R;
+            InterruptMode = (byte)(state.InterruptMode & 0x03);
+            IFF1 = state.Iff1;
+            IFF2 = state.Iff2;
+            Halted = state.Halted;
+            IffDelay = state.IffDelay;
+            IntData = state.InterruptData;
+            IntPending = state.IntPending;
+            NmiPending = state.NmiPending;
+            _q = state.Q;
+            _lastQ = state.LastQ;
+            _remainingCycles = 0;
+            _batchedInstructionTstates = 0;
+        }
         public void SetFlags(byte flags)
         {
             SetF(flags);

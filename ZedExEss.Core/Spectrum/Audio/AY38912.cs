@@ -116,6 +116,30 @@ namespace ZedExEss.Spectrum.Audio
             return (byte)(_registers[register] & RegisterMasks[register]);
         }
 
+        /// <summary>Copies the 16 masked programmer-visible registers.</summary>
+        public byte[] CopyRegisters()
+        {
+            return _registers.ToArray();
+        }
+
+        /// <summary>
+        /// Restores the programmer-visible state used by standard snapshots.
+        /// Generator phase is reset because the SZX AY block does not carry it.
+        /// </summary>
+        public void RestoreRegisters(ReadOnlySpan<byte> registers)
+        {
+            if (registers.Length != _registers.Length)
+            {
+                throw new ArgumentException("AY state must contain 16 registers.", nameof(registers));
+            }
+
+            Reset();
+            for (int register = 0; register < registers.Length; register++)
+            {
+                WriteRegister(register, registers[register]);
+            }
+        }
+
         /// <summary>Generates an interleaved stereo buffer containing the mono AY output.</summary>
         public short[] GenerateSamples(int sampleRate, int numSamples)
         {

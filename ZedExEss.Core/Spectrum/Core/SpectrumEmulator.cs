@@ -102,6 +102,31 @@ namespace ZedExEss.Spectrum.Core
             IsPaused = paused;
         }
 
+        /// <summary>
+        /// Re-bases the scheduler after CPU/device state has been restored without
+        /// allowing pending events from the discarded timeline to leak through.
+        /// </summary>
+        public void ResetSynchronizationAfterSnapshotRestore()
+        {
+            _memory.ClearPendingWrites();
+            _ports.ClearPendingWrites();
+            _lastSyncTstates = _cpu.Cyc;
+            _frameCompletedPending = false;
+            _intLineRemaining = 0;
+            _intDelayRemaining = 0;
+            _hasInterruptDeadline = false;
+            _advancingTime = false;
+            _audioSkippedTstates = 0;
+            _cpu.Z80SetINTLine(false);
+
+            lock (_frameLock)
+            {
+                _frameReady = false;
+                _dirtyLineCount = 0;
+                _fullFrameDirty = true;
+            }
+        }
+
         public bool VideoEnabled
         {
             get => _renderer.RenderEnabled;

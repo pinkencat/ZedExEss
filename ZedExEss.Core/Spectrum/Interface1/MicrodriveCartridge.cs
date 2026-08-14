@@ -41,6 +41,35 @@ public sealed class MicrodriveCartridge
     public bool WriteProtected => _writeProtected;
     public bool Modified => _modified;
 
+    /// <summary>
+    /// Captures both MDR bytes and the preamble state which exists only while
+    /// emulating a cartridge. The returned object owns independent arrays.
+    /// </summary>
+    public MicrodriveCartridgeState CaptureState()
+    {
+        return new MicrodriveCartridgeState(
+            SectorCount,
+            _data,
+            _preambleState,
+            _writeProtected,
+            _modified);
+    }
+
+    internal static MicrodriveCartridge FromState(MicrodriveCartridgeState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var cartridge = new MicrodriveCartridge(
+            state.DataSpan.ToArray(),
+            state.SectorCount,
+            state.WriteProtected,
+            formatted: false)
+        {
+            _modified = state.Modified
+        };
+        state.PreambleSpan.CopyTo(cartridge._preambleState);
+        return cartridge;
+    }
+
     public static MicrodriveCartridge Load(string path)
     {
         if (string.IsNullOrWhiteSpace(path))

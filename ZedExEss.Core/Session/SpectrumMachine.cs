@@ -32,6 +32,7 @@ public sealed class SpectrumMachine : IEmulatedMachine
         SpectrumEarInputDevice earInput,
         SpectrumUla ula,
         AY38912? ayChip,
+        SpectrumAyDevice? ayDevice,
         Z80 cpu,
         SpectrumEmulator emulator)
     {
@@ -46,6 +47,7 @@ public sealed class SpectrumMachine : IEmulatedMachine
         EarInput = earInput;
         Ula = ula;
         AyChip = ayChip;
+        AyDevice = ayDevice;
         Cpu = cpu;
         Emulator = emulator;
     }
@@ -64,6 +66,7 @@ public sealed class SpectrumMachine : IEmulatedMachine
     public SpectrumEarInputDevice EarInput { get; }
     public SpectrumUla Ula { get; }
     public AY38912? AyChip { get; }
+    public SpectrumAyDevice? AyDevice { get; }
     public Z80 Cpu { get; }
     public SpectrumEmulator Emulator { get; }
 

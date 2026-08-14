@@ -21,6 +21,86 @@ public sealed class SpectrumInterface1MediaState
     public string? GetPath(int drive) => _paths[ValidateDrive(drive)];
     public bool IsAttached(int drive) => GetCartridge(drive) != null;
 
+    /// <summary>
+    /// Captures all mounted cartridge bytes, host paths and (when connected) the
+    /// exact Interface 1 transport state. The snapshot is independent of later
+    /// media writes.
+    /// </summary>
+    public SpectrumInterface1Snapshot CaptureSnapshot()
+    {
+        var slots = new SpectrumInterface1MediaSlotState[_cartridges.Length];
+        for (int drive = 0; drive < _cartridges.Length; drive++)
+        {
+            slots[drive] = new SpectrumInterface1MediaSlotState(
+                _paths[drive],
+                _cartridges[drive]?.CaptureState());
+        }
+
+        return new SpectrumInterface1Snapshot(
+            new SpectrumInterface1MediaSnapshot(slots),
+            _device?.CaptureState());
+    }
+
+    /// <summary>
+    /// Restores media first, reconnects it to the current device, then restores
+    /// rotating-head state. Discarded dirty state is not flushed to the host: a
+    /// snapshot restore must not write the future state being rewound.
+    /// </summary>
+    public void RestoreSnapshot(SpectrumInterface1Snapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(snapshot.Media);
+        if (snapshot.Device != null && _device == null)
+        {
+            throw new InvalidOperationException(
+                "The captured Interface 1 device state cannot be restored while no device is connected.");
+        }
+
+        var restoredCartridges = new MicrodriveCartridge?[_cartridges.Length];
+        var restoredPaths = new string?[_paths.Length];
+        for (int drive = 0; drive < restoredCartridges.Length; drive++)
+        {
+            SpectrumInterface1MediaSlotState slot = snapshot.Media.GetSlot(drive);
+            restoredCartridges[drive] = slot.Cartridge == null
+                ? null
+                : MicrodriveCartridge.FromState(slot.Cartridge);
+            restoredPaths[drive] = slot.BackingPath;
+        }
+
+        if (_device != null)
+        {
+            for (int drive = 0; drive < _cartridges.Length; drive++)
+            {
+                _device.EjectCartridge(drive + 1);
+            }
+        }
+
+        Array.Copy(restoredCartridges, _cartridges, _cartridges.Length);
+        Array.Copy(restoredPaths, _paths, _paths.Length);
+
+        if (_device == null)
+        {
+            return;
+        }
+
+        for (int drive = 0; drive < _cartridges.Length; drive++)
+        {
+            if (_cartridges[drive] != null)
+            {
+                _device.InsertCartridge(drive + 1, _cartridges[drive]!);
+            }
+        }
+
+        if (snapshot.Device != null)
+        {
+            _device.RestoreState(snapshot.Device);
+        }
+        else
+        {
+            _device.Reset();
+        }
+    }
+
     /// <summary>Loads an MDR image and mounts it in the selected persistent drive slot.</summary>
     public MicrodriveCartridge Attach(int drive, string path)
     {

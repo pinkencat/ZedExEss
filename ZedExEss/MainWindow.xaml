@@ -32,6 +32,7 @@
         <Menu x:Name="MainMenu" DockPanel.Dock="Top">
             <MenuItem Header="_File">
                 <MenuItem Header="_Open..." Click="OnOpenFile" />
+                <MenuItem Header="_Save Snapshot..." Click="OnSaveSnapshot" />
                 <Separator />
                 <MenuItem Header="_Reset" Click="OnResetMachine" />
                 <MenuItem x:Name="TurboMenu" Header="_Turbo Mode" IsCheckable="True" Click="OnTurboModeToggle" />

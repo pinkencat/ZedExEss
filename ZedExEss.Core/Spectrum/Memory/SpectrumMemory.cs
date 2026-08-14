@@ -81,6 +81,21 @@ namespace ZedExEss.Spectrum.Memory
         public SpectrumModel Model => _model;
 
         public int CurrentRomBank => _currentRomBank;
+        public int RamBankCount => _ramBanks.Length;
+        public byte Port7FFD => _port7ffd;
+        public byte Port1FFD => _port1ffd;
+        public bool PagingLocked => _pagingLocked;
+
+        /// <summary>Returns an independent copy of one physical 16K RAM bank.</summary>
+        public byte[] CopyRamBank(int bankIndex)
+        {
+            if ((uint)bankIndex >= (uint)_ramBanks.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(bankIndex));
+            }
+
+            return _ramBanks[bankIndex].ToArray();
+        }
         public DebuggerMemoryMapping GetMapping(ushort address)
         {
             // This is a debugger description only. It must not perform a bus read,
@@ -449,6 +464,28 @@ namespace ZedExEss.Spectrum.Memory
 
             _port1ffd = value;
             ApplyPaging();
+        }
+
+        /// <summary>
+        /// Restores paging latches atomically. This intentionally bypasses the
+        /// one-way 7FFD lock while loading a snapshot, then recreates that lock
+        /// from the restored latch value.
+        /// </summary>
+        public void RestorePagingState(byte port7ffd, byte port1ffd)
+        {
+            _port7ffd = SupportsPaging() ? port7ffd : (byte)0;
+            _port1ffd = SupportsSecondaryPagingPort() ? port1ffd : (byte)0;
+            _pagingLocked = SupportsPaging() && (_port7ffd & 0x20) != 0;
+            _specialPaging = false;
+            ApplyPaging();
+            ResetScreenShadow();
+            _pendingScreenWrites.Clear();
+        }
+
+        /// <summary>Discards writes queued by the state which is being replaced.</summary>
+        public void ClearPendingWrites()
+        {
+            _pendingScreenWrites.Clear();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

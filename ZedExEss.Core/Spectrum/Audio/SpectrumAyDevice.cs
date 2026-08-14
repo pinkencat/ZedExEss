@@ -14,6 +14,11 @@ namespace ZedExEss.Spectrum.Audio
         private byte _selectedRegister;
 
         public AY38912 Chip => _chip;
+        public byte SelectedRegister
+        {
+            get => _selectedRegister;
+            set => _selectedRegister = (byte)(value & 0x0F);
+        }
         public bool HandlesPort(ushort port)
         {
             ushort masked = (ushort)(port & AyRegisterSelectMask);

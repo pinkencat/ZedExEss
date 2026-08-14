@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using ZedExEss.FileHandlers;
 using ZedExEss.Hosting;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.DivMmc;
@@ -85,6 +86,7 @@ public sealed partial class MainWindow
         _quickBrowserButton.Click += OnToggleMediaBrowserClicked;
 
         FindRequiredControl<MenuItem>("OpenMediaMenuItem").Click += OnOpenMediaClicked;
+        FindRequiredControl<MenuItem>("SaveSnapshotMenuItem").Click += OnSaveSnapshotClicked;
         FindRequiredControl<MenuItem>("ResetMenuItem").Click += OnResetClicked;
         _turboMenuItem.Click += OnTurboMenuClicked;
         FindRequiredControl<MenuItem>("ExitMenuItem").Click += (_, _) => Close();
@@ -271,8 +273,8 @@ public sealed partial class MainWindow
                 Title = "Open Spectrum media",
                 Filters =
                 [
-                    new FileDialogFilter("Supported files", "*.z80", "*.sna", "*.o", "*.p", "*.81", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.mdr", "*.img", "*.hdf", "*.sd", "*.bin"),
-                    new FileDialogFilter("Snapshots", "*.z80", "*.sna"),
+                    new FileDialogFilter("Supported files", "*.z80", "*.sna", "*.szx", "*.o", "*.p", "*.81", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.mdr", "*.img", "*.hdf", "*.sd", "*.bin"),
+                    new FileDialogFilter("Snapshots", "*.z80", "*.sna", "*.szx"),
                     new FileDialogFilter("ZX80/ZX81 program images", "*.o", "*.p", "*.81"),
                     new FileDialogFilter("Tape images", "*.tap", "*.tzx", "*.csw"),
                     new FileDialogFilter("Disk images", "*.dsk", "*.trd", "*.scl"),
@@ -305,6 +307,9 @@ public sealed partial class MainWindow
                 break;
             case ".sna":
                 LoadSnapshotPath(path, isZ80: false);
+                break;
+            case ".szx":
+                LoadSzxSnapshotPath(path);
                 break;
             case ".o":
             case ".p":
@@ -354,6 +359,89 @@ public sealed partial class MainWindow
             }
         });
         _statusText.Text = $"Loaded {System.IO.Path.GetFileName(path)}";
+    }
+
+    private void LoadSzxSnapshotPath(string path)
+    {
+        SpectrumMachineSnapshot snapshot = SzxSnapshotCodec.Load(path);
+        if (snapshot.Interface1 != null
+            && !SpectrumInterface1Compatibility.IsSupported(snapshot.Model))
+        {
+            throw new InvalidDataException(
+                $"The snapshot contains Interface 1 state, which cannot be attached to {snapshot.Model}.");
+        }
+
+        _interface1Enabled = snapshot.Interface1 != null;
+        _divExpansionMode = SpectrumDivExpansionMode.Disabled;
+        bool restored = false;
+        ReplaceMachine(
+            snapshot.Model,
+            preserveTape: false,
+            rewindTape: false,
+            beforeStart: machine =>
+            {
+                SpectrumMachineSnapshotService.Restore(
+                    machine,
+                    snapshot,
+                    snapshot.Interface1 != null ? _session.Interface1 : null);
+                restored = true;
+            });
+
+        if (restored)
+        {
+            _statusText.Text = $"Loaded {System.IO.Path.GetFileName(path)}";
+        }
+    }
+
+    private async void OnSaveSnapshotClicked(object? sender, RoutedEventArgs e)
+    {
+        SpectrumMachine? machine = _machine;
+        if (machine == null || _zx8xMachine != null)
+        {
+            _statusText.Text = "SZX snapshots are available for Spectrum models only.";
+            return;
+        }
+
+        string? path = await _fileDialogs.SaveFileAsync(new FileDialogOptions
+        {
+            Title = "Save SZX Snapshot",
+            DefaultExtension = ".szx",
+            SuggestedFileName = $"{machine.Model}.szx",
+            Filters =
+            [
+                new FileDialogFilter("ZX-State snapshots", "*.szx"),
+                new FileDialogFilter("All files", "*.*")
+            ]
+        });
+        if (path == null)
+        {
+            Focus();
+            return;
+        }
+
+        ToolRunState runState = SuspendMachineForTool();
+        string? completionStatus = null;
+        try
+        {
+            SpectrumMachineSnapshot snapshot = SpectrumMachineSnapshotService.Capture(
+                machine,
+                _interface1Enabled && _machineDevices?.Interface1Device != null
+                    ? _session.Interface1
+                    : null);
+            SzxSnapshotCodec.Save(path, snapshot);
+            completionStatus = $"Saved {System.IO.Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            completionStatus = $"Unable to save snapshot: {ex.Message}";
+        }
+        finally
+        {
+            RestoreMachineAfterTool(runState);
+            Focus();
+        }
+
+        _statusText.Text = completionStatus;
     }
 
     private async void OnInsertDivMmcImageClicked(object? sender, RoutedEventArgs e)
@@ -747,7 +835,7 @@ public sealed partial class MainWindow
         }
 
         string extension = System.IO.Path.GetExtension(item.Name).ToLowerInvariant();
-        return extension is ".z80" or ".sna" or ".o" or ".p" or ".81" or ".tap" or ".tzx" or ".csw"
+        return extension is ".z80" or ".sna" or ".szx" or ".o" or ".p" or ".81" or ".tap" or ".tzx" or ".csw"
             or ".dsk" or ".trd" or ".scl" or ".mdr" or ".img" or ".hdf" or ".sd" or ".bin";
     }
 

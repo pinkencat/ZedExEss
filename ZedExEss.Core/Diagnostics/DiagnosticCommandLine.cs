@@ -24,6 +24,7 @@ namespace ZedExEss.Diagnostics
             "  --verify-basic\n" +
             "  --verify-debugger\n" +
             "  --verify-interface1 [--interface1-rom <path>]\n" +
+            "  --verify-szx\n" +
             "  --verify-zx8x [--zx8x-rom-directory <path>]\n" +
             "  --verify-pentagon\n" +
             "  --verify-session\n" +
@@ -133,6 +134,15 @@ namespace ZedExEss.Diagnostics
                 return true;
             }
 
+            if (options.RunSzxVerification)
+            {
+                exitCode = SzxSnapshotVerificationRunner.Run(new SzxSnapshotVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
             if (options.RunZx8xVerification)
             {
                 exitCode = Zx8xVerificationRunner.Run(new Zx8xVerificationOptions
@@ -231,6 +241,9 @@ namespace ZedExEss.Diagnostics
                         break;
                     case "--verify-interface1":
                         options.RunInterface1Verification = true;
+                        break;
+                    case "--verify-szx":
+                        options.RunSzxVerification = true;
                         break;
                     case "--interface1-rom":
                         options.Interface1RomPath = RequireValue(args, ref i, arg);
@@ -371,6 +384,7 @@ namespace ZedExEss.Diagnostics
             public bool RunBasicVerification { get; set; }
             public bool RunDebuggerVerification { get; set; }
             public bool RunInterface1Verification { get; set; }
+            public bool RunSzxVerification { get; set; }
             public bool RunZx8xVerification { get; set; }
             public bool RunTapeAccelerationVerification { get; set; }
             public bool RunSessionVerification { get; set; }

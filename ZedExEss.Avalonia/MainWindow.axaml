@@ -12,6 +12,7 @@
     <Menu Grid.Row="0" Background="#202020">
       <MenuItem Header="_File">
         <MenuItem x:Name="OpenMediaMenuItem" Header="_Open..." />
+        <MenuItem x:Name="SaveSnapshotMenuItem" Header="_Save Snapshot..." />
         <Separator />
         <MenuItem x:Name="ResetMenuItem" Header="_Reset" />
         <MenuItem x:Name="TurboMenuItem" Header="_Turbo mode" ToggleType="CheckBox" />

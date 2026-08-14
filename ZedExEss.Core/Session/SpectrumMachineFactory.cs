@@ -52,13 +52,15 @@ public static class SpectrumMachineFactory
         }
 
         AY38912? ayChip = null;
+        SpectrumAyDevice? ayDevice = null;
         if (SpectrumAudioTiming.HasAy(model))
         {
             ayChip = new AY38912(
                 SpectrumAudioTiming.AyClockHz(model),
                 options.SampleRate,
                 options.AyOutputAmplitude);
-            ports.AddDevice(new SpectrumAyDevice(ayChip));
+            ayDevice = new SpectrumAyDevice(ayChip);
+            ports.AddDevice(ayDevice);
             audio.AttachAy(ayChip);
         }
 
@@ -107,6 +109,7 @@ public static class SpectrumMachineFactory
             earInput,
             ula,
             ayChip,
+            ayDevice,
             cpu,
             emulator);
     }

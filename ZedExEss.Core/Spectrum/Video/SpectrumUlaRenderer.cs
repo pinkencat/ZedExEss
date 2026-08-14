@@ -61,6 +61,8 @@ namespace ZedExEss.Spectrum.Video
         public int InterruptPulseTstates => _timing.InterruptPulseTstates;
         public int InterruptDelayTstates => _timing.InterruptDelayTstates;
         public int InterruptStartOffsetTstates => _timing.InterruptStartOffsetTstates;
+        public int FrameTstate => _beamTstate;
+        public int FrameCounter => _frameCounter;
         public bool RenderEnabled { get; set; } = true;
 
         public byte BorderColorIndex
@@ -86,6 +88,27 @@ namespace ZedExEss.Spectrum.Video
             _dirtyLineCount = 0;
             _fullFrameDirty = false;
             // Generation stamps make clearing O(1). The backing array is only cleared on wrap.
+            AdvanceDirtyGeneration();
+        }
+
+        /// <summary>
+        /// Restores beam/FLASH timing without rendering the discarded interval.
+        /// The next presentation is forced to be complete because display-byte
+        /// latches from the old timeline are no longer meaningful.
+        /// </summary>
+        public void RestoreTiming(int frameTstate, int frameCounter = 0)
+        {
+            if ((uint)frameTstate >= (uint)_timing.TstatesPerFrame)
+            {
+                throw new ArgumentOutOfRangeException(nameof(frameTstate));
+            }
+
+            _beamTstate = frameTstate;
+            _frameCounter = Math.Max(0, frameCounter);
+            _flashPhase = (_frameCounter & FlashToggleMask) != 0;
+            ClearDisplayLatches();
+            _dirtyLineCount = 0;
+            _fullFrameDirty = true;
             AdvanceDirtyGeneration();
         }
 

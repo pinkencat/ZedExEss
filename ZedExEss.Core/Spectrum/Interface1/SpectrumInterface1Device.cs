@@ -92,6 +92,52 @@ public sealed class SpectrumInterface1Device : IPortDevice
     /// </summary>
     public event Action? StatusChanged;
 
+    /// <summary>Captures latches and exact byte-stream position for all drives.</summary>
+    public SpectrumInterface1DeviceState CaptureState()
+    {
+        var drives = new MicrodriveTransportState[_drives.Length];
+        for (int i = 0; i < _drives.Length; i++)
+        {
+            drives[i] = _drives[i].CaptureState();
+        }
+
+        return new SpectrumInterface1DeviceState(
+            _paged,
+            _control,
+            _networkOutput,
+            _motorMask,
+            _activity,
+            drives);
+    }
+
+    /// <summary>
+    /// Restores transient device state after the matching cartridges have been
+    /// inserted. No emulated port accesses are generated during restoration.
+    /// </summary>
+    public void RestoreState(SpectrumInterface1DeviceState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        for (int i = 0; i < _drives.Length; i++)
+        {
+            bool motorOn = (state.MotorMask & (1 << i)) != 0;
+            _drives[i].ValidateState(state.GetDrive(i), motorOn);
+        }
+
+        _paged = state.IsPaged;
+        _control = state.Control;
+        _networkOutput = state.NetworkOutput;
+        _motorMask = state.MotorMask;
+        _activity = state.Activity;
+        for (int i = 0; i < _drives.Length; i++)
+        {
+            bool motorOn = (_motorMask & (1 << i)) != 0;
+            _drives[i].RestoreState(state.GetDrive(i), motorOn);
+        }
+
+        StatusChanged?.Invoke();
+    }
+
     /// <summary>
     /// Resets Interface 1 latches and transport positions without ejecting media.
     /// </summary>
@@ -375,6 +421,70 @@ public sealed class SpectrumInterface1Device : IPortDevice
 
         public MicrodriveCartridge? Cartridge { get; private set; }
         public bool MotorOn { get; set; }
+
+        public MicrodriveTransportState CaptureState()
+        {
+            return new MicrodriveTransportState(
+                _headPosition,
+                _transferred,
+                _maximumTransfer,
+                _gap,
+                _sync,
+                _lastByte);
+        }
+
+        public void ValidateState(MicrodriveTransportState state, bool motorOn)
+        {
+            if (state.Transferred < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(state), "Transferred byte count cannot be negative.");
+            }
+
+            int recordLength = MicrodriveCartridge.HeaderLength + MicrodriveCartridge.DataLength + 1;
+            if (state.MaximumTransfer != MicrodriveCartridge.HeaderLength &&
+                state.MaximumTransfer != recordLength)
+            {
+                throw new ArgumentOutOfRangeException(nameof(state), "Invalid Microdrive transfer length.");
+            }
+
+            if (state.Gap is < 0 or > GapLength || state.Sync is < 0 or > SyncLength)
+            {
+                throw new ArgumentOutOfRangeException(nameof(state), "Invalid GAP/SYNC counter.");
+            }
+
+            if (Cartridge == null)
+            {
+                if (state.HeadPosition != 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(state), "An empty drive cannot have a non-zero head position.");
+                }
+
+                if (motorOn)
+                {
+                    // A running empty mechanism is valid; only cartridge-relative
+                    // state must remain at its reset position.
+                    return;
+                }
+
+                return;
+            }
+
+            if ((uint)state.HeadPosition >= (uint)Cartridge.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(state), "Microdrive head position lies outside the cartridge.");
+            }
+        }
+
+        public void RestoreState(MicrodriveTransportState state, bool motorOn)
+        {
+            _headPosition = state.HeadPosition;
+            _transferred = state.Transferred;
+            _maximumTransfer = state.MaximumTransfer;
+            _gap = state.Gap;
+            _sync = state.Sync;
+            _lastByte = state.LastByte;
+            MotorOn = motorOn;
+        }
 
         public void Reset()
         {

@@ -48,6 +48,7 @@ public static class Interface1VerificationRunner
         Check("Microdrive GAP/SYNC and byte transport", VerifyMicrodriveReadTransport, ref failed);
         Check("Microdrive write/erase gates and write protection", VerifyMicrodriveWriteTransport, ref failed);
         Check("Persistent Microdrive session state", VerifyPersistentMediaState, ref failed);
+        Check("Interface 1 snapshot capture and exact restore", VerifySnapshotPersistence, ref failed);
         Check("Dirty MDR shutdown flush and reload", VerifyDirtyMediaFlush, ref failed);
 
         if (!string.IsNullOrWhiteSpace(options.RomPath))
@@ -420,6 +421,107 @@ public static class Interface1VerificationRunner
             MicrodriveCartridge reloaded = MicrodriveCartridge.Load(path);
             Require(reloaded.ReadByte(30) == replacement,
                 "A dirty cartridge byte was lost when the saved MDR was reloaded.");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void VerifySnapshotPersistence()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"zedexess-if1-state-{Guid.NewGuid():N}");
+        string path = Path.Combine(directory, "snapshot-test.mdr");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var media = new SpectrumInterface1MediaState();
+            MicrodriveCartridge cartridge = media.Create(
+                0,
+                MicrodriveCartridge.MinimumSectorCount,
+                "Snapshot");
+            media.SaveAs(0, path);
+
+            var device = new SpectrumInterface1Device(CreatePatternedRom());
+            media.ConnectDevice(device);
+            SelectDriveOne(device);
+            device.BeforeOpcodeFetch(0x0008);
+            device.Write(0x00F7, 0x01);
+            device.Write(0x00EF, 0xE2);
+            WritePreamble(device);
+            device.Write(0x00E7, 0x91);
+            device.Write(0x00E7, 0x92);
+            device.Write(0x00E7, 0x93);
+            Require(cartridge.TryWriteByte(20, 0x42), "Could not prepare a cartridge byte for snapshot verification.");
+            cartridge.SetWriteProtected(true);
+
+            SpectrumInterface1Snapshot captured = media.CaptureSnapshot();
+            SpectrumInterface1MediaSlotState capturedSlot = captured.Media.Slots[0];
+            MicrodriveCartridgeState capturedCartridge = capturedSlot.Cartridge
+                ?? throw new InvalidOperationException("Captured snapshot omitted the mounted cartridge.");
+            byte[] capturedData = capturedCartridge.CopyData();
+            byte[] capturedPreambles = capturedCartridge.CopyPreambleState();
+
+            // Exercise reconstruction of preamble state which MDR files do not
+            // contain. This is the state a native snapshot serializer will carry.
+            int recordPreamble = capturedCartridge.SectorCount;
+            capturedPreambles[recordPreamble] = 5;
+            var replacementCartridgeState = new MicrodriveCartridgeState(
+                capturedCartridge.SectorCount,
+                capturedData,
+                capturedPreambles,
+                capturedCartridge.WriteProtected,
+                capturedCartridge.Modified);
+            SpectrumInterface1MediaSlotState[] slots = captured.Media.Slots.ToArray();
+            slots[0] = new SpectrumInterface1MediaSlotState(capturedSlot.BackingPath, replacementCartridgeState);
+            captured = new SpectrumInterface1Snapshot(
+                new SpectrumInterface1MediaSnapshot(slots),
+                captured.Device);
+
+            SpectrumInterface1DeviceState expectedDevice = captured.Device
+                ?? throw new InvalidOperationException("Connected device state was not captured.");
+
+            // Mutate every ownership layer after capture. None of these changes
+            // may leak into the saved state, and discarded dirty media must not be
+            // flushed merely because the snapshot is restored.
+            cartridge.SetWriteProtected(false);
+            Require(cartridge.TryWriteByte(20, 0x99), "Could not mutate live cartridge after capture.");
+            device.Write(0x00F7, 0x00);
+            device.Reset();
+            _ = media.Eject(0, saveDirtyImage: false);
+            Require(replacementCartridgeState.CopyData()[20] == 0x42,
+                "Live cartridge writes changed the deep-copied snapshot.");
+
+            media.RestoreSnapshot(captured);
+
+            MicrodriveCartridge restored = media.GetCartridge(0)
+                ?? throw new InvalidOperationException("Snapshot restore did not remount drive 1.");
+            Require(media.GetPath(0) == Path.GetFullPath(path), "Snapshot restore lost the MDR backing path.");
+            Require(restored.ReadByte(20) == 0x42, "Snapshot restore returned mutated future cartridge data.");
+            Require(restored.WriteProtected, "Snapshot restore lost cartridge write protection.");
+            Require(restored.Modified, "Snapshot restore lost the cartridge dirty flag.");
+            Require(restored.GetPreambleState(recordPreamble) == 5,
+                "Snapshot restore lost an in-progress record preamble.");
+            Require(ReferenceEquals(device.GetCartridge(1), restored),
+                "Restored media was not reconnected to the active Interface 1 device.");
+
+            SpectrumInterface1Snapshot roundTrip = media.CaptureSnapshot();
+            SpectrumInterface1DeviceState actualDevice = roundTrip.Device
+                ?? throw new InvalidOperationException("Restored device state could not be recaptured.");
+            Require(actualDevice.IsPaged == expectedDevice.IsPaged, "ROMCS paging state changed during restore.");
+            Require(actualDevice.Control == expectedDevice.Control, "Control latch changed during restore.");
+            Require(actualDevice.NetworkOutput == expectedDevice.NetworkOutput, "Network latch changed during restore.");
+            Require(actualDevice.MotorMask == expectedDevice.MotorMask, "Motor selection changed during restore.");
+            Require(actualDevice.Activity == expectedDevice.Activity, "Activity state changed during restore.");
+            for (int drive = 0; drive < SpectrumInterface1Device.DriveCount; drive++)
+            {
+                Require(actualDevice.Drives[drive] == expectedDevice.Drives[drive],
+                    $"Drive {drive + 1} transport state changed during restore.");
+            }
+
+            byte[] hostImage = File.ReadAllBytes(path);
+            Require(hostImage[20] != 0x99,
+                "Restoring a snapshot flushed discarded future cartridge data to the MDR file.");
         }
         finally
         {

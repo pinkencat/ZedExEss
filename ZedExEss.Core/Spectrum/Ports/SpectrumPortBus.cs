@@ -54,6 +54,12 @@ namespace ZedExEss.Spectrum.Ports
         {
             _floatingBus = floatingBus;
         }
+
+        /// <summary>Discards delayed port effects belonging to a replaced snapshot state.</summary>
+        public void ClearPendingWrites()
+        {
+            _pendingWrites.Clear();
+        }
         public void AddDevice(IPortDevice device)
         {
             ArgumentNullException.ThrowIfNull(device);

@@ -28,6 +28,7 @@ namespace ZedExEss.Spectrum.Video
         private byte _defaultValue = 0xFF;
 
         public SpectrumUlaRenderer Renderer => _renderer;
+        public byte LastOutputByte => _lastByte;
         public bool HandlesPort(ushort port)
         {
             return SpectrumModelTraits.HasFullyDecodedUlaPort(_model)
@@ -56,6 +57,17 @@ namespace ZedExEss.Spectrum.Video
         public void Write(ushort port, byte value)
         {
             _syncBeforeWrite?.Invoke();
+            ApplyOutputLatch(value);
+        }
+
+        /// <summary>Restores the FE latch without advancing emulated time.</summary>
+        public void RestoreOutputLatch(byte value)
+        {
+            ApplyOutputLatch(value);
+        }
+
+        private void ApplyOutputLatch(byte value)
+        {
             _lastByte = value;
             _renderer.BorderColorIndex = (byte)(value & 0x07);
             _beeper?.SetLevel((value & 0x10) != 0);

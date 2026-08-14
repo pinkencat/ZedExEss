@@ -607,8 +607,8 @@ namespace ZedExEss
                 DefaultExtension = ".z80",
                 Filters =
                 [
-                    new FileDialogFilter("Supported Files", "*.z80", "*.sna", "*.o", "*.p", "*.81", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.mdr", "*.img", "*.hdf", "*.sd", "*.bin"),
-                    new FileDialogFilter("Snapshots", "*.z80", "*.sna"),
+                    new FileDialogFilter("Supported Files", "*.z80", "*.sna", "*.szx", "*.o", "*.p", "*.81", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.mdr", "*.img", "*.hdf", "*.sd", "*.bin"),
+                    new FileDialogFilter("Snapshots", "*.z80", "*.sna", "*.szx"),
                     new FileDialogFilter("ZX80/ZX81 Program Images", "*.o", "*.p", "*.81"),
                     new FileDialogFilter("Tape Files", "*.tap", "*.tzx", "*.csw"),
                     new FileDialogFilter("Disk Images", "*.dsk", "*.trd", "*.scl"),
@@ -646,6 +646,9 @@ namespace ZedExEss
                     break;
                 case ".sna":
                     LoadSnapshot(path, isZ80: false);
+                    break;
+                case ".szx":
+                    LoadSzxSnapshot(path);
                     break;
                 case ".o":
                 case ".p":
@@ -754,6 +757,9 @@ namespace ZedExEss
                 case ".sna":
                     LoadSnapshot(path, isZ80: false);
                     return true;
+                case ".szx":
+                    LoadSzxSnapshot(path);
+                    return true;
                 case ".o":
                 case ".p":
                 case ".81":
@@ -823,7 +829,7 @@ namespace ZedExEss
             }
 
             string ext = Path.GetExtension(path).ToLowerInvariant();
-            return ext is ".z80" or ".sna" or ".o" or ".p" or ".81"
+            return ext is ".z80" or ".sna" or ".szx" or ".o" or ".p" or ".81"
                 or ".tap" or ".tzx" or ".csw" or ".dsk" or ".trd" or ".scl"
                 or ".mdr" or ".img" or ".hdf" or ".sd" or ".bin";
         }
@@ -895,6 +901,85 @@ namespace ZedExEss
                     SnapshotLoader.LoadSna(cpu, memory, renderer, path);
                 }
             }, preserveTape: false);
+        }
+        private void LoadSzxSnapshot(string path)
+        {
+            SpectrumMachineSnapshot snapshot = SzxSnapshotCodec.Load(path);
+            if (snapshot.Interface1 != null
+                && !SpectrumInterface1Compatibility.IsSupported(snapshot.Model))
+            {
+                throw new InvalidDataException(
+                    $"The snapshot contains Interface 1 state, which cannot be attached to {snapshot.Model}.");
+            }
+
+            if (!TryLoadRoms(snapshot.Model, out RomSet roms, out string error))
+            {
+                throw new InvalidOperationException(error);
+            }
+
+            // SZX describes the attached expansion graph. Do not retain an unrelated
+            // Interface 1 or DivMMC merely because it was enabled in the previous session.
+            _interface1Enabled = snapshot.Interface1 != null;
+            _divExpansionMode = SpectrumDivExpansionMode.Disabled;
+            InitializeMachine(snapshot.Model, roms, (_, _, _) =>
+            {
+                SpectrumMachine machine = _machine
+                    ?? throw new InvalidOperationException("The replacement machine was not created.");
+                SpectrumMachineSnapshotService.Restore(
+                    machine,
+                    snapshot,
+                    snapshot.Interface1 != null ? _session.Interface1 : null);
+            }, preserveTape: false);
+        }
+        private async void OnSaveSnapshot(object sender, RoutedEventArgs e)
+        {
+            SpectrumMachine? machine = _machine;
+            if (machine == null || _zx8xMachine != null)
+            {
+                MessageBox.Show(
+                    "SZX snapshots are available for Spectrum models only.",
+                    "Save Snapshot",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            string? path = await _fileDialogs.SaveFileAsync(new FileDialogOptions
+            {
+                Title = "Save SZX Snapshot",
+                DefaultExtension = ".szx",
+                SuggestedFileName = $"{machine.Model}.szx",
+                Filters =
+                [
+                    new FileDialogFilter("ZX-State snapshots", "*.szx"),
+                    new FileDialogFilter("All Files", "*.*")
+                ]
+            });
+            if (path == null)
+            {
+                Focus();
+                return;
+            }
+
+            EmulationRunState runState = SuspendEmulationForModal();
+            try
+            {
+                SpectrumMachineSnapshot snapshot = SpectrumMachineSnapshotService.Capture(
+                    machine,
+                    _interface1Enabled && _interface1Device != null
+                        ? _session.Interface1
+                        : null);
+                SzxSnapshotCodec.Save(path, snapshot);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Save Snapshot Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                RestoreEmulationAfterModal(runState);
+                Focus();
+            }
         }
         private void OnResetMachine(object sender, RoutedEventArgs e)
         {
