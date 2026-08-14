@@ -48,6 +48,7 @@ namespace ZedExEss.Spectrum.Core
         private bool _advancingTime;
         private bool _audioDrivenExecution;
         private int _audioSkippedTstates;
+        private bool _cpuHeldByPeripheralWait;
 
         public ITapePlayback? TapePlayback
         {
@@ -218,8 +219,11 @@ namespace ZedExEss.Spectrum.Core
                 while (total < count)
                 {
                     bool frameDone = StepCpu(out int delta);
-                    if (IsPaused && delta == 0)
+                    if (delta == 0 && (IsPaused || _cpuHeldByPeripheralWait))
                     {
+                        // A debugger pause or an externally released peripheral WAIT
+                        // cannot produce audio time. Return silence rather than spin on
+                        // the producer thread while the releasing event is pending.
                         Array.Clear(buffer, offset + total, count - total);
                         return count;
                     }
@@ -259,8 +263,9 @@ namespace ZedExEss.Spectrum.Core
             bool frameDone = false;
             while (!frameDone)
             {
+                ulong before = _cpu.Cyc;
                 frameDone = StepCpu();
-                if (IsPaused)
+                if (IsPaused || (_cpuHeldByPeripheralWait && _cpu.Cyc == before))
                 {
                     return;
                 }
@@ -465,8 +470,19 @@ namespace ZedExEss.Spectrum.Core
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ExecuteCpuStep()
         {
+            _cpuHeldByPeripheralWait = false;
             if (IsPaused)
             {
+                return;
+            }
+
+            // WAIT is an electrical CPU input, not an I/O result. Test it before
+            // debugger/trap hooks and before the next opcode begins. If a local peer
+            // has already recorded the release edge, ApplyPeripheralWait advances the
+            // shared CPU clock exactly to it; otherwise this execution slot yields.
+            if (_ports.ApplyPeripheralWait())
+            {
+                _cpuHeldByPeripheralWait = true;
                 return;
             }
 

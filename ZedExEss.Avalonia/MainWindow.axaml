@@ -76,6 +76,23 @@
             <MenuItem x:Name="Interface1Revision2MenuItem" Header="Revision _2" ToggleType="Radio" GroupName="Interface1Revision" />
           </MenuItem>
           <Separator />
+          <MenuItem x:Name="Interface1Rs232MenuItem" Header="_RS232: disconnected">
+            <MenuItem x:Name="Interface1Rs232ConnectPipeMenuItem" Header="Connect named _pipe..." />
+            <MenuItem x:Name="Interface1Rs232ConnectDeviceMenuItem" Header="Connect _device / pseudo-terminal..." />
+            <MenuItem x:Name="Interface1Rs232DisconnectLiveMenuItem" Header="Disconnect live endpoint" />
+            <Separator />
+            <MenuItem x:Name="Interface1Rs232AttachReceiveMenuItem" Header="Attach _receive file..." />
+            <MenuItem x:Name="Interface1Rs232DetachReceiveMenuItem" Header="Detach receive file" />
+            <Separator />
+            <MenuItem x:Name="Interface1Rs232AttachTransmitMenuItem" Header="Attach _transmit file..." />
+            <MenuItem x:Name="Interface1Rs232DetachTransmitMenuItem" Header="Detach transmit file" />
+          </MenuItem>
+          <MenuItem x:Name="Interface1NetworkMenuItem" Header="ZX _Net: disconnected">
+            <MenuItem x:Name="Interface1NetworkListenMenuItem" Header="_Listen..." />
+            <MenuItem x:Name="Interface1NetworkConnectMenuItem" Header="_Connect..." />
+            <MenuItem x:Name="Interface1NetworkDisconnectMenuItem" Header="_Disconnect" />
+          </MenuItem>
+          <Separator />
           <MenuItem x:Name="Microdrive1MenuItem" Header="Drive 1: (empty)">
             <MenuItem x:Name="Microdrive1InsertMenuItem" Header="_Insert..." />
             <MenuItem x:Name="Microdrive1NewMenuItem" Header="_New..." />

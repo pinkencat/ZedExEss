@@ -233,6 +233,12 @@ namespace ZedExEss
 
             _session.Interface1.ConnectDevice(null);
             ObserveInterface1Device(null);
+            _interface1NetworkBridge.StatusChanged -= OnInterface1NetworkStatusChanged;
+            _interface1NetworkBridge.Dispose();
+            _interface1Rs232Connection.StatusChanged -= OnInterface1Rs232ConnectionStatusChanged;
+            _interface1Rs232Connection.Dispose();
+            _interface1Rs232Endpoint.Faulted -= OnInterface1Rs232Faulted;
+            _interface1Rs232Endpoint.Dispose();
             CloseDivStorage(showErrors: false);
             base.OnClosed(e);
         }
@@ -435,6 +441,7 @@ namespace ZedExEss
                 try
                 {
                     var interface1Device = new SpectrumInterface1Device(File.ReadAllBytes(romPath));
+                    interface1Device.AttachRs232Endpoint(_interface1Rs232Endpoint);
                     _session.Interface1.ConnectDevice(interface1Device);
                     ObserveInterface1Device(interface1Device);
                     memory.ConfigureInterface1(interface1Device);

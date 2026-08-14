@@ -475,7 +475,7 @@ public static class SzxSnapshotCodec
 
     private static void WriteInterface1Extension(BinaryWriter writer, SpectrumInterface1Snapshot snapshot)
     {
-        writer.Write((ushort)1);
+        writer.Write((ushort)2);
         writer.Write(snapshot.Device != null);
         if (snapshot.Device != null)
         {
@@ -485,6 +485,12 @@ public static class SzxSnapshotCodec
             writer.Write(device.NetworkOutput);
             writer.Write(device.MotorMask);
             writer.Write((byte)device.Activity);
+            writer.Write(device.Rs232.InputPhase);
+            writer.Write(device.Rs232.OutputPhase);
+            writer.Write(device.Rs232.InputShiftRegister);
+            writer.Write(device.Rs232.OutputShiftRegister);
+            writer.Write(device.Rs232.InputLine);
+            writer.Write(device.Rs232.OutputLine);
             writer.Write((byte)device.Drives.Count);
             foreach (MicrodriveTransportState drive in device.Drives)
             {
@@ -519,7 +525,7 @@ public static class SzxSnapshotCodec
     {
         using var reader = CreateReader(body);
         ushort version = reader.ReadUInt16();
-        if (version != 1)
+        if (version is not 1 and not 2)
         {
             throw new InvalidDataException($"Unsupported ZEI1 version {version}.");
         }
@@ -536,6 +542,16 @@ public static class SzxSnapshotCodec
             {
                 throw new InvalidDataException("Invalid Interface 1 activity state.");
             }
+
+            SpectrumInterface1Rs232TransportState rs232 = version >= 2
+                ? new SpectrumInterface1Rs232TransportState(
+                    reader.ReadInt32(),
+                    reader.ReadInt32(),
+                    reader.ReadByte(),
+                    reader.ReadByte(),
+                    reader.ReadBoolean(),
+                    reader.ReadBoolean())
+                : default;
 
             int driveCount = reader.ReadByte();
             if (driveCount != SpectrumInterface1Device.DriveCount)
@@ -561,6 +577,7 @@ public static class SzxSnapshotCodec
                 network,
                 motor,
                 (MicrodriveActivityState)activityValue,
+                rs232,
                 drives);
         }
 

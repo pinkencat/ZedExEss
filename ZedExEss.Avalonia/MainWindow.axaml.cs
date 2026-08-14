@@ -131,6 +131,12 @@ public sealed partial class MainWindow : Window
         }
 
         _session.Interface1.ConnectDevice(null);
+        _interface1NetworkBridge.StatusChanged -= OnInterface1NetworkStatusChanged;
+        _interface1NetworkBridge.Dispose();
+        _interface1Rs232Connection.StatusChanged -= OnInterface1Rs232ConnectionStatusChanged;
+        _interface1Rs232Connection.Dispose();
+        _interface1Rs232Endpoint.Faulted -= OnInterface1Rs232Faulted;
+        _interface1Rs232Endpoint.Dispose();
         // Stop all CPU access before flushing/discarding an attached SD card.
         _session.DivMmc.Dispose();
         _presenter?.Dispose();
@@ -168,6 +174,7 @@ public sealed partial class MainWindow : Window
             StopRunnerAndDetachMachine();
             _zx8xMachine = null;
             _zx8xModel = null;
+            replacementDevices.Interface1Device?.AttachRs232Endpoint(_interface1Rs232Endpoint);
             _session.Interface1.ConnectDevice(replacementDevices.Interface1Device);
             _autoLoadInjector = null;
             _session.ReplaceMachine(replacement, preserveTape, rewindTape);

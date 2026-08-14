@@ -6,6 +6,7 @@ using ZedExEss.Spectrum.Audio;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.Disk.Beta;
 using ZedExEss.Spectrum.Disk.Plus3;
+using ZedExEss.Spectrum.Interface1;
 using ZedExEss.Spectrum.Video;
 using ZedExEss.Z80CPU;
 
@@ -43,6 +44,7 @@ namespace ZedExEss.Spectrum.Ports
         private SpectrumAyDevice? _ay;
         private SpectrumPlus3DiskController? _plus3Disk;
         private SpectrumBeta128DiskController? _beta128Disk;
+        private SpectrumInterface1Device? _interface1;
         public void ConfigureTiming(Z80? cpu, IContentionProfile? contention, IContendedPageProvider? contendedPages)
         {
             _cpu = cpu;
@@ -59,6 +61,38 @@ namespace ZedExEss.Spectrum.Ports
         public void ClearPendingWrites()
         {
             _pendingWrites.Clear();
+        }
+
+        /// <summary>
+        /// Applies a peripheral-generated Z80 WAIT interval before the next machine
+        /// cycle. Returns true when the CPU must remain stopped because the releasing
+        /// edge has not yet been produced by the peer station.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal bool ApplyPeripheralWait()
+        {
+            Z80? cpu = _cpu;
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (cpu == null || interface1 == null ||
+                !interface1.TryGetNetworkWait(cpu.Cyc, out ulong releaseAt))
+            {
+                return false;
+            }
+
+            if (releaseAt == 0)
+            {
+                return true;
+            }
+
+            ulong remaining = releaseAt - cpu.Cyc;
+            while (remaining > 0)
+            {
+                int step = (int)Math.Min(remaining, int.MaxValue);
+                cpu.AddWaitStates(step);
+                remaining -= (uint)step;
+            }
+
+            return interface1.TryGetNetworkWait(cpu.Cyc, out _);
         }
         public void AddDevice(IPortDevice device)
         {
@@ -83,6 +117,9 @@ namespace ZedExEss.Spectrum.Ports
                 case SpectrumBeta128DiskController beta128Disk:
                     _beta128Disk = beta128Disk;
                     beta128Disk.ConfigureCpuClock(SpectrumModelTraits.CpuClockHz(_model));
+                    break;
+                case SpectrumInterface1Device interface1:
+                    _interface1 = interface1;
                     break;
                 default:
                     _fallbackDevices.Add(device);
@@ -150,6 +187,14 @@ namespace ZedExEss.Spectrum.Ports
             {
                 beta128Disk.SetBusTstate(readAt);
                 return (byte)(value & beta128Disk.Read(port));
+            }
+
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (interface1 != null && interface1.HandlesPort(port))
+            {
+                handled = true;
+                interface1.SetBusTstate(readAt);
+                value &= interface1.Read(port);
             }
 
             for (int i = 0; i < _fallbackDevices.Count; i++)
@@ -426,6 +471,13 @@ namespace ZedExEss.Spectrum.Ports
                 {
                     ay.Write(port, value);
                 }
+            }
+
+            SpectrumInterface1Device? interface1 = _interface1;
+            if (interface1 != null && interface1.HandlesPort(port))
+            {
+                interface1.SetBusTstate(applyAt);
+                interface1.Write(port, value);
             }
 
             for (int i = 0; i < _fallbackDevices.Count; i++)

@@ -109,6 +109,23 @@
                         <MenuItem x:Name="Interface1Revision2Menu" Header="Revision _2" Tag="Revision2" IsCheckable="True" Click="OnInterface1RevisionClick" />
                     </MenuItem>
                     <Separator />
+                    <MenuItem x:Name="Interface1Rs232Menu" Header="_RS232: disconnected">
+                        <MenuItem x:Name="Interface1Rs232ConnectPipeMenu" Header="Connect named _pipe..." Click="OnInterface1Rs232ConnectPipe" />
+                        <MenuItem x:Name="Interface1Rs232ConnectDeviceMenu" Header="Connect _device / pseudo-terminal..." Click="OnInterface1Rs232ConnectDevice" />
+                        <MenuItem x:Name="Interface1Rs232DisconnectLiveMenu" Header="Disconnect live endpoint" Click="OnInterface1Rs232DisconnectLive" />
+                        <Separator />
+                        <MenuItem x:Name="Interface1Rs232AttachReceiveMenu" Header="Attach _receive file..." Click="OnInterface1Rs232AttachReceive" />
+                        <MenuItem x:Name="Interface1Rs232DetachReceiveMenu" Header="Detach receive file" Click="OnInterface1Rs232DetachReceive" />
+                        <Separator />
+                        <MenuItem x:Name="Interface1Rs232AttachTransmitMenu" Header="Attach _transmit file..." Click="OnInterface1Rs232AttachTransmit" />
+                        <MenuItem x:Name="Interface1Rs232DetachTransmitMenu" Header="Detach transmit file" Click="OnInterface1Rs232DetachTransmit" />
+                    </MenuItem>
+                    <MenuItem x:Name="Interface1NetworkMenu" Header="ZX _Net: disconnected">
+                        <MenuItem Header="_Listen..." Click="OnInterface1NetworkListen" />
+                        <MenuItem Header="_Connect..." Click="OnInterface1NetworkConnect" />
+                        <MenuItem x:Name="Interface1NetworkDisconnectMenu" Header="_Disconnect" Click="OnInterface1NetworkDisconnect" />
+                    </MenuItem>
+                    <Separator />
                     <MenuItem x:Name="Microdrive1Menu" Header="Drive 1: (empty)">
                         <MenuItem Header="_Insert..." Tag="0" Click="OnMicrodriveInsert" />
                         <MenuItem Header="_New..." Tag="0" Click="OnMicrodriveCreate" />

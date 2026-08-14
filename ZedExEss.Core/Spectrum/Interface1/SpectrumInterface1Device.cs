@@ -38,6 +38,16 @@ public sealed class SpectrumInterface1Device : IPortDevice
     private byte _networkOutput;
     private byte _motorMask;
     private MicrodriveActivityState _activity;
+    private ISpectrumInterface1Rs232Endpoint? _rs232Endpoint;
+    private SpectrumInterface1NetworkStation? _networkStation;
+    private ulong _busTstate;
+    private bool _networkWaitPending;
+    private int _rs232InputPhase;
+    private int _rs232OutputPhase;
+    private byte _rs232InputShift;
+    private byte _rs232OutputShift;
+    private bool _rs232InputLine;
+    private bool _rs232OutputLine;
 
     public SpectrumInterface1Device(ReadOnlySpan<byte> firmwareRom)
     {
@@ -63,6 +73,9 @@ public sealed class SpectrumInterface1Device : IPortDevice
     public bool MicrodriveWriteEnabled => (_control & ReadWriteMask) == 0;
     public bool MicrodriveEraseEnabled => (_control & EraseMask) == 0;
     public byte NetworkOutput => _networkOutput;
+    public bool Rs232Attached => _rs232Endpoint != null;
+    public bool NetworkAttached => _networkStation?.IsAttached == true;
+    public bool NetworkWaitEnabled => (_control & 0x21) == 0;
     public MicrodriveActivityState Activity => _activity;
 
     /// <summary>
@@ -107,6 +120,13 @@ public sealed class SpectrumInterface1Device : IPortDevice
             _networkOutput,
             _motorMask,
             _activity,
+            new SpectrumInterface1Rs232TransportState(
+                _rs232InputPhase,
+                _rs232OutputPhase,
+                _rs232InputShift,
+                _rs232OutputShift,
+                _rs232InputLine,
+                _rs232OutputLine),
             drives);
     }
 
@@ -129,11 +149,20 @@ public sealed class SpectrumInterface1Device : IPortDevice
         _networkOutput = state.NetworkOutput;
         _motorMask = state.MotorMask;
         _activity = state.Activity;
+        _networkWaitPending = false;
+        _rs232InputPhase = state.Rs232.InputPhase;
+        _rs232OutputPhase = state.Rs232.OutputPhase;
+        _rs232InputShift = state.Rs232.InputShiftRegister;
+        _rs232OutputShift = state.Rs232.OutputShiftRegister;
+        _rs232InputLine = state.Rs232.InputLine;
+        _rs232OutputLine = state.Rs232.OutputLine;
         for (int i = 0; i < _drives.Length; i++)
         {
             bool motorOn = (_motorMask & (1 << i)) != 0;
             _drives[i].RestoreState(state.GetDrive(i), motorOn);
         }
+
+        UpdateNetworkOutput();
 
         StatusChanged?.Invoke();
     }
@@ -146,9 +175,15 @@ public sealed class SpectrumInterface1Device : IPortDevice
         bool statusChanged = _motorMask != 0 || _activity != MicrodriveActivityState.Idle;
         _paged = false;
         _control = 0;
-        _networkOutput = 0;
+        // A high ULA output is inverted by the Interface 1 transistor stage and
+        // therefore releases the resting-low network wire.
+        _networkOutput = 1;
         _motorMask = 0;
         _activity = MicrodriveActivityState.Idle;
+        _networkWaitPending = false;
+        ResetRs232Framing();
+        UpdateNetworkOutput();
+        _rs232Endpoint?.SetClearToSend(false);
         for (int i = 0; i < _drives.Length; i++)
         {
             _drives[i].Reset();
@@ -168,6 +203,66 @@ public sealed class SpectrumInterface1Device : IPortDevice
         {
             StatusChanged?.Invoke();
         }
+    }
+
+    /// <summary>
+    /// Connects a byte-oriented host endpoint. Disconnecting resets only an incomplete
+    /// serial frame; Microdrive and ROMCS state are left untouched.
+    /// </summary>
+    public void AttachRs232Endpoint(ISpectrumInterface1Rs232Endpoint? endpoint)
+    {
+        _rs232Endpoint = endpoint;
+        ResetRs232Framing();
+        endpoint?.SetClearToSend((_control & 0x10) != 0);
+    }
+
+    /// <summary>
+    /// Connects this Interface 1 to one station on a shared ZX Net wire. The station
+    /// lifetime is owned by the session which created it, not by this device.
+    /// </summary>
+    public void AttachNetworkStation(SpectrumInterface1NetworkStation? station)
+    {
+        if (ReferenceEquals(_networkStation, station))
+        {
+            return;
+        }
+
+        _networkStation?.SetOutput(
+            ulaOutputHigh: true,
+            networkSelected: false,
+            tstate: _busTstate);
+        _networkStation = station;
+        UpdateNetworkOutput();
+    }
+
+    /// <summary>Sets the T-state at which the current port access reaches the IF1 ULA.</summary>
+    public void SetBusTstate(ulong tstate)
+    {
+        _busTstate = tstate;
+    }
+
+    /// <summary>
+    /// Reports a pending IF1 ULA processor WAIT request. The ROM writes EFh with bit
+    /// 5 clear once per incoming byte while the network pulse is active. That write
+    /// holds the next CPU cycle until the wire rests; later marker transitions must
+    /// remain visible to the INPAK polling loop and do not retrigger the same request.
+    /// </summary>
+    public bool TryGetNetworkWait(ulong tstate, out ulong releaseTstate)
+    {
+        SpectrumInterface1NetworkStation? station = _networkStation;
+        if (!_networkWaitPending || !NetworkWaitEnabled || station?.Sample(tstate) != true)
+        {
+            _networkWaitPending = false;
+            releaseTstate = tstate;
+            return false;
+        }
+
+        if (!station.TryGetNextRestingTstate(tstate, out releaseTstate))
+        {
+            releaseTstate = 0;
+        }
+
+        return true;
     }
 
     public MicrodriveCartridge? EjectCartridge(int driveNumber)
@@ -250,6 +345,14 @@ public sealed class SpectrumInterface1Device : IPortDevice
 
             case 0x0010:
                 _networkOutput = (byte)(value & 0x01);
+                if ((_control & 0x01) != 0)
+                {
+                    WriteCommunications(value);
+                }
+                else
+                {
+                    UpdateNetworkOutput();
+                }
                 break;
         }
     }
@@ -283,17 +386,150 @@ public sealed class SpectrumInterface1Device : IPortDevice
             value &= _drives[i].ReadStatus();
         }
 
-        // No attached RS232 endpoint or Sinclair Network peer: DTR and BSY are
-        // active-low and therefore clear, matching the disconnected IF1 state.
-        value &= 0xE7;
+        // DTR is active-low. BUSY follows the physical ZX Net wire, which rests low
+        // and rises while any attached output stage asserts it.
+        // A connected endpoint raises DTR; an absent endpoint retains the real
+        // disconnected value used by the Interface 1 ROM's OPEN checks.
+        if (_rs232Endpoint?.DataTerminalReady != true)
+        {
+            value &= 0xF7;
+        }
+
+        if (_networkStation?.Sample(_busTstate) != true)
+        {
+            value &= 0xEF;
+        }
         RestartTransports();
         return value;
     }
 
     private byte ReadNetwork()
     {
+        AdvanceRs232Input();
         RestartTransports();
-        return 0x7E;
+        byte value = 0x7E; // A disconnected ZX Net wire rests low.
+        if (_rs232InputLine)
+        {
+            value |= 0x80;
+        }
+
+
+        if (_networkStation?.Sample(_busTstate) == true)
+        {
+            value |= 0x01;
+        }
+
+        return value;
+    }
+
+    private void AdvanceRs232Input()
+    {
+        ISpectrumInterface1Rs232Endpoint? endpoint = _rs232Endpoint;
+        bool clearToSend = (_control & 0x10) != 0;
+        if (endpoint == null || !clearToSend)
+        {
+            _rs232InputPhase = 0;
+            _rs232InputLine = false;
+            return;
+        }
+
+        if (_rs232InputPhase == 0)
+        {
+            if (endpoint.TryReadByte(out byte value))
+            {
+                _rs232InputShift = value;
+                _rs232InputPhase = 1;
+            }
+
+            _rs232InputLine = false;
+        }
+        else if (_rs232InputPhase < 5)
+        {
+            _rs232InputLine = true;
+            _rs232InputPhase++;
+        }
+        else if (_rs232InputPhase < 13)
+        {
+            // The IF1 level shifter inverts RS232 data at the ULA input.
+            _rs232InputLine = (_rs232InputShift & 0x01) == 0;
+            _rs232InputShift >>= 1;
+            _rs232InputPhase++;
+        }
+        else
+        {
+            _rs232InputPhase = 0;
+        }
+    }
+
+    private void WriteCommunications(byte value)
+    {
+        _rs232OutputLine = (value & 0x01) != 0;
+        if (_rs232Endpoint == null || (_control & 0x01) == 0)
+        {
+            return;
+        }
+
+        bool line = _rs232OutputLine;
+        bool framingError = false;
+        if (_rs232OutputPhase == 0)
+        {
+            if (!line)
+            {
+                _rs232OutputPhase = 1;
+            }
+
+            return;
+        }
+
+        if (_rs232OutputPhase == 1)
+        {
+            if ((_control & 0x10) != 0 || !line)
+            {
+                framingError = true;
+            }
+            else
+            {
+                _rs232OutputPhase = 2;
+            }
+        }
+        else if (_rs232OutputPhase <= 9)
+        {
+            _rs232OutputShift >>= 1;
+            if (!line)
+            {
+                _rs232OutputShift |= 0x80;
+            }
+
+            _rs232OutputPhase++;
+        }
+        else if (_rs232OutputPhase <= 11)
+        {
+            framingError = line;
+            _rs232OutputPhase++;
+        }
+        else if (_rs232OutputPhase == 12)
+        {
+            framingError = !line;
+            _rs232OutputPhase++;
+        }
+        else
+        {
+            framingError = line;
+            CompleteRs232Output(framingError ? (byte)'?' : _rs232OutputShift);
+            return;
+        }
+
+        if (framingError)
+        {
+            CompleteRs232Output((byte)'?');
+        }
+    }
+
+    private void CompleteRs232Output(byte value)
+    {
+        _rs232Endpoint?.WriteByte(value);
+        _rs232OutputPhase = 0;
+        _rs232OutputShift = 0;
     }
 
     private void WriteMicrodriveData(byte value)
@@ -337,6 +573,12 @@ public sealed class SpectrumInterface1Device : IPortDevice
         }
 
         _control = value;
+        // Each write with WAIT low creates one synchronization request. It is
+        // consumed when the currently active network pulse returns to rest; merely
+        // leaving bit 5 low must not hide subsequent marker bits from INPAK.
+        _networkWaitPending = (value & 0x21) == 0 && _networkStation != null;
+        _rs232Endpoint?.SetClearToSend((value & 0x10) != 0);
+        UpdateNetworkOutput();
         RestartTransports();
 
         bool newMediaWriteActive = MicrodriveWriteEnabled || MicrodriveEraseEnabled;
@@ -357,6 +599,24 @@ public sealed class SpectrumInterface1Device : IPortDevice
             _activity = MicrodriveActivityState.Idle;
             StatusChanged?.Invoke();
         }
+    }
+
+    private void ResetRs232Framing()
+    {
+        _rs232InputPhase = 0;
+        _rs232OutputPhase = 0;
+        _rs232InputShift = 0;
+        _rs232OutputShift = 0;
+        _rs232InputLine = false;
+        _rs232OutputLine = false;
+    }
+
+    private void UpdateNetworkOutput()
+    {
+        _networkStation?.SetOutput(
+            ulaOutputHigh: (_networkOutput & 0x01) != 0,
+            networkSelected: (_control & 0x01) == 0,
+            tstate: _busTstate);
     }
 
     private bool HasSelectedCartridge()

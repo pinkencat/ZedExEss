@@ -121,6 +121,13 @@ public static class SzxSnapshotVerificationRunner
                 networkOutput: 1,
                 motorMask: 1,
                 activity: MicrodriveActivityState.Writing,
+                rs232: new SpectrumInterface1Rs232TransportState(
+                    InputPhase: 7,
+                    OutputPhase: 5,
+                    InputShiftRegister: 0x2A,
+                    OutputShiftRegister: 0xC0,
+                    InputLine: true,
+                    OutputLine: false),
                 drives));
             PopulateMachine(source, SpectrumModel.Spectrum48K);
             SpectrumMachineSnapshot expected = SpectrumMachineSnapshotService.Capture(source, sourceMedia);
@@ -290,7 +297,8 @@ public static class SzxSnapshotVerificationRunner
                 expected.Device.Control == actual.Device.Control &&
                 expected.Device.NetworkOutput == actual.Device.NetworkOutput &&
                 expected.Device.MotorMask == actual.Device.MotorMask &&
-                expected.Device.Activity == actual.Device.Activity,
+                expected.Device.Activity == actual.Device.Activity &&
+                expected.Device.Rs232 == actual.Device.Rs232,
             "Interface 1 latches differ.");
         Require(expected.Device.Drives.SequenceEqual(actual.Device.Drives), "Microdrive transport state differs.");
         for (int slot = 0; slot < SpectrumInterface1Device.DriveCount; slot++)

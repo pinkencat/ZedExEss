@@ -16,6 +16,21 @@ public sealed class SpectrumInterface1MediaState
     private readonly MicrodriveCartridge?[] _cartridges = new MicrodriveCartridge?[SpectrumInterface1Device.DriveCount];
     private readonly string?[] _paths = new string?[SpectrumInterface1Device.DriveCount];
     private SpectrumInterface1Device? _device;
+    private SpectrumInterface1NetworkStation? _networkStation;
+
+    public SpectrumInterface1MediaState(SpectrumInterface1NetworkBus? networkBus = null)
+    {
+        NetworkBus = networkBus ?? new SpectrumInterface1NetworkBus();
+    }
+
+    /// <summary>
+    /// Session-owned ZX Net wire. Supplying the same bus to multiple media states joins
+    /// their Interface 1 devices without adding any packet-level emulator shortcut.
+    /// </summary>
+    public SpectrumInterface1NetworkBus NetworkBus { get; }
+
+    /// <summary>The current machine's attachment to <see cref="NetworkBus"/>, if any.</summary>
+    public SpectrumInterface1NetworkStation? NetworkStation => _networkStation;
 
     public MicrodriveCartridge? GetCartridge(int drive) => _cartridges[ValidateDrive(drive)];
     public string? GetPath(int drive) => _paths[ValidateDrive(drive)];
@@ -69,6 +84,9 @@ public sealed class SpectrumInterface1MediaState
 
         if (_device != null)
         {
+            _device.AttachNetworkStation(null);
+            _networkStation?.Dispose();
+            _networkStation = null;
             for (int drive = 0; drive < _cartridges.Length; drive++)
             {
                 _device.EjectCartridge(drive + 1);
@@ -82,6 +100,9 @@ public sealed class SpectrumInterface1MediaState
         {
             return;
         }
+
+        _networkStation = NetworkBus.AttachStation("Local Interface 1");
+        _device.AttachNetworkStation(_networkStation);
 
         for (int drive = 0; drive < _cartridges.Length; drive++)
         {
@@ -207,6 +228,9 @@ public sealed class SpectrumInterface1MediaState
 
         if (_device != null)
         {
+            _device.AttachNetworkStation(null);
+            _networkStation?.Dispose();
+            _networkStation = null;
             for (int drive = 0; drive < _cartridges.Length; drive++)
             {
                 _device.EjectCartridge(drive + 1);
@@ -218,6 +242,9 @@ public sealed class SpectrumInterface1MediaState
         {
             return;
         }
+
+        _networkStation = NetworkBus.AttachStation("Local Interface 1");
+        _device.AttachNetworkStation(_networkStation);
 
         for (int drive = 0; drive < _cartridges.Length; drive++)
         {
