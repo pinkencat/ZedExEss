@@ -5,9 +5,6 @@ ZedExEss is a ZX Spectrum/ZX80/ZX81 emulator written in C# and .NET 9. Primarily
 
 For binary releases for various platforms, see [Releases](https://github.com/pinkencat/ZedExEss/releases)
 
-> [!WARNING]
-> **Scorpion 256 support is unfinished.** The model can be selected and parts of its memory paging, ROM, and Beta 128/TR-DOS hardware are implemented, but compatibility and accuracy are not yet complete. Treat Scorpion support as experimental.
-
 ## Features
 
 - Z80 CPU emulation with Spectrum-specific memory, port, contention, and timing models
@@ -40,7 +37,7 @@ For binary releases for various platforms, see [Releases](https://github.com/pin
 | ZX Spectrum +2A | Supported | +3-style paging without the disk drive |
 | ZX Spectrum +3 | Supported | Includes two-drive +3 disk support |
 | Pentagon 128 | Supported | Includes Beta 128/TR-DOS support |
-| Scorpion 256 | **Unfinished** | Experimental paging, ROM, and Beta 128/TR-DOS implementation; compatibility is incomplete |
+| Scorpion 256 | Supported | Includes Beta 128/TR-DOS support |
 
 ## Supported media
 
@@ -148,4 +145,8 @@ ZedExEss/
 
 ## Current status
 
-ZedExEss is under active development. Hardware emulation, media compatibility, and the cross-platform host may continue to change. In particular, **Scorpion 256 support remains unfinished and should not currently be considered production-ready**.
+ZedExEss is under active development. Hardware emulation, media compatibility, and the cross-platform host may continue to change.
+
+## Known Bugs
+
+Scorpion TR-DOS currently fights with kempston joystick if enabled. When using Scorpion emulation, do not use Kempston joystick.
