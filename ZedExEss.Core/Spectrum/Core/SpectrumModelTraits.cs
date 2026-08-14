@@ -128,8 +128,7 @@ namespace ZedExEss.Spectrum.Core
         /// absolute T-state boundaries.
         /// </summary>
         /// <remarks>
-        /// This Scorpion-specific rule is separate from ULA contention. Fuse routes
-        /// ordinary, prefix and repeated HALT M1 cycles through the same alignment.
+        /// This Scorpion-specific rule is separate from ULA contention. 
         /// </remarks>
         public static bool AlignsM1ToEvenTstates(SpectrumModel model)
         {

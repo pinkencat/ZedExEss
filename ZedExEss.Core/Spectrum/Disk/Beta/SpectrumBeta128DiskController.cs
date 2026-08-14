@@ -291,9 +291,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
             if (_readAddressTransfer && _readBuffer.Count > 0)
             {
                 // The FD1793 drops DRQ after every data-register access and raises
-                // it again when the next byte reaches the data separator. FUSE uses
-                // a 30 us byte interval; exposing the whole six-byte ID continuously
-                // lets direct loaders overrun their polling loop.
+                // it again when the next byte reaches the data separator. 
                 _readAddressByteReady = false;
                 _readAddressNextByteTstate = _busTstate + MicrosecondsToTstates(30);
             }
@@ -526,7 +524,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
             _writeSector = _sector;
             // Beta/TR-DOS uses fixed 256-byte sectors, so the write byte count is known up front.
             _writeBytesRemaining = TrdDiskImage.SectorSize;
-            // Fuse gives a type-II transfer five revolutions (one second at
+            // Give type-II transfer five revolutions (one second at
             // 300 RPM) before terminating it as LOST DATA. Some TR-DOS ROMs
             // deliberately issue an unserviced write command while probing the
             // controller and wait for that completion interrupt.
@@ -572,7 +570,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
             // until the following ID. Timing-sensitive protection loops then saw a
             // permanently one-sector-late rotational stream.
             int physicalSlot = (int)(nextSlot % TrdDiskImage.SectorsPerTrack);
-            // Fuse expands TRD/SCL media using the standard TR-DOS interleave-2
+            // Expands TRD/SCL media using the standard TR-DOS interleave-2
             // order: 1,9,2,10,...,8,16. Raw TRD storage remains logical 1..16;
             // only rotational READ ADDRESS observations use physical ordering.
             _readAddressSector = (byte)(disk.GetPhysicalSectorId(physicalSlot) | disk.ReadAddressSectorIdMask);
@@ -598,8 +596,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
         {
             if (SelectedDisk == null)
             {
-                // FUSE's FDD layer reports INDEX asserted continuously when no
-                // medium is loaded. Scorpion's 128 TR-DOS startup probe relies on
+                // INDEX is asserted continuously when no medium is loaded. Scorpion's 128 TR-DOS startup probe relies on
                 // that state; synthesising a rotating empty spindle leaves it in
                 // the status-poll loop for an apparent eternity.
                 return true;
@@ -745,8 +742,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
             _readBuffer.Enqueue(1); // 256-byte sector length code.
 
             // A valid ID field leaves the controller CRC accumulator at zero after
-            // its two on-disk CRC bytes have been folded in. This is what FUSE's
-            // FD1793 data-register path returns for a generated, CRC-valid TRD ID.
+            // its two on-disk CRC bytes have been folded in. 
             _readBuffer.Enqueue(0);
             _readBuffer.Enqueue(0);
 

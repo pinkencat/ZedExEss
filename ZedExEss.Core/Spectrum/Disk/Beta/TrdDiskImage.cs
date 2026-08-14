@@ -54,7 +54,7 @@ namespace ZedExEss.Spectrum.Disk.Beta
         /// </summary>
         /// <remarks>
         /// TRD stores sector payloads only, so ID fields are reconstructed using the
-        /// standard TR-DOS interleave used by FUSE: 1,9,2,10,...,8,16.
+        /// standard TR-DOS interleave: 1,9,2,10,...,8,16.
         /// </remarks>
         public byte GetPhysicalSectorId(int physicalSlot)
         {

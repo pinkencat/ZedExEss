@@ -338,7 +338,7 @@ namespace ZedExEss.Diagnostics
 
             memory.WritePort1FFD(0x02);
             memory.FetchOpcode(0x3D00);
-            Require(beta.IsPaged, "Fuse-compatible late Beta decode treats Scorpion service ROM 2 as a ROMCS-capable ROM.");
+            Require(beta.IsPaged, "Late Beta decode treats Scorpion service ROM 2 as a ROMCS-capable ROM.");
         }
         private static void VerifyScorpionBetaKempstonConflict(RomSet roms)
         {
@@ -402,7 +402,6 @@ namespace ZedExEss.Diagnostics
             SpectrumTimingModel timing = SpectrumTimingModel.ForModel(Model);
             SpectrumUlaTiming ula = SpectrumUlaTiming.ForModel(Model);
 
-            // These are the Scorpion frame constants used by libspectrum/Fuse:
             // 24+128+32+40 = 224 T-states per line and 48+192+48+24 = 312 lines.
             Require(SpectrumModelTraits.CpuClockHz(Model) == 3500000, "Scorpion CPU clock should be 3.5 MHz.");
             Require(SpectrumAudioTiming.AyClockHz(Model) == 1750000, "Scorpion AY clock should be 1.75 MHz.");
@@ -510,8 +509,7 @@ namespace ZedExEss.Diagnostics
             ports.WriteUncontended(0xBFFD, 0x0F);
             Require(ports.ReadUncontended(0xFFFD) == 0x0F, "Scorpion AY should use the standard FFFD/BFFD register path.");
 
-            // Base Scorpion hardware exposes the AY's mono mix. Fuse's ACB/ABC stereo
-            // separation is an optional host setting rather than a machine requirement.
+            // Base Scorpion hardware exposes the AY's mono mix. 
             ports.WriteUncontended(0xFFFD, 0x07);
             ports.WriteUncontended(0xBFFD, 0x3E); // Tone A only; disable noise and channels B/C.
             short[] stereo = ay.GenerateSamples(SpectrumAudioTiming.DefaultSampleRate, 128);
