@@ -2,9 +2,11 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using ZedExEss.FileHandlers;
 using ZedExEss.Hosting;
+using ZedExEss.Spectrum.Audio;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.DivMmc;
 using ZedExEss.Spectrum.Input;
@@ -26,6 +28,7 @@ public sealed partial class MainWindow
     private readonly Dictionary<Zx8xModel, MenuItem> _zx8xModelMenuItems = [];
     private readonly Dictionary<Zx8xRamConfiguration, MenuItem> _zx8xRamMenuItems = [];
     private readonly Dictionary<SpectrumJoystickType, MenuItem> _joystickMenuItems = [];
+    private readonly Dictionary<int, MenuItem> _fastForwardSpeedMenuItems = [];
     private readonly MenuItem[] _plus3SaveMenuItems = new MenuItem[2];
     private readonly MenuItem[] _plus3EjectMenuItems = new MenuItem[2];
     private readonly MenuItem[] _betaSaveMenuItems = new MenuItem[2];
@@ -43,6 +46,8 @@ public sealed partial class MainWindow
     private MenuItem _divMmcEnabledMenuItem = null!;
     private MenuItem _divMmcEjectMenuItem = null!;
     private MenuItem _turboMenuItem = null!;
+    private MenuItem _fastForwardMenuItem = null!;
+    private Button _quickFastForwardButton = null!;
     private MenuItem _pollingAccelerationMenuItem = null!;
     private MenuItem _semanticAccelerationMenuItem = null!;
     private MenuItem _maximumTapeSpeedMenuItem = null!;
@@ -54,6 +59,7 @@ public sealed partial class MainWindow
     private SpectrumDivExpansionMode _divExpansionMode = SpectrumDivExpansionMode.Disabled;
     private bool _mediaBrowserVisible = true;
     private bool _updatingCommandChecks;
+    private bool _fastForwardShortcutHeld;
 
     private void InitializeCommandUi()
     {
@@ -70,6 +76,8 @@ public sealed partial class MainWindow
         _divMmcEnabledMenuItem = FindRequiredControl<MenuItem>("DivMmcEnabledMenuItem");
         _divMmcEjectMenuItem = FindRequiredControl<MenuItem>("DivMmcEjectMenuItem");
         _turboMenuItem = FindRequiredControl<MenuItem>("TurboMenuItem");
+        _fastForwardMenuItem = FindRequiredControl<MenuItem>("FastForwardMenuItem");
+        _quickFastForwardButton = FindRequiredControl<Button>("QuickFastForwardButton");
         _pollingAccelerationMenuItem = FindRequiredControl<MenuItem>("PollingAccelerationMenuItem");
         _semanticAccelerationMenuItem = FindRequiredControl<MenuItem>("SemanticAccelerationMenuItem");
         _maximumTapeSpeedMenuItem = FindRequiredControl<MenuItem>("MaximumTapeSpeedMenuItem");
@@ -82,6 +90,7 @@ public sealed partial class MainWindow
         FindRequiredControl<Button>("QuickOpenButton").Click += OnOpenMediaClicked;
         FindRequiredControl<Button>("QuickResetButton").Click += OnResetClicked;
         _pauseButton.Click += OnPauseClicked;
+        _quickFastForwardButton.Click += OnQuickFastForwardClicked;
         FindRequiredControl<Button>("QuickNmiButton").Click += OnNmiClicked;
         _quickBrowserButton.Click += OnToggleMediaBrowserClicked;
 
@@ -89,6 +98,15 @@ public sealed partial class MainWindow
         FindRequiredControl<MenuItem>("SaveSnapshotMenuItem").Click += OnSaveSnapshotClicked;
         FindRequiredControl<MenuItem>("ResetMenuItem").Click += OnResetClicked;
         _turboMenuItem.Click += OnTurboMenuClicked;
+        _fastForwardMenuItem.Click += OnFastForwardMenuClicked;
+        for (int speed = TimeStretchAudioSource.MinimumSpeedMultiplier;
+             speed <= TimeStretchAudioSource.MaximumSpeedMultiplier;
+             speed++)
+        {
+            MenuItem item = FindRequiredControl<MenuItem>($"FastForward{speed}xMenuItem");
+            _fastForwardSpeedMenuItems[speed] = item;
+            item.Click += OnFastForwardSpeedClicked;
+        }
         FindRequiredControl<MenuItem>("ExitMenuItem").Click += (_, _) => Close();
         FindRequiredControl<MenuItem>("OpenTapeMenuItem").Click += OnOpenTapeClicked;
         _playTapeMenuItem.Click += OnPlayTapeClicked;
@@ -676,6 +694,11 @@ public sealed partial class MainWindow
         try
         {
             _turboMenuItem.IsChecked = _turboEnabled;
+            _fastForwardMenuItem.IsChecked = _fastForwardEnabled;
+            foreach ((int speed, MenuItem item) in _fastForwardSpeedMenuItems)
+            {
+                item.IsChecked = speed == _fastForwardSpeed;
+            }
             _pollingAccelerationMenuItem.IsChecked = _edgeLoadEnabled;
             _semanticAccelerationMenuItem.IsChecked = _semanticEdgeLoadEnabled;
             _maximumTapeSpeedMenuItem.IsChecked = _runTapeAccelerationAtMaximumSpeed;
@@ -688,6 +711,13 @@ public sealed partial class MainWindow
         {
             _updatingCommandChecks = false;
         }
+
+        _quickFastForwardButton.Background = _fastForwardEnabled ? Brushes.SteelBlue : null;
+        ToolTip.SetTip(
+            _quickFastForwardButton,
+            _fastForwardEnabled
+                ? $"Disable fast-forward ({_fastForwardSpeed}x) (`)"
+                : $"Fast-forward at {_fastForwardSpeed}x (`)");
     }
 
     private void UpdateTapeMenuState(bool attached, bool playing)
@@ -752,6 +782,18 @@ public sealed partial class MainWindow
         if (e.Key == Key.F12)
         {
             OnDebuggerClicked(this, new RoutedEventArgs());
+            e.Handled = true;
+            return true;
+        }
+
+        if (e.Key == Key.OemTilde)
+        {
+            if (!_fastForwardShortcutHeld)
+            {
+                _fastForwardShortcutHeld = true;
+                SetFastForwardMode(!_fastForwardEnabled);
+            }
+
             e.Handled = true;
             return true;
         }

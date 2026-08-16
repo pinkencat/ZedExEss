@@ -1,4 +1,6 @@
 using Avalonia.Input;
+using ZedExEss.Spectrum.Abstractions;
+using ZedExEss.Spectrum.Audio;
 using ZedExEss.Spectrum.Video;
 using ZedExEss.Zx8x.Core;
 using ZedExEss.Zx8x.Input;
@@ -152,14 +154,19 @@ public sealed partial class MainWindow
 
         try
         {
+            IAudioSource source = _fastForwardEnabled
+                ? new TimeStretchAudioSource(machine, machine.SampleRate, _fastForwardSpeed)
+                : machine;
             var audioOutput = new SdlAudioOutput(
-                machine,
+                source,
                 machine.SampleRate,
                 AudioBufferSamples,
                 AudioBufferCount);
             audioOutput.Faulted += OnAudioOutputFaulted;
             _audioOutput = audioOutput;
-            return "SDL audio realtime";
+            return _fastForwardEnabled
+                ? $"SDL audio fast-forward {_fastForwardSpeed}x"
+                : "SDL audio realtime";
         }
         catch (Exception ex)
         {

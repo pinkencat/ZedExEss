@@ -1,5 +1,7 @@
+using Avalonia.Controls;
 using Avalonia.Interactivity;
 using ZedExEss.Hosting;
+using ZedExEss.Spectrum.Audio;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.Input;
 using ZedExEss.Spectrum.Interface1;
@@ -21,6 +23,8 @@ public sealed partial class MainWindow
     private TurboRunner? _turboRunner;
     private TapeFastRunner? _fastTapeRunner;
     private bool _turboEnabled;
+    private bool _fastForwardEnabled;
+    private int _fastForwardSpeed = 4;
     private bool _edgeLoadEnabled = true;
     private bool _semanticEdgeLoadEnabled;
     private bool _runTapeAccelerationAtMaximumSpeed = true;
@@ -60,6 +64,10 @@ public sealed partial class MainWindow
         _autoLoadTapeOnAttach = _hostSettings.AutoLoadTapeOnAttach;
         _autoTapePlayStopEnabled = _hostSettings.AutoTapePlayStopEnabled;
         _gigascreenBlendEnabled = _hostSettings.GigascreenBlendEnabled;
+        _fastForwardSpeed = Math.Clamp(
+            _hostSettings.FastForwardSpeed,
+            TimeStretchAudioSource.MinimumSpeedMultiplier,
+            TimeStretchAudioSource.MaximumSpeedMultiplier);
         _interface1Enabled = _hostSettings.Interface1Enabled;
         _interface1RomRevision = Enum.IsDefined(typeof(SpectrumInterface1RomRevision), _hostSettings.Interface1RomRevision)
             ? _hostSettings.Interface1RomRevision
@@ -86,6 +94,7 @@ public sealed partial class MainWindow
             AutoLoadTapeOnAttach = _autoLoadTapeOnAttach,
             AutoTapePlayStopEnabled = _autoTapePlayStopEnabled,
             GigascreenBlendEnabled = _gigascreenBlendEnabled,
+            FastForwardSpeed = _fastForwardSpeed,
             Interface1Enabled = _interface1Enabled,
             Interface1RomRevision = _interface1RomRevision,
             Zx8xRamConfiguration = _zx8xRamConfiguration,
@@ -136,6 +145,7 @@ public sealed partial class MainWindow
     private bool ShouldUseFastTapeRunner()
     {
         return !_turboEnabled
+            && !_fastForwardEnabled
             && _runTapeAccelerationAtMaximumSpeed
             && _machine?.EarInput.LoaderAccelerationEnabled == true
             && _machine?.Emulator.IsPaused == false
@@ -145,6 +155,7 @@ public sealed partial class MainWindow
     private bool ShouldUseZx8xFastTapeRunner()
     {
         return !_turboEnabled
+            && !_fastForwardEnabled
             && _edgeLoadEnabled
             && _runTapeAccelerationAtMaximumSpeed
             && _zx8xMachine?.IsPaused == false
@@ -155,7 +166,7 @@ public sealed partial class MainWindow
     /// Re-evaluates execution ownership after a mode, pause, or tape-playback transition.
     /// Existing owners are retained when they already represent the requested mode.
     /// </summary>
-    private void RefreshExecutionOwner()
+    private void RefreshExecutionOwner(bool forceRestart = false)
     {
         if (_zx8xMachine != null)
         {
@@ -169,7 +180,7 @@ public sealed partial class MainWindow
                 : ShouldUseZx8xFastTapeRunner()
                     ? ExecutionOwnerKind.FastTape
                     : ExecutionOwnerKind.Realtime;
-            if (GetExecutionOwnerKind() == zxDesired)
+            if (!forceRestart && GetExecutionOwnerKind() == zxDesired)
             {
                 return;
             }
@@ -191,7 +202,7 @@ public sealed partial class MainWindow
             : ShouldUseFastTapeRunner()
                 ? ExecutionOwnerKind.FastTape
                 : ExecutionOwnerKind.Realtime;
-        if (GetExecutionOwnerKind() == desired)
+        if (!forceRestart && GetExecutionOwnerKind() == desired)
         {
             return;
         }
@@ -260,6 +271,8 @@ public sealed partial class MainWindow
         {
             ExecutionOwnerKind.Turbo => "turbo",
             ExecutionOwnerKind.FastTape => "fast tape",
+            ExecutionOwnerKind.Realtime when _fastForwardEnabled && _audioOutput?.IsRunning == true =>
+                $"fast-forward {_fastForwardSpeed}x",
             ExecutionOwnerKind.Realtime when _audioOutput?.IsRunning == true => "SDL audio realtime",
             ExecutionOwnerKind.Realtime => "silent realtime",
             _ => _debugger.IsPaused ? "debugger paused" : "stopped"
@@ -274,7 +287,76 @@ public sealed partial class MainWindow
         }
 
         _turboEnabled = _turboMenuItem.IsChecked;
+        if (_turboEnabled)
+        {
+            _fastForwardEnabled = false;
+        }
         RefreshExecutionOwner();
+        UpdateRuntimeMenuState();
+        if (_machine != null)
+        {
+            _statusText.Text = $"{FormatModel(_machine.Model)} — {GetExecutionModeText()} — keyboard active";
+        }
+        else if (_zx8xMachine != null)
+        {
+            _statusText.Text = $"{FormatZx8xModel(_zx8xMachine.Model)} — {GetExecutionModeText()} — keyboard active";
+        }
+
+        Focus();
+    }
+
+    private void OnFastForwardMenuClicked(object? sender, RoutedEventArgs e)
+    {
+        if (!_updatingCommandChecks)
+        {
+            SetFastForwardMode(_fastForwardMenuItem.IsChecked);
+        }
+    }
+
+    private void OnQuickFastForwardClicked(object? sender, RoutedEventArgs e)
+    {
+        SetFastForwardMode(!_fastForwardEnabled);
+    }
+
+    private void OnFastForwardSpeedClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_updatingCommandChecks
+            || sender is not MenuItem item
+            || !int.TryParse(item.Tag?.ToString(), out int speed))
+        {
+            UpdateRuntimeMenuState();
+            return;
+        }
+
+        speed = Math.Clamp(
+            speed,
+            TimeStretchAudioSource.MinimumSpeedMultiplier,
+            TimeStretchAudioSource.MaximumSpeedMultiplier);
+        if (speed == _fastForwardSpeed)
+        {
+            UpdateRuntimeMenuState();
+            return;
+        }
+
+        _fastForwardSpeed = speed;
+        if (_fastForwardEnabled)
+        {
+            RefreshExecutionOwner(forceRestart: true);
+        }
+
+        UpdateRuntimeMenuState();
+        Focus();
+    }
+
+    private void SetFastForwardMode(bool enabled)
+    {
+        _fastForwardEnabled = enabled;
+        if (enabled)
+        {
+            _turboEnabled = false;
+        }
+
+        RefreshExecutionOwner(forceRestart: true);
         UpdateRuntimeMenuState();
         if (_machine != null)
         {

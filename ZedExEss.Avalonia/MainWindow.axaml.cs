@@ -7,6 +7,8 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
 using ZedExEss.FileHandlers;
 using ZedExEss.Hosting;
+using ZedExEss.Spectrum.Abstractions;
+using ZedExEss.Spectrum.Audio;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.DivMmc;
 using ZedExEss.Spectrum.Input;
@@ -267,14 +269,19 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            IAudioSource source = _fastForwardEnabled
+                ? new TimeStretchAudioSource(machine.Emulator, machine.SampleRate, _fastForwardSpeed)
+                : machine.Emulator;
             var audioOutput = new SdlAudioOutput(
-                machine.Emulator,
+                source,
                 machine.SampleRate,
                 AudioBufferSamples,
                 AudioBufferCount);
             audioOutput.Faulted += OnAudioOutputFaulted;
             _audioOutput = audioOutput;
-            return "SDL audio realtime";
+            return _fastForwardEnabled
+                ? $"SDL audio fast-forward {_fastForwardSpeed}x"
+                : "SDL audio realtime";
         }
         catch (Exception ex)
         {
@@ -697,6 +704,13 @@ public sealed partial class MainWindow : Window
 
     private void OnKeyUp(object? sender, KeyEventArgs e)
     {
+        if (e.Key == Key.OemTilde)
+        {
+            _fastForwardShortcutHeld = false;
+            e.Handled = true;
+            return;
+        }
+
         if (_zx8xMachine != null)
         {
             if (_pressedHostKeys.Remove(e.Key) && Zx8xKeyMap.TryGetValue(e.Key, out Zx8xKey[]? zxKeys))

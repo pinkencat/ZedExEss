@@ -99,6 +99,7 @@ public static class SettingsVerificationRunner
         Require(settings.FlashLoadEnabled && settings.PollingLoaderAccelerationEnabled,
             "Established tape acceleration defaults were not preserved.");
         Require(!settings.SemanticLoaderAccelerationEnabled, "Experimental semantic acceleration must default off.");
+        Require(settings.FastForwardSpeed == 4, "Fast-forward should default to 4x.");
         Require(settings.Zx8xRamConfiguration == Zx8xRamConfiguration.Expansion16K,
             "ZX80/ZX81 RAM should default to the common 16 KiB expansion.");
         Require(settings.Zx8xHighResolutionMode == Zx8xHighResolutionMode.Sinclair,
@@ -120,6 +121,7 @@ public static class SettingsVerificationRunner
             AutoTapePlayStopEnabled = false,
             DirtyLinePresentationEnabled = false,
             GigascreenBlendEnabled = true,
+            FastForwardSpeed = 7,
             Interface1Enabled = true,
             Interface1RomRevision = Spectrum.Interface1.SpectrumInterface1RomRevision.Revision1,
             Zx8xRamConfiguration = Zx8xRamConfiguration.Internal1K,

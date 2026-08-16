@@ -14,6 +14,7 @@ using ZedExEss.FileHandlers;
 using ZedExEss.Hosting;
 using ZedExEss.Hosting.Wpf;
 using ZedExEss.Spectrum.Audio;
+using ZedExEss.Spectrum.Abstractions;
 using ZedExEss.Spectrum.Basic;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.Debugging;
@@ -83,6 +84,8 @@ namespace ZedExEss
         private bool _fdcTraceEnabled;
         private SpectrumEarInputDevice _earInput = null!;
         private bool _turboEnabled;
+        private bool _fastForwardEnabled;
+        private int _fastForwardSpeed = 4;
         private bool _flashLoadEnabled;
         private bool _edgeLoadEnabled;
         private bool _semanticEdgeLoadEnabled;
@@ -262,6 +265,10 @@ namespace ZedExEss
             _autoTapePlayStopEnabled = settings.AutoTapePlayStopEnabled;
             UseDirtyLinePresentation = settings.DirtyLinePresentationEnabled;
             _gigascreenBlendEnabled = settings.GigascreenBlendEnabled;
+            _fastForwardSpeed = Math.Clamp(
+                settings.FastForwardSpeed,
+                TimeStretchAudioSource.MinimumSpeedMultiplier,
+                TimeStretchAudioSource.MaximumSpeedMultiplier);
             _interface1Enabled = settings.Interface1Enabled;
             _interface1RomRevision = Enum.IsDefined(typeof(SpectrumInterface1RomRevision), settings.Interface1RomRevision)
                 ? settings.Interface1RomRevision
@@ -288,6 +295,7 @@ namespace ZedExEss
                 AutoTapePlayStopEnabled = _autoTapePlayStopEnabled,
                 DirtyLinePresentationEnabled = UseDirtyLinePresentation,
                 GigascreenBlendEnabled = _gigascreenBlendEnabled,
+                FastForwardSpeed = _fastForwardSpeed,
                 Interface1Enabled = _interface1Enabled,
                 Interface1RomRevision = _interface1RomRevision,
                 Zx8xRamConfiguration = _zx8xRamConfiguration,
@@ -388,7 +396,7 @@ namespace ZedExEss
             }
             else
             {
-                _audioPlayer = new WaveOutAudioPlayer(_emulator, sampleRate, AudioBufferSamples, AudioBufferCount);
+                _audioPlayer = CreateWaveOutPlayer(_emulator, sampleRate);
             }
 
             if (!_speedStopwatch.IsRunning)
@@ -1018,6 +1026,52 @@ namespace ZedExEss
             }
 
             SetTurboMode(item.IsChecked);
+        }
+        private void OnFastForwardToggle(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem item)
+            {
+                SetFastForwardMode(item.IsChecked);
+            }
+        }
+        private void OnQuickFastForward(object sender, RoutedEventArgs e)
+        {
+            SetFastForwardMode(!_fastForwardEnabled);
+            Focus();
+        }
+        private void OnFastForwardSpeedClick(object sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem item
+                || item.Tag is not string value
+                || !int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int speed))
+            {
+                UpdateFastForwardUi();
+                return;
+            }
+
+            speed = Math.Clamp(
+                speed,
+                TimeStretchAudioSource.MinimumSpeedMultiplier,
+                TimeStretchAudioSource.MaximumSpeedMultiplier);
+            if (_fastForwardSpeed == speed)
+            {
+                UpdateFastForwardUi();
+                return;
+            }
+
+            _fastForwardSpeed = speed;
+            if (_fastForwardEnabled)
+            {
+                // Analysis history is tied to the old ratio, so replace the
+                // audio owner cleanly at a host-buffer boundary.
+                SetFastForwardMode(true);
+            }
+            else
+            {
+                UpdateFastForwardUi();
+            }
+
+            Focus();
         }
         private void OnModelMenuClick(object sender, RoutedEventArgs e)
         {
@@ -3240,12 +3294,100 @@ namespace ZedExEss
                 QuickTapeHideIcon.Visibility = _tapeBrowserVisible ? Visibility.Visible : Visibility.Collapsed;
                 QuickTapeShowIcon.Visibility = _tapeBrowserVisible ? Visibility.Collapsed : Visibility.Visible;
             }
+
+            UpdateFastForwardUi();
         }
+
+        /// <summary>
+        /// Replaces the current execution owner with a realtime audio puller which advances
+        /// the machine by the selected multiple and compresses that PCM back to host time.
+        /// </summary>
+        private void SetFastForwardMode(bool enabled)
+        {
+            _fastForwardEnabled = enabled;
+            if (enabled)
+            {
+                // Turbo is an unbounded, silent owner and cannot coexist with paced
+                // fast-forward audio. Selecting fast-forward therefore supersedes it.
+                _turboEnabled = false;
+                TurboMenu.IsChecked = false;
+            }
+
+            _turboRunner?.Dispose();
+            _turboRunner = null;
+            _fastTapeRunner?.Dispose();
+            _fastTapeRunner = null;
+            _zx8xTurboRunner?.Dispose();
+            _zx8xTurboRunner = null;
+            _zx8xFastTapeRunner?.Dispose();
+            _zx8xFastTapeRunner = null;
+            _audioPlayer?.Dispose();
+            _audioPlayer = null;
+
+            if (_zx8xMachine != null)
+            {
+                _zx8xMachine.Audio.DiscardPendingSamples(_zx8xMachine.Cpu.Cyc);
+                RefreshZx8xTapeFastRunMode();
+            }
+            else if (_emulator != null)
+            {
+                _emulator.VideoEnabled = true;
+                RefreshTapeFastRunMode();
+            }
+
+            UpdateQuickAccessState();
+        }
+
+        private WaveOutAudioPlayer CreateWaveOutPlayer(IAudioSource source, int sampleRate)
+        {
+            IAudioSource hostSource = _fastForwardEnabled
+                ? new TimeStretchAudioSource(source, sampleRate, _fastForwardSpeed)
+                : source;
+            return new WaveOutAudioPlayer(hostSource, sampleRate, AudioBufferSamples, AudioBufferCount);
+        }
+
+        private void UpdateFastForwardUi()
+        {
+            if (!_uiDispatcher.CheckAccess())
+            {
+                _uiDispatcher.TryPost(UpdateFastForwardUi);
+                return;
+            }
+
+            FastForwardMenu.IsChecked = _fastForwardEnabled;
+            MenuItem[] speeds =
+            [
+                FastForward2xMenu, FastForward3xMenu, FastForward4xMenu,
+                FastForward5xMenu, FastForward6xMenu, FastForward7xMenu,
+                FastForward8xMenu, FastForward9xMenu, FastForward10xMenu
+            ];
+            for (int index = 0; index < speeds.Length; index++)
+            {
+                speeds[index].IsChecked = _fastForwardSpeed == index + 2;
+            }
+
+            QuickFastForwardButton.ToolTip = _fastForwardEnabled
+                ? $"Disable fast-forward ({_fastForwardSpeed}x) (`)"
+                : $"Fast-forward at {_fastForwardSpeed}x (`)";
+            if (_fastForwardEnabled)
+            {
+                QuickFastForwardButton.Background = Brushes.SteelBlue;
+            }
+            else
+            {
+                QuickFastForwardButton.ClearValue(Button.BackgroundProperty);
+            }
+        }
+
         private void SetTurboMode(bool enabled)
         {
             // Runner replacement is the mode switch: CPU execution must never be owned by both
             // the waveOut producer and a TurboRunner at the same time.
             _turboEnabled = enabled;
+            if (enabled)
+            {
+                _fastForwardEnabled = false;
+            }
             TurboMenu.IsChecked = enabled;
 
             if (_zx8xMachine != null)
@@ -3263,11 +3405,7 @@ namespace ZedExEss
                 }
                 else
                 {
-                    _audioPlayer = new WaveOutAudioPlayer(
-                        _zx8xMachine,
-                        _zx8xMachine.SampleRate,
-                        AudioBufferSamples,
-                        AudioBufferCount);
+                    _audioPlayer = CreateWaveOutPlayer(_zx8xMachine, _zx8xMachine.SampleRate);
                 }
 
                 UpdateQuickAccessState();
@@ -3300,6 +3438,7 @@ namespace ZedExEss
         private bool ShouldRunTapeFastMode()
         {
             return !_turboEnabled
+                && !_fastForwardEnabled
                 && _runTapeAccelerationAtMaximumSpeed
                 && _earInput?.LoaderAccelerationEnabled == true
                 && _emulator != null
@@ -3345,7 +3484,7 @@ namespace ZedExEss
             {
                 _emulator.VideoEnabled = true;
                 int sampleRate = SpectrumAudioTiming.DefaultSampleRate;
-                _audioPlayer = new WaveOutAudioPlayer(_emulator, sampleRate, AudioBufferSamples, AudioBufferCount);
+                _audioPlayer = CreateWaveOutPlayer(_emulator, sampleRate);
             }
 
             if (hadFastTapeRunner)
@@ -3382,6 +3521,7 @@ namespace ZedExEss
         {
             return _zx8xMachine != null
                 && !_turboEnabled
+                && !_fastForwardEnabled
                 && !_zx8xMachine.IsPaused
                 && _edgeLoadEnabled
                 && _runTapeAccelerationAtMaximumSpeed
@@ -3416,11 +3556,7 @@ namespace ZedExEss
             if (_audioPlayer == null)
             {
                 machine.Audio.DiscardPendingSamples(machine.Cpu.Cyc);
-                _audioPlayer = new WaveOutAudioPlayer(
-                    machine,
-                    machine.SampleRate,
-                    AudioBufferSamples,
-                    AudioBufferCount);
+                _audioPlayer = CreateWaveOutPlayer(machine, machine.SampleRate);
             }
 
             if (wasFast)
@@ -3472,7 +3608,7 @@ namespace ZedExEss
                 if (_audioPlayer == null && _fastTapeRunner == null)
                 {
                     int sampleRate = SpectrumAudioTiming.DefaultSampleRate;
-                    _audioPlayer = new WaveOutAudioPlayer(_emulator, sampleRate, AudioBufferSamples, AudioBufferCount);
+                    _audioPlayer = CreateWaveOutPlayer(_emulator, sampleRate);
                 }
             }
         }
@@ -3517,6 +3653,17 @@ namespace ZedExEss
             if (e.Key == Key.F12)
             {
                 ShowDebuggerWindow();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Oem3)
+            {
+                if (!e.IsRepeat)
+                {
+                    SetFastForwardMode(!_fastForwardEnabled);
+                }
+
                 e.Handled = true;
                 return;
             }

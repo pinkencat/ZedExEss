@@ -16,6 +16,18 @@
         <Separator />
         <MenuItem x:Name="ResetMenuItem" Header="_Reset" />
         <MenuItem x:Name="TurboMenuItem" Header="_Turbo mode" ToggleType="CheckBox" />
+        <MenuItem x:Name="FastForwardMenuItem" Header="_Fast Forward" ToggleType="CheckBox" InputGesture="OemTilde" />
+        <MenuItem Header="Fast Forward _Speed">
+          <MenuItem x:Name="FastForward2xMenuItem" Header="_2x" Tag="2" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward3xMenuItem" Header="_3x" Tag="3" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward4xMenuItem" Header="_4x" Tag="4" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward5xMenuItem" Header="_5x" Tag="5" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward6xMenuItem" Header="_6x" Tag="6" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward7xMenuItem" Header="_7x" Tag="7" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward8xMenuItem" Header="_8x" Tag="8" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward9xMenuItem" Header="_9x" Tag="9" ToggleType="Radio" GroupName="FastForwardSpeed" />
+          <MenuItem x:Name="FastForward10xMenuItem" Header="1_0x" Tag="10" ToggleType="Radio" GroupName="FastForwardSpeed" />
+        </MenuItem>
         <Separator />
         <MenuItem x:Name="ExitMenuItem" Header="E_xit" />
       </MenuItem>
@@ -244,6 +256,13 @@
             <Path x:Name="PauseGlyph" Fill="White" Data="M3,2 L8,2 8,16 3,16 Z M11,2 L16,2 16,16 11,16 Z" />
             <Path x:Name="PlayGlyph" Fill="White" Data="M4,2 L16,9 4,16 Z" IsVisible="False" />
           </Grid>
+        </Button>
+        <Button x:Name="QuickFastForwardButton" Width="34" Height="30" ToolTip.Tip="Fast-forward (`)">
+          <Viewbox Width="18" Height="18" Stretch="Uniform">
+            <Canvas Width="24" Height="24">
+              <Path Data="M2,5 L10,12 2,19 Z M11,5 L19,12 11,19 Z" Fill="White" />
+            </Canvas>
+          </Viewbox>
         </Button>
         <Button x:Name="QuickNmiButton" Width="34" Height="30" ToolTip.Tip="Trigger NMI (F5)">
           <Viewbox Width="18" Height="18" Stretch="Uniform">

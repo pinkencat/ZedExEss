@@ -25,6 +25,7 @@ public sealed record EmulatorHostSettings
     public bool AutoTapePlayStopEnabled { get; init; } = true;
     public bool DirtyLinePresentationEnabled { get; init; } = true;
     public bool GigascreenBlendEnabled { get; init; }
+    public int FastForwardSpeed { get; init; } = 4;
     public bool Interface1Enabled { get; init; }
     public SpectrumInterface1RomRevision Interface1RomRevision { get; init; } = SpectrumInterface1RomRevision.Revision2;
     public Zx8xRamConfiguration Zx8xRamConfiguration { get; init; } = Zx8xRamConfiguration.Expansion16K;

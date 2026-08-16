@@ -36,6 +36,18 @@
                 <Separator />
                 <MenuItem Header="_Reset" Click="OnResetMachine" />
                 <MenuItem x:Name="TurboMenu" Header="_Turbo Mode" IsCheckable="True" Click="OnTurboModeToggle" />
+                <MenuItem x:Name="FastForwardMenu" Header="_Fast Forward" InputGestureText="`" IsCheckable="True" Click="OnFastForwardToggle" />
+                <MenuItem Header="Fast Forward _Speed">
+                    <MenuItem x:Name="FastForward2xMenu" Header="_2x" Tag="2" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward3xMenu" Header="_3x" Tag="3" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward4xMenu" Header="_4x" Tag="4" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward5xMenu" Header="_5x" Tag="5" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward6xMenu" Header="_6x" Tag="6" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward7xMenu" Header="_7x" Tag="7" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward8xMenu" Header="_8x" Tag="8" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward9xMenu" Header="_9x" Tag="9" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                    <MenuItem x:Name="FastForward10xMenu" Header="1_0x" Tag="10" IsCheckable="True" Click="OnFastForwardSpeedClick" />
+                </MenuItem>
                 <Separator />
                 <MenuItem Header="E_xit" Click="OnExit" />
             </MenuItem>
@@ -267,6 +279,14 @@
                         </Canvas>
                     </Viewbox>
                 </Grid>
+            </Button>
+            <Button x:Name="QuickFastForwardButton" Style="{StaticResource QuickIconButtonStyle}" ToolTip="Fast-forward (`)" Click="OnQuickFastForward">
+                <Viewbox Stretch="Uniform">
+                    <Canvas Width="24" Height="24">
+                        <Polygon Points="3,5 12,12 3,19" Fill="White" />
+                        <Polygon Points="11,5 20,12 11,19" Fill="White" />
+                    </Canvas>
+                </Viewbox>
             </Button>
             <Button x:Name="QuickNmiButton" Style="{StaticResource QuickIconButtonStyle}" ToolTip="Trigger DivMMC NMI" Click="OnDivNmi">
                 <Viewbox Stretch="Uniform">

@@ -157,11 +157,7 @@ public partial class MainWindow
         }
         else
         {
-            _audioPlayer = new WaveOutAudioPlayer(
-                replacement,
-                replacement.SampleRate,
-                AudioBufferSamples,
-                AudioBufferCount);
+            _audioPlayer = CreateWaveOutPlayer(replacement, replacement.SampleRate);
         }
 
         if (!_speedStopwatch.IsRunning)

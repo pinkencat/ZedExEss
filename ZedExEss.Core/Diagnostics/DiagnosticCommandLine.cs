@@ -29,6 +29,7 @@ namespace ZedExEss.Diagnostics
             "  --verify-pentagon\n" +
             "  --verify-session\n" +
             "  --verify-settings\n" +
+            "  --verify-fast-forward-audio\n" +
             "  --verify-tape-acceleration\n" +
             "  --verify-tape-game <path>\n" +
             "  --diagnose-trdos [--trdos-disk <path>] [--trdos-model <model>]\n" +
@@ -199,6 +200,15 @@ namespace ZedExEss.Diagnostics
                 return true;
             }
 
+            if (options.RunFastForwardAudioVerification)
+            {
+                exitCode = FastForwardAudioVerificationRunner.Run(new FastForwardAudioVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
             if (options.TapeGamePath != null)
             {
                 exitCode = TapeGameVerificationRunner.Run(new TapeGameVerificationOptions
@@ -281,6 +291,9 @@ namespace ZedExEss.Diagnostics
                         break;
                     case "--verify-settings":
                         options.RunSettingsVerification = true;
+                        break;
+                    case "--verify-fast-forward-audio":
+                        options.RunFastForwardAudioVerification = true;
                         break;
                     case "--verify-tape-game":
                         options.TapeGamePath = RequireValue(args, ref i, arg);
@@ -441,6 +454,7 @@ namespace ZedExEss.Diagnostics
             public bool RunTapeAccelerationVerification { get; set; }
             public bool RunSessionVerification { get; set; }
             public bool RunSettingsVerification { get; set; }
+            public bool RunFastForwardAudioVerification { get; set; }
             public string? TapeGamePath { get; set; }
             public bool RunTrDosDiagnostic { get; set; }
             public string? TrDosDiskPath { get; set; }
