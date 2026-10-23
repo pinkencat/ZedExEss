@@ -83,6 +83,8 @@ public static class ZxNextVerificationRunner
         Check("CPU/video-BRAM write timing", VerifyCpuDisplayWriteTiming, ref failed);
         Check("Tilemap raster-pixel batching", VerifyTilemapRasterPixelBatching, ref failed);
         Check("Quiet raster spans", VerifyQuietRasterSpans, ref failed);
+        Check("Two-layer live compositors", VerifyTwoLayerCompositors, ref failed);
+        Check("General mixer live equivalence", VerifyGeneralMixerEquivalence, ref failed);
         Check("Desktop frame-runner seam", VerifyDesktopFrameRunnerSeam, ref failed);
         Check("NextReg instruction-boundary reset requests", VerifyNextRegResetRequests, ref failed);
         Check("Physical RAM configuration", VerifyPhysicalRam, ref failed);
@@ -4942,6 +4944,247 @@ public static class ZxNextVerificationRunner
             machine.Registers.Write(0x68, 0x80);
             machine.Video.Reset();
             return machine;
+        }
+    }
+
+    /// <summary>
+    /// The guarded ULA-with-sprites and tilemap-with-sprites compositors must be
+    /// pixel-identical to the general mixer in every priority order, through clipping and
+    /// transparency, and must see palette writes on the next frame.
+    /// </summary>
+    /// <remarks>
+    /// Each scene is rendered functionally first (the general mixer, which is the
+    /// reference) and then by the live raster through the guard. A solid sprite sits half
+    /// over ink and half over a transparent ULA paper colour, so every branch of the
+    /// composition is on screen at once; for the tilemap scene the sprite sits over a
+    /// mixture of opaque and transparent tiles. The orders that put sprites first and
+    /// those that put the ULA first are both covered, as is a clip window that disables
+    /// part of the ULA.
+    /// </remarks>
+    private static void VerifyTwoLayerCompositors()
+    {
+        foreach (byte priority in new byte[] { 0, 1, 2, 3, 4, 5, 6, 7 })
+        {
+            VerifyUlaSpriteScene(priority, clipped: false);
+            VerifyTilemapSpriteScene(priority);
+        }
+
+        VerifyUlaSpriteScene(0, clipped: true);
+        VerifyUlaSpriteScene(3, clipped: true);
+
+        static void VerifyUlaSpriteScene(byte priority, bool clipped)
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            // Ink 7 on paper 3 for the left half of the screen, and paper equal to the
+            // global transparency colour on the right, so the sprite is seen over an
+            // opaque ULA, over a transparent ULA, and over the border.
+            for (int row = 0; row < 24; row++)
+            {
+                for (int column = 0; column < 32; column++)
+                {
+                    machine.MemoryBus.WritePhysicalRam(10, 0x1800 + (row * 32) + column,
+                        column < 16 ? (byte)0x1F : (byte)0x38);
+                }
+            }
+
+            for (int offset = 0; offset < 0x1800; offset++)
+            {
+                machine.MemoryBus.WritePhysicalRam(10, offset, (byte)((offset * 7) & 0xAA));
+            }
+
+            // Paper 7 of the right half maps to the transparency colour, and the fallback
+            // colour is moved away from it, so a transparent ULA pixel is visibly the
+            // fallback (or the sprite behind it) and not the transparency colour itself.
+            machine.Registers.Write(0x43, 0x00);
+            machine.Registers.Write(0x40, 0x17); // paper entries sit at $10 | paper
+            machine.Registers.Write(0x41, 0xE3);
+            machine.Registers.Write(0x4A, 0x1C);
+            WriteSolidSpritePattern8(machine, 0, 0x02);
+            WriteSpriteAttributes(machine, 0, 120, 80, 0, 0x80, 0);
+            // The second sprite sits wholly under the transparent paper, so it shows
+            // through even when the ULA has priority.
+            WriteSpriteAttributes(machine, 1, 200, 100, 0, 0x80, 0);
+            machine.Registers.Write(0x15, (byte)(0x03 | (priority << 2)));
+            if (clipped)
+            {
+                machine.Registers.Write(0x1C, 0x04);
+                machine.Registers.Write(0x1A, 0x20);
+                machine.Registers.Write(0x1A, 0x9F);
+                machine.Registers.Write(0x1A, 0x10);
+                machine.Registers.Write(0x1A, 0x8F);
+            }
+
+            CompareLiveWithFunctional(machine, $"ULA with sprites, priority {priority}{(clipped ? ", clipped" : "")}");
+
+            WriteSpritePalette(machine, 0x02, 0x1C0);
+            machine.Video.AdvanceMasterTicks(machine.UlaTiming.MasterTicksPerFrame);
+            int redPixels = machine.Video.FrameBuffer.AsSpan().Count(unchecked((int)0xFFFF0000));
+            Require(priority >= 3 || redPixels >= 2 * 16 * 16 * 2,
+                $"The ULA-with-sprites compositor did not observe a sprite palette write (priority {priority}): {redPixels} red output pixels.");
+        }
+
+        static void VerifyTilemapSpriteScene(byte priority)
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            machine.Registers.Write(0x6E, 0x20);
+            machine.Registers.Write(0x6F, 0x00);
+            machine.Registers.Write(0x6C, 0x2E);
+            for (int address = 0; address < 0x2800; address++)
+            {
+                int page = 10 + (address / ZxNextPhysicalMemory.PageSize);
+                // Every fourth tile is the transparent index throughout.
+                byte value = (address & 3) == 3 ? (byte)0xFF : (byte)((address * 29 + (address >> 3) + 1) & 0xFF);
+                machine.MemoryBus.WritePhysicalRam(page, address & (ZxNextPhysicalMemory.PageSize - 1), value);
+            }
+
+            machine.Registers.Write(0x6B, 0x80);
+            machine.Registers.Write(0x68, 0x80);
+            WriteSolidSpritePattern8(machine, 0, 0x02);
+            WriteSpriteAttributes(machine, 0, 100, 60, 0, 0x80, 0);
+            WriteSpriteAttributes(machine, 1, 200, 150, 0, 0x80, 0);
+            machine.Registers.Write(0x15, (byte)(0x03 | (priority << 2)));
+            CompareLiveWithFunctional(machine, $"tilemap with sprites, priority {priority}");
+        }
+
+        static void CompareLiveWithFunctional(ZxNextMachine machine, string scene)
+        {
+            machine.Video.RenderFrame(0);
+            int[] reference = (int[])machine.Video.FrameBuffer.Clone();
+            // The scene has to contain what the guard is accused of mishandling: a
+            // transparent region showing the fallback colour, and sprite pixels.
+            int fallbackArgb = machine.Registers.Palettes.GetFallbackArgb();
+            if (reference.AsSpan().Count(fallbackArgb) < 1000)
+            {
+                string histogram = string.Join(", ", reference
+                    .GroupBy(pixel => pixel)
+                    .OrderByDescending(group => group.Count())
+                    .Take(6)
+                    .Select(group => $"{group.Key:X8}x{group.Count()}"));
+                throw new InvalidOperationException(
+                    $"The {scene} scene shows no transparent region (fallback {fallbackArgb:X8}), so transparency is not being tested; colours: {histogram}.");
+            }
+
+            Require(reference.AsSpan().Count(machine.Registers.Palettes.GetSpriteArgb(0x02)) >= 100,
+                $"The {scene} scene shows no sprite pixels, so sprites are not being tested.");
+            machine.Video.Reset();
+            machine.Video.AdvanceMasterTicks(machine.UlaTiming.MasterTicksPerFrame * 2);
+            int[] live = machine.Video.FrameBuffer;
+            int first = live.AsSpan().CommonPrefixLength(reference);
+            Require(first == live.Length,
+                $"The live {scene} compositor diverged from the general mixer at output ({first % ZxNextVideoRenderer.FrameWidth}, {first / ZxNextVideoRenderer.FrameWidth}): "
+                + $"live {live[Math.Min(first, live.Length - 1)]:X8}, reference {reference[Math.Min(first, reference.Length - 1)]:X8}.");
+        }
+    }
+
+    /// <summary>
+    /// The live raster's general mixer must match the reference mixer pixel for pixel in
+    /// every priority order, with every layer on, with and without a promoted Layer 2
+    /// colour, and with each layer in turn switched off.
+    /// </summary>
+    /// <remarks>
+    /// The snapshot renderer still mixes through <c>ComposePixelCore</c>, which is the
+    /// reference; the live path resolves lazily and through the ARGB caches. Each scene
+    /// is built so every layer has opaque and transparent pixels under the sprite, which
+    /// is where a lazy resolution that stops too early or too late would show.
+    /// </remarks>
+    private static void VerifyGeneralMixerEquivalence()
+    {
+        foreach (byte priority in new byte[] { 0, 1, 2, 3, 4, 5, 6, 7 })
+        {
+            foreach (bool promoted in new[] { false, true })
+            {
+                VerifyScene(priority, promoted, ula: true, layer2: true, tilemap: true);
+            }
+
+            VerifyScene(priority, promoted: false, ula: false, layer2: true, tilemap: true);
+            VerifyScene(priority, promoted: true, ula: true, layer2: true, tilemap: false);
+            VerifyScene(priority, promoted: false, ula: true, layer2: false, tilemap: true);
+        }
+
+        static void VerifyScene(byte priority, bool promoted, bool ula, bool layer2, bool tilemap)
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            // ULA: ink 7 on paper 3 left, ink 0 on transparent paper right.
+            for (int row = 0; row < 24; row++)
+            {
+                for (int column = 0; column < 32; column++)
+                {
+                    machine.MemoryBus.WritePhysicalRam(10, 0x1800 + (row * 32) + column,
+                        column < 16 ? (byte)0x1F : (byte)0x38);
+                }
+            }
+
+            for (int offset = 0; offset < 0x1800; offset++)
+            {
+                machine.MemoryBus.WritePhysicalRam(10, offset, (byte)((offset * 7) & 0xAA));
+            }
+
+            machine.Registers.Write(0x43, 0x00);
+            machine.Registers.Write(0x40, 0x17);
+            machine.Registers.Write(0x41, 0xE3);
+            machine.Registers.Write(0x4A, 0x1C);
+            if (!ula)
+            {
+                machine.Registers.Write(0x68, 0x80);
+            }
+
+            // Layer 2, 256x192 in bank 8: a diagonal of transparent pixels through index 1,
+            // which is the promoted colour when the scene asks for one.
+            if (layer2)
+            {
+                machine.Registers.Write(0x12, 0x08);
+                machine.Registers.Write(0x70, 0x00);
+                for (int y = 0; y < 192; y++)
+                {
+                    for (int x = 0; x < 256; x++)
+                    {
+                        int address = (y << 8) | x;
+                        byte value = ((x + y) & 7) == 0 ? (byte)0xE3 : ((x >> 4) & 1) == 0 ? (byte)0x01 : (byte)0x05;
+                        machine.MemoryBus.WritePhysicalRam(16 + (address >> 13), address & 0x1FFF, value);
+                    }
+                }
+
+                WriteLayer2Palette(machine, 0x01, 0x1C0, priority: promoted);
+                WriteLayer2Palette(machine, 0x05, 0x01C, priority: false);
+                machine.PortBus.WriteUncontended(0x123B, 0x02);
+            }
+
+            if (tilemap)
+            {
+                machine.Registers.Write(0x6E, 0x20);
+                machine.Registers.Write(0x6F, 0x00);
+                machine.Registers.Write(0x6C, 0x2E);
+                for (int address = 0; address < 0x2800; address++)
+                {
+                    int page = 10 + (address / ZxNextPhysicalMemory.PageSize);
+                    byte value = (address & 3) == 3 ? (byte)0xFF : (byte)((address * 29 + (address >> 3) + 1) & 0xFF);
+                    if (address < 0x1B00)
+                    {
+                        continue; // keep the ULA screen intact; the map lives above it
+                    }
+
+                    machine.MemoryBus.WritePhysicalRam(page, address & (ZxNextPhysicalMemory.PageSize - 1), value);
+                }
+
+                machine.Registers.Write(0x6E, 0x1B); // map at $5B00: ($5B00 - $4000) / 256
+                machine.Registers.Write(0x6B, 0x80);
+            }
+
+            WriteSolidSpritePattern8(machine, 0, 0x02);
+            WriteSpriteAttributes(machine, 0, 100, 60, 0, 0x80, 0);
+            WriteSpriteAttributes(machine, 1, 200, 100, 0, 0x80, 0);
+            machine.Registers.Write(0x15, (byte)(0x03 | (priority << 2)));
+
+            machine.Video.RenderFrame(0);
+            int[] reference = (int[])machine.Video.FrameBuffer.Clone();
+            machine.Video.Reset();
+            machine.Video.AdvanceMasterTicks(machine.UlaTiming.MasterTicksPerFrame * 2);
+            int[] live = machine.Video.FrameBuffer;
+            int first = live.AsSpan().CommonPrefixLength(reference);
+            string scene = $"priority {priority}{(promoted ? ", promoted" : "")}, ULA {(ula ? "on" : "off")}, Layer 2 {(layer2 ? "on" : "off")}, tilemap {(tilemap ? "on" : "off")}";
+            Require(first == live.Length,
+                $"The live general mixer diverged from the reference ({scene}) at output ({first % ZxNextVideoRenderer.FrameWidth}, {first / ZxNextVideoRenderer.FrameWidth}): "
+                + $"live {live[Math.Min(first, live.Length - 1)]:X8}, reference {reference[Math.Min(first, reference.Length - 1)]:X8}.");
         }
     }
 

@@ -26,6 +26,7 @@ public sealed class ZxNextPaletteDevice
         InitializeStandardUlaPalette(0);
         InitializeStandardUlaPalette(4);
         RebuildArgbPalettes();
+        RecountPriorityColors();
         ResetRegisters();
     }
 
@@ -249,8 +250,41 @@ public sealed class ZxNextPaletteDevice
     {
         int palette = WritePalette;
         ushort stored = (ushort)(value & 0x07FF);
+        ushort previous = _palettes[palette][Index];
         _palettes[palette][Index] = stored;
         _argbPalettes[palette][Index] = ToArgb((ushort)(stored & 0x01FF));
+        _priorityColorCounts[palette] += ((stored & 0x0400) != 0 ? 1 : 0) - ((previous & 0x0400) != 0 ? 1 : 0);
+    }
+
+    /// <summary>
+    /// Whether any entry of the active Layer 2 palette carries the priority bit.
+    /// </summary>
+    /// <remarks>
+    /// A promoted Layer 2 colour overrides every priority order, so the mixer has to test
+    /// for one before it can let a higher layer win. Almost no title sets the bit, and
+    /// when none is set the mixer can skip resolving Layer 2 for every pixel a higher
+    /// layer covers. The counts are kept per palette on every write and recounted on a
+    /// restore, so the answer is always exact.
+    /// </remarks>
+    public bool HasLayer2PriorityColors => _priorityColorCounts[ActiveLayer2Palette] > 0;
+
+    private readonly int[] _priorityColorCounts = new int[8];
+
+    private void RecountPriorityColors()
+    {
+        for (int palette = 0; palette < _palettes.Length; palette++)
+        {
+            int count = 0;
+            foreach (ushort entry in _palettes[palette])
+            {
+                if ((entry & 0x0400) != 0)
+                {
+                    count++;
+                }
+            }
+
+            _priorityColorCounts[palette] = count;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -355,6 +389,8 @@ public sealed class ZxNextPaletteDevice
             state.Palettes[palette].CopyTo(_palettes[palette], 0);
             state.ArgbPalettes[palette].CopyTo(_argbPalettes[palette], 0);
         }
+
+        RecountPriorityColors();
 
         _storedNineBitValue = state.StoredNineBitValue;
         _nineBitSecondWrite = state.NineBitSecondWrite;

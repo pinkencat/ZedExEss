@@ -680,7 +680,14 @@ public sealed class ZxNextVideoRenderer
         bool ulaOnly = !tilemapOnly && IsUlaOnlyComposition();
         bool layer2Only = !tilemapOnly && !ulaOnly && IsLayer2OnlyComposition();
         bool spriteOnly = !tilemapOnly && !ulaOnly && !layer2Only && IsSpriteOnlyComposition();
-        bool needsUlaColor = ulaOnly || !(tilemapOnly || layer2Only || spriteOnly);
+        bool singleLayer = tilemapOnly || ulaOnly || layer2Only || spriteOnly;
+        // The two-layer guards are only consulted once every single-layer one has been
+        // ruled out, which keeps the single-layer paths exactly as cheap as they were.
+        bool tilemapSprites = !singleLayer && IsTilemapSpriteComposition();
+        bool ulaSprites = !singleLayer && !tilemapSprites && IsUlaSpriteComposition();
+        bool needsUlaColor = ulaOnly
+            || ulaSprites
+            || !(tilemapOnly || layer2Only || spriteOnly || tilemapSprites);
 
         ushort firstUlaColor = 0;
         ushort secondUlaColor = 0;
@@ -740,44 +747,25 @@ public sealed class ZxNextVideoRenderer
             firstColor = ComposeSpriteOnlyPixel(logicalX, logicalY);
             secondColor = firstColor;
         }
+        else if (tilemapSprites)
+        {
+            ComposeTilemapSpritePixelPair(logicalX, logicalY, outputX, out firstColor, out secondColor);
+        }
+        else if (ulaSprites)
+        {
+            ComposeUlaSpritePixelPair(logicalX, logicalY, firstUlaColor, secondUlaColor, ulaPixelEnabled, out firstColor, out secondColor);
+        }
         else
         {
-            bool layer2Present = _layer2.TryGetPaletteIndexPair(
-                outputX,
-                logicalY,
-                _memory.PhysicalMemory,
-                out byte layer2First,
-                out byte layer2Second);
-            // The sprite layer is addressed in logical pixels, so both halves resolve
-            // the same sprite and the same colour.
-            bool spriteOpaque = _sprites.TryGetPreparedPaletteIndex(
+            ComposeGeneralPixelPair(
                 logicalX,
                 logicalY,
-                _layer2.SpriteAndLayersControl,
-                out byte spriteIndex);
-            ushort spriteColor = spriteOpaque
-                ? _palettes.GetSpritePaletteColor(spriteIndex)
-                : (ushort)0;
-            firstColor = ComposePixelCore(
                 outputX,
-                logicalY,
                 firstUlaColor,
-                ulaPixelEnabled,
-                usePreparedSprites: true,
-                layer2Present,
-                layer2First,
-                spriteOpaque,
-                spriteColor);
-            secondColor = ComposePixelCore(
-                outputX + 1,
-                logicalY,
                 secondUlaColor,
                 ulaPixelEnabled,
-                usePreparedSprites: true,
-                layer2Present,
-                layer2Second,
-                spriteOpaque,
-                spriteColor);
+                out firstColor,
+                out secondColor);
         }
 
         WritePixel(_workingBuffer, outputX, outputY, firstColor);
@@ -1373,6 +1361,335 @@ public sealed class ZxNextVideoRenderer
     }
 
     /// <summary>
+    /// The lazily resolved Layer 2 state shared by the two halves of one logical pixel.
+    /// </summary>
+    /// <remarks>
+    /// Layer 2 is the dear layer to resolve: a clip test, a scroll wrap with a real
+    /// division, a RAM read and a palette read. In every order but LSU and LUS a higher
+    /// layer can settle the pixel first, and when it does the Layer 2 work was wasted -
+    /// unless a promoted colour could still override it, which
+    /// <see cref="ZxNextPaletteDevice.HasLayer2PriorityColors"/> rules out for almost
+    /// every title. So the pair resolves Layer 2 only on the first half that needs it.
+    /// </remarks>
+    private struct LazyLayer2
+    {
+        public bool Resolved;
+        public bool Present;
+        public byte First;
+        public byte Second;
+    }
+
+    /// <summary>
+    /// The live raster's general mixer: both halves of a pixel through any combination
+    /// of layers, exactly as <see cref="ComposePixelCore"/> would mix them, but with the
+    /// sprite and the ULA transparency resolved once for the pair, Layer 2 resolved only
+    /// when the priority order can still reach it, and the winner's ARGB taken from the
+    /// palette caches.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ComposePixelCore"/> stays as the reference: the snapshot renderer uses
+    /// it, and the "General mixer live equivalence" check holds this method to it across
+    /// every priority order with and without a promoted colour. Not inlined, so the
+    /// per-pixel method stays small for the guarded compositions.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ComposeGeneralPixelPair(
+        int logicalX,
+        int logicalY,
+        int outputX,
+        ushort firstUlaColor,
+        ushort secondUlaColor,
+        bool ulaPixelEnabled,
+        out int firstColor,
+        out int secondColor)
+    {
+        byte control = _layer2.SpriteAndLayersControl;
+        bool spriteOpaque = _sprites.TryGetPreparedPaletteIndex(logicalX, logicalY, control, out byte spriteIndex);
+        bool ulaOutput = ulaPixelEnabled && _palettes.UlaOutputEnabled;
+        bool firstUlaOpaque = ulaOutput && !IsGloballyTransparent(firstUlaColor);
+        bool secondUlaOpaque = secondUlaColor == firstUlaColor
+            ? firstUlaOpaque
+            : ulaOutput && !IsGloballyTransparent(secondUlaColor);
+        var layer2 = default(LazyLayer2);
+        int priority = (control >> 2) & 0x07;
+        bool promotionPossible = _layer2.DisplayEnabled && _palettes.HasLayer2PriorityColors;
+        firstColor = ComposeGeneralHalf(
+            outputX, logicalY, firstUlaColor, firstUlaOpaque, spriteOpaque, spriteIndex,
+            priority, promotionPossible, layer2, out layer2, secondHalf: false);
+        secondColor = ComposeGeneralHalf(
+            outputX + 1, logicalY, secondUlaColor, secondUlaOpaque, spriteOpaque, spriteIndex,
+            priority, promotionPossible, layer2, out _, secondHalf: true);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private LazyLayer2 ResolveLayer2(int outputX, int logicalY)
+    {
+        LazyLayer2 layer2;
+        layer2.Present = _layer2.TryGetPaletteIndexPair(
+            outputX & ~1,
+            logicalY,
+            _memory.PhysicalMemory,
+            out layer2.First,
+            out layer2.Second);
+        layer2.Resolved = true;
+        return layer2;
+    }
+
+    /// <summary>
+    /// Resolves the Layer 2 half the current order has just reached: the pair lookup on
+    /// first use, then the palette read that both the opacity and the promotion tests
+    /// need.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ResolveLayer2Half(
+        int outputX,
+        int logicalY,
+        bool secondHalf,
+        ref LazyLayer2 layer2,
+        out bool opaque,
+        out byte index,
+        out ushort raw)
+    {
+        if (!layer2.Resolved)
+        {
+            layer2 = ResolveLayer2(outputX, logicalY);
+        }
+
+        index = secondHalf ? layer2.Second : layer2.First;
+        if (layer2.Present)
+        {
+            raw = _palettes.GetLayer2PaletteColor(index);
+            opaque = !IsGloballyTransparent(raw);
+        }
+        else
+        {
+            raw = 0;
+            opaque = false;
+        }
+    }
+
+    /// <summary>
+    /// One half-pixel of the general mix. Written as straight-line code with explicit
+    /// "resolved yet?" flags rather than local functions: a closure over this many locals
+    /// kept them out of registers and measured 8-15% slower than the reference mixer it
+    /// was meant to beat.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ComposeGeneralHalf(
+        int outputX,
+        int logicalY,
+        ushort ulaColor,
+        bool ulaOpaque,
+        bool spriteOpaque,
+        byte spriteIndex,
+        int priority,
+        bool promotionPossible,
+        LazyLayer2 layer2In,
+        out LazyLayer2 layer2Out,
+        bool secondHalf)
+    {
+        LazyLayer2 layer2 = layer2In;
+
+        // The tilemap is addressed per half and its deadline-miss count is diagnostics
+        // the guest can read, so it is resolved first and unconditionally, as the
+        // reference mixer does.
+        bool timedTilemapPixel = _tilemap.TryGetTimedPixel(
+            outputX,
+            logicalY,
+            out bool tileOpaque,
+            out byte tileIndex,
+            out bool tileBelowUla);
+        if (!timedTilemapPixel)
+        {
+            if (_tilemap.Enabled)
+            {
+                _tilemap.RecordTimedPixelDeadlineMiss();
+            }
+
+            tileOpaque = _tilemap.TryGetPaletteIndex(
+                outputX,
+                logicalY,
+                _memory.PhysicalMemory,
+                out tileIndex,
+                out tileBelowUla);
+        }
+
+        bool tileWins = tileOpaque && (!tileBelowUla || !ulaOpaque);
+        bool ulaTileOpaque = tileWins || ulaOpaque;
+
+        bool layer2Known = false;
+        bool layer2Opaque = false;
+        byte layer2Index = 0;
+        ushort layer2Raw = 0;
+        int result;
+
+        // Promotion: a priority-coloured, opaque Layer 2 pixel wins any order but LSU and
+        // LUS. It is only worth looking for when the palette has such a colour at all.
+        if (promotionPossible && priority != 1 && priority != 3)
+        {
+            ResolveLayer2Half(outputX, logicalY, secondHalf, ref layer2, out layer2Opaque, out layer2Index, out layer2Raw);
+            layer2Known = true;
+            if (layer2Opaque && _palettes.IsLayer2PriorityColor(layer2Index))
+            {
+                if (priority >= 6)
+                {
+                    ushort ulaTileColor = tileWins
+                        ? _palettes.GetTilemapPaletteColor(tileIndex, _tilemap.SecondPalette)
+                        : ulaColor;
+                    result = ZxNextPaletteDevice.ToArgb(BlendLayer2(
+                        layer2Raw,
+                        ulaTileColor,
+                        ulaTileOpaque,
+                        subtractFive: priority == 7));
+                }
+                else
+                {
+                    result = _palettes.GetLayer2Argb(layer2Index);
+                }
+
+                layer2Out = layer2;
+                return result;
+            }
+        }
+
+        // Each order is written out as the reference switch has it. A layer is resolved
+        // at the point the order reaches it and never before, so a pixel settled by a
+        // higher layer costs nothing for the ones beneath.
+        switch (priority)
+        {
+            case 0:
+                if (spriteOpaque)
+                {
+                    result = _palettes.GetSpriteArgb(spriteIndex);
+                    break;
+                }
+
+                if (!layer2Known)
+                {
+                    ResolveLayer2Half(outputX, logicalY, secondHalf, ref layer2, out layer2Opaque, out layer2Index, out _);
+                }
+
+                result = layer2Opaque ? _palettes.GetLayer2Argb(layer2Index)
+                    : ulaTileOpaque ? UlaTileArgb(tileWins, tileIndex, ulaColor)
+                    : _palettes.GetFallbackArgb();
+                break;
+
+            case 1:
+            case 3:
+                ResolveLayer2Half(outputX, logicalY, secondHalf, ref layer2, out layer2Opaque, out layer2Index, out _);
+                if (layer2Opaque)
+                {
+                    result = _palettes.GetLayer2Argb(layer2Index);
+                }
+                else if (priority == 1)
+                {
+                    result = spriteOpaque ? _palettes.GetSpriteArgb(spriteIndex)
+                        : ulaTileOpaque ? UlaTileArgb(tileWins, tileIndex, ulaColor)
+                        : _palettes.GetFallbackArgb();
+                }
+                else
+                {
+                    result = ulaTileOpaque ? UlaTileArgb(tileWins, tileIndex, ulaColor)
+                        : spriteOpaque ? _palettes.GetSpriteArgb(spriteIndex)
+                        : _palettes.GetFallbackArgb();
+                }
+
+                break;
+
+            case 2:
+                if (spriteOpaque)
+                {
+                    result = _palettes.GetSpriteArgb(spriteIndex);
+                }
+                else if (ulaTileOpaque)
+                {
+                    result = UlaTileArgb(tileWins, tileIndex, ulaColor);
+                }
+                else
+                {
+                    result = Layer2OrFallback(outputX, logicalY, secondHalf, ref layer2, layer2Known, layer2Opaque, layer2Index);
+                }
+
+                break;
+
+            case 4:
+                if (ulaTileOpaque)
+                {
+                    result = UlaTileArgb(tileWins, tileIndex, ulaColor);
+                }
+                else if (spriteOpaque)
+                {
+                    result = _palettes.GetSpriteArgb(spriteIndex);
+                }
+                else
+                {
+                    result = Layer2OrFallback(outputX, logicalY, secondHalf, ref layer2, layer2Known, layer2Opaque, layer2Index);
+                }
+
+                break;
+
+            case 5:
+                if (ulaTileOpaque)
+                {
+                    result = UlaTileArgb(tileWins, tileIndex, ulaColor);
+                    break;
+                }
+
+                if (!layer2Known)
+                {
+                    ResolveLayer2Half(outputX, logicalY, secondHalf, ref layer2, out layer2Opaque, out layer2Index, out _);
+                }
+
+                result = layer2Opaque ? _palettes.GetLayer2Argb(layer2Index)
+                    : spriteOpaque ? _palettes.GetSpriteArgb(spriteIndex)
+                    : _palettes.GetFallbackArgb();
+                break;
+
+            default:
+                if (ulaTileOpaque)
+                {
+                    result = UlaTileArgb(tileWins, tileIndex, ulaColor);
+                }
+                else if (spriteOpaque)
+                {
+                    result = _palettes.GetSpriteArgb(spriteIndex);
+                }
+                else
+                {
+                    result = Layer2OrFallback(outputX, logicalY, secondHalf, ref layer2, layer2Known, layer2Opaque, layer2Index);
+                }
+
+                break;
+        }
+
+        layer2Out = layer2;
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int Layer2OrFallback(
+        int outputX,
+        int logicalY,
+        bool secondHalf,
+        ref LazyLayer2 layer2,
+        bool layer2Known,
+        bool layer2Opaque,
+        byte layer2Index)
+    {
+        if (!layer2Known)
+        {
+            ResolveLayer2Half(outputX, logicalY, secondHalf, ref layer2, out layer2Opaque, out layer2Index, out _);
+        }
+
+        return layer2Opaque ? _palettes.GetLayer2Argb(layer2Index) : _palettes.GetFallbackArgb();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int UlaTileArgb(bool tileWins, byte tileIndex, ushort ulaColor) => tileWins
+        ? _palettes.GetTilemapArgb(tileIndex, _tilemap.SecondPalette)
+        : ZxNextPaletteDevice.ToArgb(ulaColor);
+
+    /// <summary>
     /// Mixes one half-pixel from an already-resolved Layer 2 index and sprite colour.
     /// </summary>
     /// <remarks>
@@ -1520,6 +1837,155 @@ public sealed class ZxNextVideoRenderer
             : IsGloballyTransparent(_palettes.GetLayer2PaletteColor(secondIndex))
                 ? _palettes.GetFallbackArgb()
                 : _palettes.GetLayer2Argb(secondIndex);
+    }
+
+    /// <summary>
+    /// A tilemap with sprites and nothing else: the in-game composition of Halls of the
+    /// Things, and the second most common one the census of supplied titles found.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsTilemapSpriteComposition() =>
+        _tilemap.Enabled
+        && !_palettes.UlaOutputEnabled
+        && !_layer2.DisplayEnabled
+        && (_layer2.SpriteAndLayersControl & 0x01) != 0;
+
+    /// <summary>
+    /// The ULA with sprites and nothing else: every NextZXOS menu and Browser screen, and
+    /// the most common composition the census found.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsUlaSpriteComposition() =>
+        !_tilemap.Enabled
+        && _palettes.UlaOutputEnabled
+        && !_layer2.DisplayEnabled
+        && (_layer2.SpriteAndLayersControl & 0x01) != 0;
+
+    /// <summary>
+    /// Whether the sprite layer sits above the ULA/tilemap layer in the current
+    /// NextReg $15 priority order.
+    /// </summary>
+    /// <remarks>
+    /// With Layer 2 off, the eight orders collapse to this one question: SLU, LSU and SUL
+    /// put sprites first; LUS, USL, ULS and both blend modes put the ULA first. The blend
+    /// modes only blend a promoted Layer 2 colour, so without Layer 2 they are plain
+    /// ULA-over-sprite, which is what the general mixer does with them too.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsSpriteAboveUlaLayer() => _layer2.LayerPriority is 0 or 1 or 2;
+
+    /// <summary>
+    /// Both halves of a tilemap-with-sprites pixel. Deliberately not inlined: the per-pixel
+    /// method is the hottest in the renderer, and growing it was measured to slow the
+    /// general-mixer workloads that never take this branch.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ComposeTilemapSpritePixelPair(
+        int logicalX,
+        int logicalY,
+        int outputX,
+        out int firstColor,
+        out int secondColor)
+    {
+        bool spriteOpaque = _sprites.TryGetPreparedPaletteIndex(
+            logicalX,
+            logicalY,
+            _layer2.SpriteAndLayersControl,
+            out byte spriteIndex);
+        int spriteArgb = spriteOpaque ? _palettes.GetSpriteArgb(spriteIndex) : 0;
+        bool spriteOnTop = IsSpriteAboveUlaLayer();
+        firstColor = ComposeTilemapSpritePixel(outputX, logicalY, spriteOpaque, spriteArgb, spriteOnTop);
+        secondColor = ComposeTilemapSpritePixel(outputX + 1, logicalY, spriteOpaque, spriteArgb, spriteOnTop);
+    }
+
+    /// <summary>Both halves of a ULA-with-sprites pixel; see the tilemap pair for why it is a call.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ComposeUlaSpritePixelPair(
+        int logicalX,
+        int logicalY,
+        ushort firstUlaColor,
+        ushort secondUlaColor,
+        bool ulaPixelEnabled,
+        out int firstColor,
+        out int secondColor)
+    {
+        bool spriteOpaque = _sprites.TryGetPreparedPaletteIndex(
+            logicalX,
+            logicalY,
+            _layer2.SpriteAndLayersControl,
+            out byte spriteIndex);
+        int spriteArgb = spriteOpaque ? _palettes.GetSpriteArgb(spriteIndex) : 0;
+        bool spriteOnTop = IsSpriteAboveUlaLayer();
+        firstColor = ComposeUlaSpritePixel(firstUlaColor, ulaPixelEnabled, spriteOpaque, spriteArgb, spriteOnTop);
+        secondColor = secondUlaColor == firstUlaColor
+            ? firstColor
+            : ComposeUlaSpritePixel(secondUlaColor, ulaPixelEnabled, spriteOpaque, spriteArgb, spriteOnTop);
+    }
+
+    /// <summary>One half-pixel of tilemap under or over a sprite, through the ARGB caches.</summary>
+    /// <remarks>
+    /// The timed pixel is resolved before the sprite is consulted even when the sprite
+    /// will cover it, because the deadline-miss count is guest-visible diagnostics and the
+    /// general mixer records it for every half-pixel.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ComposeTilemapSpritePixel(
+        int outputX,
+        int logicalY,
+        bool spriteOpaque,
+        int spriteArgb,
+        bool spriteOnTop)
+    {
+        bool timedPixel = _tilemap.TryGetTimedPixel(
+            outputX,
+            logicalY,
+            out bool tileOpaque,
+            out byte tileIndex,
+            out _);
+        if (!timedPixel)
+        {
+            _tilemap.RecordTimedPixelDeadlineMiss();
+            tileOpaque = _tilemap.TryGetPaletteIndex(
+                outputX,
+                logicalY,
+                _memory.PhysicalMemory,
+                out tileIndex,
+                out _);
+        }
+
+        if (spriteOnTop && spriteOpaque)
+        {
+            return spriteArgb;
+        }
+
+        if (tileOpaque)
+        {
+            return _palettes.GetTilemapArgb(tileIndex, _tilemap.SecondPalette);
+        }
+
+        return spriteOpaque ? spriteArgb : _palettes.GetFallbackArgb();
+    }
+
+    /// <summary>One half-pixel of ULA under or over a sprite.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ComposeUlaSpritePixel(
+        ushort ulaColor,
+        bool ulaPixelEnabled,
+        bool spriteOpaque,
+        int spriteArgb,
+        bool spriteOnTop)
+    {
+        if (spriteOnTop && spriteOpaque)
+        {
+            return spriteArgb;
+        }
+
+        if (ulaPixelEnabled && !IsGloballyTransparent(ulaColor))
+        {
+            return ZxNextPaletteDevice.ToArgb(ulaColor);
+        }
+
+        return spriteOpaque ? spriteArgb : _palettes.GetFallbackArgb();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

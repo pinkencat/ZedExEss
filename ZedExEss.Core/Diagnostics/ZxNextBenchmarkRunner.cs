@@ -571,6 +571,18 @@ public static class ZxNextBenchmarkRunner
         TilemapCase("tilemap-text-80-pipeline", textMode: true, renderVideo: false),
         SpriteCase("sprites-0", 0, overtime: false),
         SpriteCase("sprites-32", 32, overtime: false),
+        new("ula-sprites-32", machine =>
+        {
+            SetCpuSpeed(machine, ZxNextCpuSpeed.Mhz28);
+            ConfigureCpuLoop(machine, contendedRead: false);
+            ConfigureSprites(machine, spriteCount: 32, overtime: false);
+        }),
+        new("tilemap-sprites-32", machine =>
+        {
+            SetCpuSpeed(machine, ZxNextCpuSpeed.Mhz28);
+            ConfigureTilemap(machine, textMode: false, disableUla: true);
+            ConfigureSprites(machine, spriteCount: 32, overtime: false);
+        }),
         SpriteCase("sprites-128-overtime", 128, overtime: true),
         new("sprites-128-overtime-general", machine =>
         {
