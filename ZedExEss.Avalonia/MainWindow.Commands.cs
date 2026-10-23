@@ -1,0 +1,1084 @@
+﻿using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Media;
+using Avalonia.Platform.Storage;
+using ZedExEss.FileHandlers;
+using ZedExEss.Hosting;
+using ZedExEss.Spectrum.Audio;
+using ZedExEss.Spectrum.Core;
+using ZedExEss.Spectrum.DivMmc;
+using ZedExEss.Spectrum.Input;
+using ZedExEss.Spectrum.Interface1;
+using ZedExEss.Zx8x.Core;
+using ZedExEss.Zx8x.Memory;
+using ZedExEss.Zx8x.Video;
+using ShapePath = Avalonia.Controls.Shapes.Path;
+
+using ZedExEss.Spectrum.Multiface;
+
+namespace ZedExEss.AvaloniaHost;
+
+/// <summary>
+/// Wires the desktop command surface and routes files from dialogs or drag/drop to the
+/// appropriate portable media subsystem.
+/// </summary>
+public sealed partial class MainWindow
+{
+    private readonly Dictionary<SpectrumModel, MenuItem> _modelMenuItems = [];
+    private readonly Dictionary<Zx8xModel, MenuItem> _zx8xModelMenuItems = [];
+    private MenuItem _zxNextModelMenuItem = null!;
+    private readonly Dictionary<Zx8xRamConfiguration, MenuItem> _zx8xRamMenuItems = [];
+    private readonly Dictionary<SpectrumJoystickType, MenuItem> _joystickMenuItems = [];
+    private readonly Dictionary<int, MenuItem> _fastForwardSpeedMenuItems = [];
+    private readonly MenuItem[] _plus3SaveMenuItems = new MenuItem[2];
+    private readonly MenuItem[] _plus3EjectMenuItems = new MenuItem[2];
+    private readonly MenuItem[] _betaSaveMenuItems = new MenuItem[2];
+    private readonly MenuItem[] _betaEjectMenuItems = new MenuItem[2];
+    private Grid _mainContentGrid = null!;
+    private Border _mediaBrowserPanel = null!;
+    private ShapePath _pauseGlyph = null!;
+    private ShapePath _playGlyph = null!;
+    private Button _quickBrowserButton = null!;
+    private MenuItem _showMediaBrowserMenuItem = null!;
+    private MenuItem _playTapeMenuItem = null!;
+    private MenuItem _stopTapeMenuItem = null!;
+    private MenuItem _rewindTapeMenuItem = null!;
+    private MenuItem _ejectTapeMenuItem = null!;
+    private MenuItem _divMmcEnabledMenuItem = null!;
+    private MenuItem _divMmcEjectMenuItem = null!;
+    private MenuItem _turboMenuItem = null!;
+    private MenuItem _fastForwardMenuItem = null!;
+    private MenuItem _zxNextSoftResetMenuItem = null!;
+    private Button _quickFastForwardButton = null!;
+    private MenuItem _pollingAccelerationMenuItem = null!;
+    private MenuItem _semanticAccelerationMenuItem = null!;
+    private MenuItem _maximumTapeSpeedMenuItem = null!;
+    private MenuItem _flashLoadMenuItem = null!;
+    private MenuItem _flashSaveMenuItem = null!;
+    private MenuItem _tapeRecordMenuItem = null!;
+    private MenuItem _tapeSaveRecordingMenuItem = null!;
+    private MenuItem _tapeDiscardRecordingMenuItem = null!;
+    private MenuItem _replayRecordMenuItem = null!;
+    private MenuItem _lateContentionMenuItem = null!;
+    private MenuItem _replaySaveMenuItem = null!;
+    private MenuItem _replayPlayMenuItem = null!;
+    private MenuItem _replayStopMenuItem = null!;
+    private MenuItem _replayStepBackMenuItem = null!;
+    private MenuItem _replayRewindEnabledMenuItem = null!;
+    private MenuItem _autoLoadTapeMenuItem = null!;
+    private MenuItem _autoTapePlayMenuItem = null!;
+    private MenuItem _gigascreenBlendMenuItem = null!;
+    private MenuItem _zx8xWrxMenuItem = null!;
+    private SpectrumDivExpansionMode _divExpansionMode = SpectrumDivExpansionMode.Disabled;
+    private bool _mediaBrowserVisible = true;
+    private bool _updatingCommandChecks;
+    private bool _fastForwardShortcutHeld;
+
+    private void InitializeCommandUi()
+    {
+        _mainContentGrid = FindRequiredControl<Grid>("MainContentGrid");
+        _mediaBrowserPanel = FindRequiredControl<Border>("MediaBrowserPanel");
+        _pauseGlyph = FindRequiredControl<ShapePath>("PauseGlyph");
+        _playGlyph = FindRequiredControl<ShapePath>("PlayGlyph");
+        _quickBrowserButton = FindRequiredControl<Button>("QuickBrowserButton");
+        _showMediaBrowserMenuItem = FindRequiredControl<MenuItem>("ShowMediaBrowserMenuItem");
+        _playTapeMenuItem = FindRequiredControl<MenuItem>("PlayTapeMenuItem");
+        _stopTapeMenuItem = FindRequiredControl<MenuItem>("StopTapeMenuItem");
+        _rewindTapeMenuItem = FindRequiredControl<MenuItem>("RewindTapeMenuItem");
+        _ejectTapeMenuItem = FindRequiredControl<MenuItem>("EjectTapeMenuItem");
+        _divMmcEnabledMenuItem = FindRequiredControl<MenuItem>("DivMmcEnabledMenuItem");
+        _divMmcEjectMenuItem = FindRequiredControl<MenuItem>("DivMmcEjectMenuItem");
+        _turboMenuItem = FindRequiredControl<MenuItem>("TurboMenuItem");
+        _fastForwardMenuItem = FindRequiredControl<MenuItem>("FastForwardMenuItem");
+        _zxNextSoftResetMenuItem = FindRequiredControl<MenuItem>("ZxNextSoftResetMenuItem");
+        _quickFastForwardButton = FindRequiredControl<Button>("QuickFastForwardButton");
+        _pollingAccelerationMenuItem = FindRequiredControl<MenuItem>("PollingAccelerationMenuItem");
+        _semanticAccelerationMenuItem = FindRequiredControl<MenuItem>("SemanticAccelerationMenuItem");
+        _maximumTapeSpeedMenuItem = FindRequiredControl<MenuItem>("MaximumTapeSpeedMenuItem");
+        _flashLoadMenuItem = FindRequiredControl<MenuItem>("FlashLoadMenuItem");
+        _flashSaveMenuItem = FindRequiredControl<MenuItem>("FlashSaveMenuItem");
+        _tapeRecordMenuItem = FindRequiredControl<MenuItem>("TapeRecordMenuItem");
+        _tapeSaveRecordingMenuItem = FindRequiredControl<MenuItem>("TapeSaveRecordingMenuItem");
+        _tapeDiscardRecordingMenuItem = FindRequiredControl<MenuItem>("TapeDiscardRecordingMenuItem");
+        _replayRecordMenuItem = FindRequiredControl<MenuItem>("ReplayRecordMenuItem");
+        _lateContentionMenuItem = FindRequiredControl<MenuItem>("LateContentionMenuItem");
+        _replaySaveMenuItem = FindRequiredControl<MenuItem>("ReplaySaveMenuItem");
+        _replayPlayMenuItem = FindRequiredControl<MenuItem>("ReplayPlayMenuItem");
+        _replayStopMenuItem = FindRequiredControl<MenuItem>("ReplayStopMenuItem");
+        _replayStepBackMenuItem = FindRequiredControl<MenuItem>("ReplayStepBackMenuItem");
+        _replayRewindEnabledMenuItem = FindRequiredControl<MenuItem>("ReplayRewindEnabledMenuItem");
+        _autoLoadTapeMenuItem = FindRequiredControl<MenuItem>("AutoLoadTapeMenuItem");
+        _autoTapePlayMenuItem = FindRequiredControl<MenuItem>("AutoTapePlayMenuItem");
+        _gigascreenBlendMenuItem = FindRequiredControl<MenuItem>("GigascreenBlendMenuItem");
+        _zx8xWrxMenuItem = FindRequiredControl<MenuItem>("Zx8xWrxMenuItem");
+        _zxNextModelMenuItem = FindRequiredControl<MenuItem>("ModelZxNextMenuItem");
+
+        FindRequiredControl<Button>("QuickOpenButton").Click += OnOpenMediaClicked;
+        FindRequiredControl<Button>("QuickResetButton").Click += OnResetClicked;
+        _pauseButton.Click += OnPauseClicked;
+        _quickFastForwardButton.Click += OnQuickFastForwardClicked;
+        FindRequiredControl<Button>("QuickNmiButton").Click += OnNmiClicked;
+        _quickBrowserButton.Click += OnToggleMediaBrowserClicked;
+
+        FindRequiredControl<MenuItem>("OpenMediaMenuItem").Click += OnOpenMediaClicked;
+        FindRequiredControl<MenuItem>("SaveSnapshotMenuItem").Click += OnSaveSnapshotClicked;
+        FindRequiredControl<MenuItem>("ResetMenuItem").Click += OnResetClicked;
+        _zxNextSoftResetMenuItem.Click += OnZxNextSoftResetClicked;
+        _turboMenuItem.Click += OnTurboMenuClicked;
+        _fastForwardMenuItem.Click += OnFastForwardMenuClicked;
+        for (int speed = TimeStretchAudioSource.MinimumSpeedMultiplier;
+             speed <= TimeStretchAudioSource.MaximumSpeedMultiplier;
+             speed++)
+        {
+            MenuItem item = FindRequiredControl<MenuItem>($"FastForward{speed}xMenuItem");
+            _fastForwardSpeedMenuItems[speed] = item;
+            item.Click += OnFastForwardSpeedClicked;
+        }
+        FindRequiredControl<MenuItem>("ExitMenuItem").Click += (_, _) => Close();
+        FindRequiredControl<MenuItem>("OpenTapeMenuItem").Click += OnOpenTapeClicked;
+        _playTapeMenuItem.Click += OnPlayTapeClicked;
+        _stopTapeMenuItem.Click += OnStopTapeClicked;
+        _rewindTapeMenuItem.Click += OnRewindTapeClicked;
+        _ejectTapeMenuItem.Click += OnEjectTapeClicked;
+        _showMediaBrowserMenuItem.Click += OnToggleMediaBrowserClicked;
+        FindRequiredControl<MenuItem>("BasicEditorMenuItem").Click += OnBasicEditorClicked;
+        FindRequiredControl<MenuItem>("PokesMenuItem").Click += OnPokesClicked;
+        FindRequiredControl<MenuItem>("AudioOscilloscopeMenuItem").Click += OnAudioOscilloscopeClicked;
+        _covoxEnabledMenuItem = FindRequiredControl<MenuItem>("CovoxEnabledMenuItem");
+        _covoxEnabledMenuItem.Click += OnCovoxEnabledClicked;
+        _scorpionTurboMenuItem = FindRequiredControl<MenuItem>("ScorpionTurboMenuItem");
+        _scorpionTurboMenuItem.Click += OnScorpionTurboClicked;
+        _generalSoundEnabledMenuItem = FindRequiredControl<MenuItem>("GeneralSoundEnabledMenuItem");
+        _generalSoundEnabledMenuItem.Click += OnGeneralSoundEnabledClicked;
+        _multifaceDisabledMenuItem = FindRequiredControl<MenuItem>("MultifaceDisabledMenuItem");
+        _multifaceOneMenuItem = FindRequiredControl<MenuItem>("MultifaceOneMenuItem");
+        _multiface128MenuItem = FindRequiredControl<MenuItem>("Multiface128MenuItem");
+        _multifaceThreeMenuItem = FindRequiredControl<MenuItem>("MultifaceThreeMenuItem");
+        _multifaceNmiMenuItem = FindRequiredControl<MenuItem>("MultifaceNmiMenuItem");
+        _multifaceDisabledMenuItem.Click += (_, _) => SelectMultiface(SpectrumMultifaceModel.None);
+        _multifaceOneMenuItem.Click += (_, _) => SelectMultiface(SpectrumMultifaceModel.One);
+        _multiface128MenuItem.Click += (_, _) => SelectMultiface(SpectrumMultifaceModel.OneTwentyEight);
+        _multifaceThreeMenuItem.Click += (_, _) => SelectMultiface(SpectrumMultifaceModel.Three);
+        _multifaceNmiMenuItem.Click += (_, _) => _machine?.PressMultifaceButton();
+        FindRequiredControl<MenuItem>("DebuggerMenuItem").Click += OnDebuggerClicked;
+        FindRequiredControl<MenuItem>("NmiMenuItem").Click += OnNmiClicked;
+
+        RegisterModelMenuItem("Model16MenuItem", SpectrumModel.Spectrum16K);
+        RegisterModelMenuItem("Model48MenuItem", SpectrumModel.Spectrum48K);
+        RegisterModelMenuItem("Model128MenuItem", SpectrumModel.Spectrum128K);
+        RegisterModelMenuItem("ModelPlus2MenuItem", SpectrumModel.SpectrumPlus2);
+        RegisterModelMenuItem("ModelPlus2AMenuItem", SpectrumModel.SpectrumPlus2A);
+        RegisterModelMenuItem("ModelPlus3MenuItem", SpectrumModel.SpectrumPlus3);
+        RegisterModelMenuItem("ModelPentagonMenuItem", SpectrumModel.Pentagon128);
+        RegisterModelMenuItem("ModelScorpionMenuItem", SpectrumModel.Scorpion256);
+        RegisterZx8xModelMenuItem("ModelZx80MenuItem", Zx8xModel.Zx80);
+        RegisterZx8xModelMenuItem("ModelZx81MenuItem", Zx8xModel.Zx81);
+        _zxNextModelMenuItem.Click += async (_, _) =>
+        {
+            if (!_updatingCommandChecks && _zxNextMachine == null)
+            {
+                await ReplaceZxNextMachineAsync();
+            }
+        };
+        RegisterZx8xRamMenuItem("Zx8xRam1KMenuItem", Zx8xRamConfiguration.Internal1K);
+        RegisterZx8xRamMenuItem("Zx8xRam16KMenuItem", Zx8xRamConfiguration.Expansion16K);
+        _zx8xWrxMenuItem.Click += (_, _) =>
+        {
+            if (_updatingCommandChecks)
+            {
+                return;
+            }
+
+            _zx8xHighResolutionMode = _zx8xWrxMenuItem.IsChecked
+                ? Zx8xHighResolutionMode.Wrx
+                : Zx8xHighResolutionMode.Sinclair;
+            if (_zx8xModel.HasValue)
+            {
+                ReplaceZx8xMachine(_zx8xModel.Value);
+            }
+
+            UpdateZx8xRamMenuState();
+            Focus();
+        };
+        RegisterJoystickMenuItem("JoystickNoneMenuItem", SpectrumJoystickType.None);
+        RegisterJoystickMenuItem("JoystickKempstonMenuItem", SpectrumJoystickType.Kempston);
+        RegisterJoystickMenuItem("JoystickSinclair1MenuItem", SpectrumJoystickType.Sinclair1);
+        RegisterJoystickMenuItem("JoystickSinclair2MenuItem", SpectrumJoystickType.Sinclair2);
+        RegisterJoystickMenuItem("JoystickCursorMenuItem", SpectrumJoystickType.Cursor);
+
+        WireDiskMenus();
+        InitializeInterface1Ui();
+        _divMmcEnabledMenuItem.Click += OnDivMmcEnabledClicked;
+        FindRequiredControl<MenuItem>("DivMmcInsertImageMenuItem").Click += OnInsertDivMmcImageClicked;
+        FindRequiredControl<MenuItem>("DivMmcAttachFolderMenuItem").Click += OnAttachDivMmcFolderClicked;
+        _divMmcEjectMenuItem.Click += OnEjectDivMmcClicked;
+        _pollingAccelerationMenuItem.Click += OnPollingAccelerationClicked;
+        _semanticAccelerationMenuItem.Click += OnSemanticAccelerationClicked;
+        _maximumTapeSpeedMenuItem.Click += OnMaximumTapeSpeedClicked;
+        _flashLoadMenuItem.Click += OnFlashLoadClicked;
+        _flashSaveMenuItem.Click += OnFlashSaveClicked;
+        _tapeRecordMenuItem.Click += OnTapeRecordClicked;
+        _tapeSaveRecordingMenuItem.Click += OnSaveTapeRecordingClicked;
+        _tapeDiscardRecordingMenuItem.Click += OnDiscardTapeRecordingClicked;
+        _replayRecordMenuItem.Click += OnReplayRecordClicked;
+        _lateContentionMenuItem.Click += OnLateContentionClicked;
+        _replaySaveMenuItem.Click += OnSaveReplayClicked;
+        _replayPlayMenuItem.Click += OnPlayReplayClicked;
+        _replayStopMenuItem.Click += OnStopReplayClicked;
+        _replayStepBackMenuItem.Click += (_, _) => StepReplayBack();
+        FindRequiredControl<MenuItem>("ReplayFrameAdvanceMenuItem").Click += OnFrameAdvanceClicked;
+        FindRequiredControl<MenuItem>("ReplayStepBackFrameMenuItem").Click += (_, _) => StepReplayBackFrames(1);
+        FindRequiredControl<MenuItem>("TasWindowMenuItem").Click += (_, _) => ShowTasWindow();
+        BuildStateSlotMenus();
+        BuildZxNextStateMenus();
+        _replayRewindEnabledMenuItem.Click += OnReplayRewindEnabledClicked;
+        _autoLoadTapeMenuItem.Click += OnAutoLoadTapeClicked;
+        _autoTapePlayMenuItem.Click += OnAutoTapePlayClicked;
+        _gigascreenBlendMenuItem.Click += OnGigascreenBlendClicked;
+
+        DragDrop.AddDragOverHandler(this, OnWindowDragOver);
+        DragDrop.AddDropHandler(this, OnWindowDrop);
+
+        SetMediaBrowserVisible(_mediaBrowserVisible, resizeWindow: false);
+        UpdatePauseCommandState(paused: false);
+        UpdateModelMenuState(SpectrumModel.Spectrum128K);
+        UpdateJoystickMenuState();
+        UpdateRuntimeMenuState();
+        UpdateTapeMenuState(attached: false, playing: false);
+        UpdateDiskMenuState();
+        UpdateDivMmcMenuState();
+    }
+
+    private void RegisterJoystickMenuItem(string name, SpectrumJoystickType type)
+    {
+        MenuItem item = FindRequiredControl<MenuItem>(name);
+        _joystickMenuItems[type] = item;
+        item.Click += (_, _) =>
+        {
+            if (_updatingCommandChecks || type == _joystickType)
+            {
+                return;
+            }
+
+            ClearPressedKeys();
+            _joystickType = type;
+            if (_machine != null)
+            {
+                _machine.Joystick.Type = type;
+            }
+            if (_zxNextMachine != null)
+            {
+                _zxNextMachine.SetHostJoystickType(type);
+            }
+
+            UpdateJoystickMenuState();
+            Focus();
+        };
+    }
+
+    private void RegisterModelMenuItem(string name, SpectrumModel model)
+    {
+        MenuItem item = FindRequiredControl<MenuItem>(name);
+        _modelMenuItems[model] = item;
+        item.Click += (_, _) =>
+        {
+            if (!_updatingCommandChecks
+                && (_zx8xMachine != null || _zxNextMachine != null || model != _machine?.Model))
+            {
+                ReplaceMachine(model, preserveTape: true, rewindTape: false);
+            }
+        };
+    }
+
+    private void RegisterZx8xModelMenuItem(string name, Zx8xModel model)
+    {
+        MenuItem item = FindRequiredControl<MenuItem>(name);
+        _zx8xModelMenuItems[model] = item;
+        item.Click += (_, _) =>
+        {
+            if (!_updatingCommandChecks && (_zx8xMachine == null || model != _zx8xModel))
+            {
+                ReplaceZx8xMachine(model);
+            }
+        };
+    }
+
+    private void RegisterZx8xRamMenuItem(string name, Zx8xRamConfiguration configuration)
+    {
+        MenuItem item = FindRequiredControl<MenuItem>(name);
+        _zx8xRamMenuItems[configuration] = item;
+        item.Click += (_, _) =>
+        {
+            if (_updatingCommandChecks || configuration == _zx8xRamConfiguration)
+            {
+                UpdateZx8xRamMenuState();
+                return;
+            }
+
+            _zx8xRamConfiguration = configuration;
+            if (_zx8xModel.HasValue)
+            {
+                ReplaceZx8xMachine(_zx8xModel.Value);
+            }
+
+            UpdateZx8xRamMenuState();
+            Focus();
+        };
+    }
+
+    private void WireDiskMenus()
+    {
+        WirePlus3DiskMenu(0, "MenuPlus3AInsert", "MenuPlus3ANew", "MenuPlus3ASave", "MenuPlus3AEject");
+        WirePlus3DiskMenu(1, "MenuPlus3BInsert", "MenuPlus3BNew", "MenuPlus3BSave", "MenuPlus3BEject");
+        WireBetaDiskMenu(0, "MenuBetaAInsert", "MenuBetaASave", "MenuBetaAEject");
+        WireBetaDiskMenu(1, "MenuBetaBInsert", "MenuBetaBSave", "MenuBetaBEject");
+    }
+
+    private void WirePlus3DiskMenu(int drive, string insertName, string newName, string saveName, string ejectName)
+    {
+        FindRequiredControl<MenuItem>(insertName).Click += async (_, _) => await InsertPlus3DiskAsync(drive);
+        FindRequiredControl<MenuItem>(newName).Click += async (_, _) => await CreatePlus3DiskAsync(drive);
+        _plus3SaveMenuItems[drive] = FindRequiredControl<MenuItem>(saveName);
+        _plus3EjectMenuItems[drive] = FindRequiredControl<MenuItem>(ejectName);
+        _plus3SaveMenuItems[drive].Click += async (_, _) => await SavePlus3DiskAsAsync(drive);
+        _plus3EjectMenuItems[drive].Click += (_, _) => EjectPlus3Disk(drive);
+    }
+
+    private void WireBetaDiskMenu(int drive, string insertName, string saveName, string ejectName)
+    {
+        FindRequiredControl<MenuItem>(insertName).Click += async (_, _) => await InsertBetaDiskAsync(drive);
+        _betaSaveMenuItems[drive] = FindRequiredControl<MenuItem>(saveName);
+        _betaEjectMenuItems[drive] = FindRequiredControl<MenuItem>(ejectName);
+        _betaSaveMenuItems[drive].Click += async (_, _) => await SaveBetaDiskAsAsync(drive);
+        _betaEjectMenuItems[drive].Click += (_, _) => EjectBetaDisk(drive);
+    }
+
+    private async void OnOpenMediaClicked(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string? path = await _fileDialogs.OpenFileAsync(new FileDialogOptions
+            {
+                Title = "Open Spectrum media",
+                Filters =
+                [
+                    new FileDialogFilter("Supported files", "*.z80", "*.sna", "*.szx", "*.o", "*.p", "*.81", "*.tap", "*.tzx", "*.csw", "*.dsk", "*.trd", "*.scl", "*.mdr", "*.img", "*.hdf", "*.sd", "*.bin"),
+                    new FileDialogFilter("Snapshots", "*.z80", "*.sna", "*.szx"),
+                    new FileDialogFilter("ZX80/ZX81 program images", "*.o", "*.p", "*.81"),
+                    new FileDialogFilter("Tape images", "*.tap", "*.tzx", "*.csw"),
+                    new FileDialogFilter("Disk images", "*.dsk", "*.trd", "*.scl"),
+                    new FileDialogFilter("Microdrive cartridges", "*.mdr"),
+                    new FileDialogFilter("DivMMC images", "*.img", "*.hdf", "*.sd", "*.bin"),
+                    new FileDialogFilter("All files", "*.*")
+                ]
+            });
+            if (path != null)
+            {
+                OpenMediaPath(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            _statusText.Text = $"Unable to open media: {ex.Message}";
+        }
+        finally
+        {
+            Focus();
+        }
+    }
+
+    private void OpenMediaPath(string path)
+    {
+        switch (System.IO.Path.GetExtension(path).ToLowerInvariant())
+        {
+            case ".z80":
+                LoadSnapshotPath(path, isZ80: true);
+                break;
+            case ".sna":
+                LoadSnapshotPath(path, isZ80: false);
+                break;
+            case ".szx":
+                LoadSzxSnapshotPath(path);
+                break;
+            case ".o":
+            case ".p":
+            case ".81":
+                LoadZx8xProgramImagePath(path);
+                break;
+            case ".tap":
+            case ".tzx":
+            case ".csw":
+                AttachTapePath(path);
+                break;
+            case ".dsk":
+                AttachPlus3DiskPath(path, GetInitialPlus3Drive());
+                break;
+            case ".trd":
+            case ".scl":
+                AttachBetaDiskPath(path, GetInitialBetaDrive());
+                break;
+            case ".img":
+            case ".hdf":
+            case ".sd":
+            case ".bin":
+                AttachDivMmcStorage(path, folderBacked: false);
+                break;
+            case ".mdr":
+                AttachMicrodriveToFirstEmptyDrive(path);
+                break;
+            default:
+                throw new NotSupportedException($"Unsupported media type: {System.IO.Path.GetExtension(path)}");
+        }
+    }
+
+    private void LoadSnapshotPath(string path, bool isZ80)
+    {
+        SpectrumModel model = isZ80
+            ? ZedExEss.FileHandlers.Z80Loader.DetectModel(path)
+            : ZedExEss.FileHandlers.SnapshotLoader.DetectModel(path);
+        ReplaceMachine(model, preserveTape: false, rewindTape: false, machine =>
+        {
+            if (isZ80)
+            {
+                ZedExEss.FileHandlers.Z80Loader.LoadZ80(machine.Cpu, machine.Memory, machine.Renderer, path);
+            }
+            else
+            {
+                ZedExEss.FileHandlers.SnapshotLoader.LoadSna(machine.Cpu, machine.Memory, machine.Renderer, path);
+            }
+        });
+        _statusText.Text = $"Loaded {System.IO.Path.GetFileName(path)}";
+    }
+
+    private void LoadSzxSnapshotPath(string path)
+    {
+        SpectrumMachineSnapshot snapshot = SzxSnapshotCodec.Load(path);
+        if (snapshot.Interface1 != null
+            && !SpectrumInterface1Compatibility.IsSupported(snapshot.Model))
+        {
+            throw new InvalidDataException(
+                $"The snapshot contains Interface 1 state, which cannot be attached to {snapshot.Model}.");
+        }
+
+        _interface1Enabled = snapshot.Interface1 != null;
+        _divExpansionMode = SpectrumDivExpansionMode.Disabled;
+        bool restored = false;
+        ReplaceMachine(
+            snapshot.Model,
+            preserveTape: false,
+            rewindTape: false,
+            beforeStart: machine =>
+            {
+                SpectrumMachineSnapshotService.Restore(
+                    machine,
+                    snapshot,
+                    snapshot.Interface1 != null ? _session.Interface1 : null);
+                restored = true;
+            });
+
+        if (restored)
+        {
+            _statusText.Text = $"Loaded {System.IO.Path.GetFileName(path)}";
+        }
+    }
+
+    private async void OnSaveSnapshotClicked(object? sender, RoutedEventArgs e)
+    {
+        SpectrumMachine? machine = _machine;
+        if (machine == null || _zx8xMachine != null || _zxNextMachine != null)
+        {
+            _statusText.Text = "SZX snapshots are available for classic Spectrum models only.";
+            return;
+        }
+
+        string? path = await _fileDialogs.SaveFileAsync(new FileDialogOptions
+        {
+            Title = "Save SZX Snapshot",
+            DefaultExtension = ".szx",
+            SuggestedFileName = $"{machine.Model}.szx",
+            Filters =
+            [
+                new FileDialogFilter("ZX-State snapshots", "*.szx"),
+                new FileDialogFilter("All files", "*.*")
+            ]
+        });
+        if (path == null)
+        {
+            Focus();
+            return;
+        }
+
+        ToolRunState runState = SuspendMachineForTool();
+        string? completionStatus = null;
+        try
+        {
+            SpectrumMachineSnapshot snapshot = SpectrumMachineSnapshotService.Capture(
+                machine,
+                _interface1Enabled && _machineDevices?.Interface1Device != null
+                    ? _session.Interface1
+                    : null);
+            SzxSnapshotCodec.Save(path, snapshot);
+            completionStatus = $"Saved {System.IO.Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            completionStatus = $"Unable to save snapshot: {ex.Message}";
+        }
+        finally
+        {
+            RestoreMachineAfterTool(runState);
+            Focus();
+        }
+
+        _statusText.Text = completionStatus;
+    }
+
+    private async void OnInsertDivMmcImageClicked(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string? path = await _fileDialogs.OpenFileAsync(new FileDialogOptions
+            {
+                Title = "Attach DivMMC SD image",
+                Filters =
+                [
+                    new FileDialogFilter("DivMMC storage images", "*.img", "*.hdf", "*.sd", "*.bin"),
+                    new FileDialogFilter("All files", "*.*")
+                ]
+            });
+            if (path != null)
+            {
+                AttachDivMmcStorage(path, folderBacked: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            _statusText.Text = $"Unable to attach DivMMC image: {ex.Message}";
+        }
+        finally
+        {
+            Focus();
+        }
+    }
+
+    private async void OnAttachDivMmcFolderClicked(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string? path = await _fileDialogs.OpenFolderAsync("Attach host folder as DivMMC storage");
+            if (path != null)
+            {
+                AttachDivMmcStorage(path, folderBacked: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            _statusText.Text = $"Unable to attach DivMMC folder: {ex.Message}";
+        }
+        finally
+        {
+            Focus();
+        }
+    }
+
+    private void AttachDivMmcStorage(string path, bool folderBacked)
+    {
+        _session.DivMmc.Attach(path, folderBacked);
+        if (_divExpansionMode != SpectrumDivExpansionMode.DivMmc)
+        {
+            _divExpansionMode = SpectrumDivExpansionMode.DivMmc;
+            if (_machine != null)
+            {
+                ReplaceMachine(_machine.Model, preserveTape: true, rewindTape: false);
+            }
+        }
+
+        _statusText.Text = $"Attached DivMMC {(folderBacked ? "folder" : "image")}: {System.IO.Path.GetFileName(path)}";
+        UpdateDivMmcMenuState();
+        UpdateDiskControls();
+    }
+
+    private void OnDivMmcEnabledClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_updatingCommandChecks)
+        {
+            return;
+        }
+
+        _divExpansionMode = _divMmcEnabledMenuItem.IsChecked
+            ? SpectrumDivExpansionMode.DivMmc
+            : SpectrumDivExpansionMode.Disabled;
+        if (_divExpansionMode != SpectrumDivExpansionMode.Disabled)
+        {
+            _interface1Enabled = false;
+
+            // DivMMC and a Multiface overlay the same low memory, so they cannot both
+            // be fitted.
+            _multifaceModel = SpectrumMultifaceModel.None;
+        }
+        if (_machine != null)
+        {
+            ReplaceMachine(_machine.Model, preserveTape: true, rewindTape: false);
+        }
+
+        UpdateDivMmcMenuState();
+        UpdateInterface1MenuState();
+    }
+
+    private void OnEjectDivMmcClicked(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _session.DivMmc.Eject();
+            _statusText.Text = "DivMMC storage ejected";
+        }
+        catch (Exception ex)
+        {
+            _statusText.Text = $"Unable to eject DivMMC storage: {ex.Message}";
+        }
+
+        UpdateDivMmcMenuState();
+        UpdateDiskControls();
+        Focus();
+    }
+
+    private void OnNmiClicked(object? sender, RoutedEventArgs e)
+    {
+        // A Multiface and DivMMC are mutually exclusive, so the one NMI control belongs
+        // to whichever is fitted. Pressing a Multiface's button is not the same as
+        // asserting a bare NMI: the interface has to arm itself first.
+        if (_machine?.Multiface != null)
+        {
+            _machine.PressMultifaceButton();
+        }
+        else
+        {
+            _machine?.Cpu.Z80GenNMI();
+        }
+
+        Focus();
+    }
+
+    private void OnToggleMediaBrowserClicked(object? sender, RoutedEventArgs e)
+    {
+        bool visible = sender == _showMediaBrowserMenuItem
+            ? _showMediaBrowserMenuItem.IsChecked
+            : !_mediaBrowserVisible;
+        SetMediaBrowserVisible(visible, resizeWindow: true);
+        Focus();
+    }
+
+    private void SetMediaBrowserVisible(bool visible, bool resizeWindow)
+    {
+        _mediaBrowserVisible = visible;
+        _mediaBrowserPanel.IsVisible = visible;
+        _mainContentGrid.ColumnDefinitions[1].Width = visible
+            ? new GridLength(340)
+            : new GridLength(0);
+        _showMediaBrowserMenuItem.IsChecked = visible;
+        _quickBrowserButton.CommandParameter = visible;
+        ToolTip.SetTip(_quickBrowserButton, visible ? "Hide tape/disk browser" : "Show tape/disk browser");
+
+        if (resizeWindow)
+        {
+            QueueResizeWindowToScreenZoom();
+        }
+    }
+
+    private void UpdatePauseCommandState(bool paused)
+    {
+        if (_pauseGlyph == null)
+        {
+            return;
+        }
+
+        _pauseGlyph.IsVisible = !paused;
+        _playGlyph.IsVisible = paused;
+        ToolTip.SetTip(_pauseButton, paused ? "Resume emulation" : "Pause emulation");
+    }
+
+    private void UpdateModelMenuState(
+        SpectrumModel? model,
+        Zx8xModel? zx8xModel = null,
+        bool zxNext = false)
+    {
+        if (_modelMenuItems.Count == 0)
+        {
+            return;
+        }
+
+        _updatingCommandChecks = true;
+        try
+        {
+            foreach ((SpectrumModel itemModel, MenuItem item) in _modelMenuItems)
+            {
+                item.IsChecked = itemModel == model;
+            }
+
+            foreach ((Zx8xModel itemModel, MenuItem item) in _zx8xModelMenuItems)
+            {
+                item.IsChecked = itemModel == zx8xModel;
+            }
+
+            _zxNextModelMenuItem.IsChecked = zxNext;
+            if (_scorpionTurboMenuItem != null)
+            {
+                bool turboSupported = !zxNext && zx8xModel == null && _machine?.SupportsTurbo == true;
+                _scorpionTurboMenuItem.IsEnabled = turboSupported;
+                _scorpionTurboMenuItem.IsChecked = turboSupported && _machine!.TurboEnabled;
+            }
+
+            if (_generalSoundEnabledMenuItem != null)
+            {
+                _generalSoundEnabledMenuItem.IsChecked = _generalSoundEnabled;
+                _generalSoundEnabledMenuItem.IsEnabled = !zxNext
+                    && zx8xModel == null
+                    && AvaloniaMachineBootstrap.HasGeneralSoundFirmware();
+            }
+
+            if (_covoxEnabledMenuItem != null)
+            {
+                // The DAC is a Spectrum-family expansion; the other machine families
+                // carry their own audio hardware.
+                _covoxEnabledMenuItem.IsChecked = _covoxEnabled;
+                _covoxEnabledMenuItem.IsEnabled = !zxNext && zx8xModel == null;
+            }
+        }
+        finally
+        {
+            _updatingCommandChecks = false;
+        }
+
+        UpdateZx8xRamMenuState();
+    }
+
+    private void UpdateZx8xRamMenuState()
+    {
+        if (_zx8xRamMenuItems.Count == 0)
+        {
+            return;
+        }
+
+        _updatingCommandChecks = true;
+        try
+        {
+            foreach ((Zx8xRamConfiguration configuration, MenuItem item) in _zx8xRamMenuItems)
+            {
+                item.IsChecked = configuration == _zx8xRamConfiguration;
+            }
+
+            _zx8xWrxMenuItem.IsChecked = _zx8xHighResolutionMode == Zx8xHighResolutionMode.Wrx;
+        }
+        finally
+        {
+            _updatingCommandChecks = false;
+        }
+    }
+
+    private void UpdateJoystickMenuState()
+    {
+        if (_joystickMenuItems.Count == 0)
+        {
+            return;
+        }
+
+        _updatingCommandChecks = true;
+        try
+        {
+            foreach ((SpectrumJoystickType type, MenuItem item) in _joystickMenuItems)
+            {
+                item.IsChecked = type == _joystickType;
+            }
+        }
+        finally
+        {
+            _updatingCommandChecks = false;
+        }
+    }
+
+    private void UpdateRuntimeMenuState()
+    {
+        if (_turboMenuItem == null)
+        {
+            return;
+        }
+
+        _updatingCommandChecks = true;
+        try
+        {
+            bool nextSelected = _zxNextMachine != null;
+            _zxNextSoftResetMenuItem.IsEnabled = nextSelected;
+            _turboMenuItem.IsChecked = _turboEnabled;
+            _fastForwardMenuItem.IsChecked = _fastForwardEnabled;
+            _fastForwardMenuItem.IsEnabled = !nextSelected;
+            foreach ((int speed, MenuItem item) in _fastForwardSpeedMenuItems)
+            {
+                item.IsChecked = speed == _fastForwardSpeed;
+                item.IsEnabled = !nextSelected;
+            }
+            _pollingAccelerationMenuItem.IsChecked = _edgeLoadEnabled;
+            _semanticAccelerationMenuItem.IsChecked = _semanticEdgeLoadEnabled;
+            _maximumTapeSpeedMenuItem.IsChecked = _runTapeAccelerationAtMaximumSpeed;
+            _flashLoadMenuItem.IsChecked = _flashLoadEnabled;
+            _flashSaveMenuItem.IsChecked = _flashSaveEnabled;
+            _tapeRecordMenuItem.IsChecked = _tapeRecorder.IsRecording;
+            _replayRecordMenuItem.IsChecked =
+                _replaySession.Mode == Spectrum.Replay.SpectrumReplayMode.Recording
+                || _replaySession.IsWaitingToRecord;
+            _replayRewindEnabledMenuItem.IsChecked = _replaySession.RewindEnabled;
+            _lateContentionMenuItem.IsChecked =
+                _contentionTiming == Spectrum.Memory.SpectrumContentionTiming.Late;
+            _replaySaveMenuItem.IsEnabled = _replaySession.HasRecording;
+            _replayStopMenuItem.IsEnabled = _replaySession.Mode != Spectrum.Replay.SpectrumReplayMode.Idle;
+            _replayStepBackMenuItem.IsEnabled = _replaySession.RewindDepth > 0;
+            _replayRecordMenuItem.IsEnabled = !nextSelected;
+            _replayPlayMenuItem.IsEnabled = !nextSelected;
+            _autoLoadTapeMenuItem.IsChecked = _autoLoadTapeOnAttach;
+            _autoTapePlayMenuItem.IsChecked = _autoTapePlayStopEnabled;
+            _gigascreenBlendMenuItem.IsChecked = _gigascreenBlendEnabled;
+            _pollingAccelerationMenuItem.IsEnabled = !nextSelected;
+            _semanticAccelerationMenuItem.IsEnabled = !nextSelected;
+            _maximumTapeSpeedMenuItem.IsEnabled = !nextSelected;
+            _flashLoadMenuItem.IsEnabled = !nextSelected;
+            _flashSaveMenuItem.IsEnabled = !nextSelected;
+            _tapeRecordMenuItem.IsEnabled = !nextSelected;
+            _tapeSaveRecordingMenuItem.IsEnabled = !nextSelected && _tapeRecorder.HasRecording;
+            _tapeDiscardRecordingMenuItem.IsEnabled = !nextSelected && _tapeRecorder.HasRecording;
+            _autoLoadTapeMenuItem.IsEnabled = !nextSelected;
+            _autoTapePlayMenuItem.IsEnabled = !nextSelected;
+            _gigascreenBlendMenuItem.IsEnabled = !nextSelected;
+        }
+        finally
+        {
+            _updatingCommandChecks = false;
+        }
+
+        _quickFastForwardButton.Background = _fastForwardEnabled ? Brushes.SteelBlue : null;
+        _quickFastForwardButton.IsEnabled = _zxNextMachine == null;
+        ToolTip.SetTip(
+            _quickFastForwardButton,
+            _fastForwardEnabled
+                ? $"Disable fast-forward ({_fastForwardSpeed}x) (`)"
+                : $"Fast-forward at {_fastForwardSpeed}x (`)");
+    }
+
+    private void UpdateTapeMenuState(bool attached, bool playing)
+    {
+        if (_playTapeMenuItem == null)
+        {
+            return;
+        }
+
+        _playTapeMenuItem.IsEnabled = attached && !playing;
+        _stopTapeMenuItem.IsEnabled = attached && playing;
+        _rewindTapeMenuItem.IsEnabled = attached;
+        _ejectTapeMenuItem.IsEnabled = attached;
+    }
+
+    private void UpdateDiskMenuState()
+    {
+        if (_plus3SaveMenuItems[0] == null)
+        {
+            return;
+        }
+
+        for (int drive = 0; drive < 2; drive++)
+        {
+            bool plus3Attached = _session.Disks.GetPlus3Image(drive) != null;
+            bool betaAttached = _session.Disks.GetTrdImage(drive) != null;
+            _plus3SaveMenuItems[drive].IsEnabled = plus3Attached;
+            _plus3EjectMenuItems[drive].IsEnabled = plus3Attached;
+            _betaSaveMenuItems[drive].IsEnabled = betaAttached;
+            _betaEjectMenuItems[drive].IsEnabled = betaAttached;
+        }
+    }
+
+    private void UpdateDivMmcMenuState()
+    {
+        if (_divMmcEnabledMenuItem == null)
+        {
+            return;
+        }
+
+        _updatingCommandChecks = true;
+        try
+        {
+            _divMmcEnabledMenuItem.IsChecked = _divExpansionMode == SpectrumDivExpansionMode.DivMmc;
+            _divMmcEjectMenuItem.IsEnabled = _session.DivMmc.IsAttached;
+            UpdateMultifaceMenuState();
+        }
+        finally
+        {
+            _updatingCommandChecks = false;
+        }
+    }
+
+    private bool TryHandleCommandKey(KeyEventArgs e)
+    {
+        if (e.Key == Key.F5)
+        {
+            OnNmiClicked(this, new RoutedEventArgs());
+            e.Handled = true;
+            return true;
+        }
+
+        if (e.Key == Key.F6)
+        {
+            _machine?.PressMultifaceButton();
+            e.Handled = true;
+            return true;
+        }
+
+        if (e.Key == Key.F7)
+        {
+            StepReplayBack();
+            e.Handled = true;
+            return true;
+        }
+
+        if (e.Key == Key.F8)
+        {
+            if ((e.KeyModifiers & KeyModifiers.Shift) != 0)
+            {
+                StepReplayBackFrames(1);
+            }
+            else
+            {
+                AdvanceOneFrame();
+            }
+
+            e.Handled = true;
+            return true;
+        }
+
+        if (e.Key == Key.F9)
+        {
+            ShowTasWindow();
+            e.Handled = true;
+            return true;
+        }
+
+        if (TryHandleStateSlotKey(e))
+        {
+            return true;
+        }
+
+
+        if (e.Key == Key.F12)
+        {
+            OnDebuggerClicked(this, new RoutedEventArgs());
+            e.Handled = true;
+            return true;
+        }
+
+        if (e.Key == Key.OemTilde)
+        {
+            if (!_fastForwardShortcutHeld)
+            {
+                _fastForwardShortcutHeld = true;
+                SetFastForwardMode(!_fastForwardEnabled);
+            }
+
+            e.Handled = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void OnWindowDragOver(object? sender, DragEventArgs e)
+    {
+        IReadOnlyList<IStorageItem>? items = e.DataTransfer.TryGetFiles();
+        e.DragEffects = items?.Any(IsSupportedStorageItem) == true
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnWindowDrop(object? sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        IReadOnlyList<IStorageItem>? items = e.DataTransfer.TryGetFiles();
+        if (items == null || items.Count == 0)
+        {
+            return;
+        }
+
+        int plus3Drive = GetInitialPlus3Drive();
+        int betaDrive = GetInitialBetaDrive();
+        var failures = new List<string>();
+        foreach (IStorageItem item in items)
+        {
+            string? path = item.TryGetLocalPath();
+            if (path == null)
+            {
+                failures.Add($"{item.Name}: no local filesystem path is available");
+                continue;
+            }
+
+            try
+            {
+                if (item is IStorageFolder || Directory.Exists(path))
+                {
+                    AttachDivMmcStorage(path, folderBacked: true);
+                    continue;
+                }
+
+                string extension = System.IO.Path.GetExtension(path).ToLowerInvariant();
+                if (extension == ".dsk")
+                {
+                    AttachPlus3DiskPath(path, plus3Drive);
+                    plus3Drive ^= 1;
+                }
+                else if (extension is ".trd" or ".scl")
+                {
+                    AttachBetaDiskPath(path, betaDrive);
+                    betaDrive ^= 1;
+                }
+                else
+                {
+                    OpenMediaPath(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{item.Name}: {ex.Message}");
+            }
+        }
+
+        if (failures.Count != 0)
+        {
+            _statusText.Text = "Some dropped media could not be attached: " + string.Join("; ", failures);
+        }
+
+        Focus();
+    }
+
+    private static bool IsSupportedStorageItem(IStorageItem item)
+    {
+        if (item is IStorageFolder)
+        {
+            return true;
+        }
+
+        string extension = System.IO.Path.GetExtension(item.Name).ToLowerInvariant();
+        return extension is ".z80" or ".sna" or ".szx" or ".o" or ".p" or ".81" or ".tap" or ".tzx" or ".csw"
+            or ".dsk" or ".trd" or ".scl" or ".mdr" or ".img" or ".hdf" or ".sd" or ".bin";
+    }
+
+    private int GetInitialPlus3Drive()
+    {
+        return _session.Disks.GetPlus3Image(0) == null ? 0
+            : _session.Disks.GetPlus3Image(1) == null ? 1
+            : 0;
+    }
+
+    private int GetInitialBetaDrive()
+    {
+        return _session.Disks.GetTrdImage(0) == null ? 0
+            : _session.Disks.GetTrdImage(1) == null ? 1
+            : 0;
+    }
+}

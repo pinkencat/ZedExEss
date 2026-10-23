@@ -1,0 +1,237 @@
+using System;
+namespace ZedExEss.Spectrum.Debugging
+{
+    /// <summary>The bus event that can stop debugger execution.</summary>
+    public enum DebuggerBreakType
+    {
+        Execute,
+        MemoryRead,
+        MemoryWrite,
+        PortRead,
+        PortWrite,
+
+        /// <summary>
+        /// A write to a machine's own register file, such as the Next's NextReg. These
+        /// never appear as a port write at a fixed address: the guest selects a register
+        /// through one port and writes it through another, so a port watchpoint could
+        /// only tell you that some register changed.
+        /// </summary>
+        DeviceRegisterWrite
+    }
+    /// <summary>Debugger-owned execution state consulted at instruction boundaries.</summary>
+    public enum DebuggerRunMode
+    {
+        Paused,
+        Running,
+        StepInto
+    }
+
+    /// <summary>
+    /// Read-only CPU state and debug-hook controls shared by every machine-family
+    /// specialization of the Z80 core.
+    /// </summary>
+    public interface IZ80DebuggerCpu
+    {
+        ulong Cyc { get; }
+        ushort PC { get; }
+        ushort SP { get; }
+        ushort IX { get; }
+        ushort IY { get; }
+        ushort AF { get; }
+        ushort BC { get; }
+        ushort DE { get; }
+        ushort HL { get; }
+        ushort AF_ { get; }
+        ushort BC_ { get; }
+        ushort DE_ { get; }
+        ushort HL_ { get; }
+        byte I { get; }
+        byte R { get; }
+        byte InterruptModeValue { get; }
+        bool Iff1 { get; }
+        bool Iff2 { get; }
+        bool IsHalted { get; }
+        byte GetFlags();
+        void ConfigureDebugHook(IZ80DebugHook? debugHook);
+    }
+
+    /// <summary>
+    /// Side-effect-free logical memory access used solely by debugger tools.
+    /// These operations must not add contention, advance time, or trigger ROMCS.
+    /// </summary>
+    public interface IZ80DebuggerMemory
+    {
+        byte ReadDirect(ushort address);
+        void WriteDirect(ushort address, byte value);
+        bool CanWriteDirect(ushort address);
+        DebuggerMemoryMapping GetMapping(ushort address);
+    }
+
+    /// <summary>Physical ROM/RAM mapping behind one logical Z80 address.</summary>
+    public readonly struct DebuggerMemoryMapping(
+        ushort address,
+        int page,
+        bool isRam,
+        bool isRom,
+        bool isOpenBus,
+        bool isReadOnly,
+        bool isContended,
+        int bankIndex,
+        int offset,
+        int romBank,
+        string machineName)
+    {
+        public ushort Address { get; } = address;
+        public int Page { get; } = page;
+        public bool IsRam { get; } = isRam;
+        public bool IsRom { get; } = isRom;
+        public bool IsOpenBus { get; } = isOpenBus;
+        public bool IsReadOnly { get; } = isReadOnly;
+        public bool IsContended { get; } = isContended;
+        public int BankIndex { get; } = bankIndex;
+        public int Offset { get; } = offset;
+        public int RomBank { get; } = romBank;
+        public string MachineName { get; } = machineName;
+
+        public string DisplayName
+        {
+            get
+            {
+                if (IsOpenBus)
+                {
+                    return $"Open bus page {Page}";
+                }
+
+                if (IsRom)
+                {
+                    return $"ROM {RomBank}, +{Offset:X4}";
+                }
+
+                return $"RAM {BankIndex}, +{Offset:X4}";
+            }
+        }
+    }
+    /// <summary>
+    /// Logical address or masked-port breakpoint, optionally qualified by a physical RAM bank.
+    /// </summary>
+    public sealed class DebuggerBreakpoint
+    {
+        public int Id { get; set; }
+        public DebuggerBreakType Type { get; set; }
+        public bool Enabled { get; set; } = true;
+        public ushort Address { get; set; }
+        public ushort EndAddress { get; set; }
+        public ushort Port { get; set; }
+        public ushort PortMask { get; set; } = 0xFFFF;
+        public bool OneShot { get; set; }
+        public bool BankQualified { get; set; }
+        public bool MatchRam { get; set; }
+        public int BankIndex { get; set; } = -1;
+
+        /// <summary>The device register number, for <see cref="DebuggerBreakType.DeviceRegisterWrite"/>.</summary>
+        public byte Register { get; set; }
+
+        /// <summary>Stop only when the written value matches, when set.</summary>
+        public byte? RegisterValue { get; set; }
+
+        public bool IsMemoryType =>
+            Type is DebuggerBreakType.Execute or DebuggerBreakType.MemoryRead or DebuggerBreakType.MemoryWrite;
+
+        public bool IsDeviceRegisterType => Type == DebuggerBreakType.DeviceRegisterWrite;
+
+        public string AddressText => IsMemoryType
+            ? EndAddress != Address ? $"{Address:X4}-{EndAddress:X4}" : $"{Address:X4}"
+            : IsDeviceRegisterType
+                ? RegisterValue.HasValue ? $"${Register:X2}=${RegisterValue.Value:X2}" : $"${Register:X2}"
+                : $"{Port:X4}/{PortMask:X4}";
+
+        public string Summary => $"{Id}: {Type} {AddressText}{(Enabled ? string.Empty : " (disabled)")}";
+        public bool MatchesAddress(ushort address, DebuggerMemoryMapping mapping)
+        {
+            if (!Enabled || !IsMemoryType)
+            {
+                return false;
+            }
+
+            bool inRange = Address <= EndAddress
+                ? address >= Address && address <= EndAddress
+                : address >= Address || address <= EndAddress;
+            if (!inRange)
+            {
+                return false;
+            }
+
+            if (!BankQualified)
+            {
+                return true;
+            }
+
+            return mapping.IsRam == MatchRam && mapping.BankIndex == BankIndex;
+        }
+        public bool MatchesPort(ushort port)
+        {
+            return Enabled && !IsMemoryType && !IsDeviceRegisterType
+                && (port & PortMask) == (Port & PortMask);
+        }
+
+        public bool MatchesDeviceRegister(byte register, byte value)
+        {
+            return Enabled
+                && IsDeviceRegisterType
+                && Register == register
+                && (!RegisterValue.HasValue || RegisterValue.Value == value);
+        }
+    }
+    /// <summary>Immutable description of the access that most recently stopped execution.</summary>
+    public sealed class DebuggerBreakHit(
+        DebuggerBreakType type,
+        ushort address,
+        ushort port,
+        byte? value,
+        ulong tstates,
+        string reason,
+        DebuggerBreakpoint? breakpoint)
+    {
+        public DebuggerBreakType Type { get; } = type;
+        public ushort Address { get; } = address;
+        public ushort Port { get; } = port;
+        public byte? Value { get; } = value;
+        public ulong Tstates { get; } = tstates;
+        public string Reason { get; } = reason;
+        public DebuggerBreakpoint? Breakpoint { get; } = breakpoint;
+    }
+    /// <summary>
+    /// Optional CPU bus observer; implementations must keep disabled checks extremely cheap.
+    /// </summary>
+    /// <remarks>Access watchpoints request a stop after the instruction, never mid-cycle.</remarks>
+    public interface IZ80DebugHook
+    {
+        bool Enabled { get; }
+        bool AccessWatchpointsEnabled { get; }
+        void OnMemoryRead(ushort address, byte value);
+        void OnMemoryWrite(ushort address, byte value);
+        void OnPortRead(ushort port, byte value);
+        void OnPortWrite(ushort port, byte value);
+    }
+    /// <summary>Presentation model for one debugger disassembly row.</summary>
+    public sealed class Z80DisassemblyLine(
+        ushort address,
+        byte[] bytes,
+        string mnemonic,
+        int length,
+        bool isCurrent,
+        bool hasBreakpoint,
+        DebuggerMemoryMapping mapping)
+    {
+        public ushort Address { get; } = address;
+        public byte[] Bytes { get; } = bytes;
+        public string Mnemonic { get; } = mnemonic;
+        public int Length { get; } = length;
+        public bool IsCurrent { get; } = isCurrent;
+        public bool HasBreakpoint { get; } = hasBreakpoint;
+        public DebuggerMemoryMapping Mapping { get; } = mapping;
+        public string AddressText => $"{Address:X4}";
+        public string BytesText => BitConverter.ToString(Bytes).Replace("-", " ");
+        public string EditableBytesText { get; set; } = BitConverter.ToString(bytes).Replace("-", " ");
+    }
+}

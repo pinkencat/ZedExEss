@@ -1,0 +1,731 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using ZedExEss.Spectrum.Core;
+
+namespace ZedExEss.Diagnostics
+{
+    /// <summary>
+    /// Parses and runs emulator diagnostics without depending on a desktop host.
+    /// </summary>
+    /// <remarks>
+    /// Both the WPF application and the portable console host call this entry
+    /// point, ensuring their switches execute identical core code and defaults.
+    /// Unknown switches are ignored here so the WPF host can continue processing
+    /// its own future arguments; the console host reports when no diagnostic was
+    /// selected.
+    /// </remarks>
+    public static class DiagnosticCommandLine
+    {
+        public const string HelpText =
+            "ZedExEss headless diagnostics\n" +
+            "\n" +
+            "Tests:\n" +
+            "  --verify-basic\n" +
+            "  --verify-debugger\n" +
+            "  --verify-interface1 [--interface1-rom <path>]\n" +
+            "  --verify-multiface [--multiface-rom-directory <path>]\n" +
+            "  --verify-szx\n" +
+            "  --verify-zx8x [--zx8x-rom-directory <path>]\n" +
+            "  --verify-zxnext [--zxnext-system-directory <path>] [--zxnext-boot-rom <path>]\n" +
+            "  --verify-pentagon\n" +
+            "  --verify-session\n" +
+            "  --verify-settings\n" +
+            "  --verify-fast-forward-audio\n" +
+            "  --verify-tape-acceleration\n" +
+            "  --verify-tape-save [--tape-save-rom-directory <path>]\n" +
+            "  --verify-replay [--replay-rom-directory <path>]\n" +
+            "  --verify-contention\n" +
+            "  --verify-z80-core [--z80-tests-directory <path>]\n" +
+            "  --diagnose-rzx <path> [--replay-rom-directory <path>] [--contention early|late]\n" +
+            "                        [--trace-rzx] [--trace-rzx-frame <n>] [--rzx-audio-driven]\n" +
+            "                        [--trace-rzx-tstates]\n" +
+            "                        [--export-rzx-state <path>]\n" +
+            "                        [--rzx-run-frames]\n" +
+            "  --verify-tape-game <path>\n" +
+            "  --diagnose-trdos [--trdos-disk <path>] [--trdos-model <model>]\n" +
+            "                   [--trdos-menu-down <n>] [--trdos-type <letters>]\n" +
+            "                   [--trdos-frames <n>] [--trdos-fdc-trace]\n" +
+            "  --raxoft-z80full | --raxoft-z80memptr\n" +
+            "  --raxoft-z80flags | --raxoft-z80ccf\n" +
+            "  --benchmark\n" +
+            "  --benchmark-zxnext [--benchmark-zxnext-scenario <name[,name...]>]\n" +
+            "                     [--benchmark-zxnext-warmup <n>] [--benchmark-zxnext-frames <n>]\n" +
+            "                     [--benchmark-zxnext-repetitions <n>]\n" +
+            "                     [--benchmark-zxnext-no-isolate] [--benchmark-zxnext-settle <ms>]\n" +
+            "                     [--zxnext-system-directory <path>] [--zxnext-boot-rom <path>]\n" +
+            "\n" +
+            "Common output options:\n" +
+            "  --verify-output <path>\n" +
+            "  --raxoft-program <path> --raxoft-output <path>\n" +
+            "  --benchmark-output <path>\n" +
+            "  --benchmark-zxnext-output <path>\n";
+
+        public static bool TryRun(string[] args, out int exitCode)
+        {
+            ArgumentNullException.ThrowIfNull(args);
+
+            exitCode = 0;
+            if (args.Length == 0)
+            {
+                return false;
+            }
+
+            var options = new Options();
+            Parse(args, options);
+
+            if (options.RunTrDosDiagnostic)
+            {
+                exitCode = TrDosDiagnosticRunner.Run(new TrDosDiagnosticOptions
+                {
+                    Model = options.TrDosModel,
+                    DiskPath = options.TrDosDiskPath,
+                    OutputPath = options.OutputPath,
+                    MenuDownPresses = options.TrDosMenuDown,
+                    TypeAfterBoot = options.TrDosType,
+                    RunFrames = options.TrDosFrames,
+                    FdcTrace = options.TrDosFdcTrace,
+                    EnterAfterFrames = options.TrDosEnterAt
+                });
+                return true;
+            }
+
+            if (options.RunRaxoft)
+            {
+                exitCode = RaxoftZ80FullRunner.Run(new RaxoftZ80FullOptions
+                {
+                    ProgramPath = options.ProgramPath,
+                    OutputPath = options.OutputPath,
+                    MaxInstructions = options.MaxInstructions
+                });
+                return true;
+            }
+
+            if (options.RunRaxoftMemptr)
+            {
+                exitCode = RaxoftZ80MemptrRunner.Run(new RaxoftZ80MemptrOptions
+                {
+                    ProgramPath = options.ProgramPath,
+                    OutputPath = options.OutputPath,
+                    MaxInstructions = options.MaxInstructions
+                });
+                return true;
+            }
+
+            if (options.RunRaxoftFlags)
+            {
+                exitCode = RaxoftZ80FlagsRunner.Run(new RaxoftZ80FlagsOptions
+                {
+                    ProgramPath = options.ProgramPath,
+                    OutputPath = options.OutputPath,
+                    MaxInstructions = options.MaxInstructions
+                });
+                return true;
+            }
+
+            if (options.RunRaxoftCcf)
+            {
+                exitCode = RaxoftZ80CcfRunner.Run(new RaxoftZ80CcfOptions
+                {
+                    ProgramPath = options.ProgramPath,
+                    OutputPath = options.OutputPath,
+                    MaxInstructions = options.MaxInstructions
+                });
+                return true;
+            }
+
+            if (options.RunPentagonVerification)
+            {
+                exitCode = PentagonVerificationRunner.Run(new PentagonVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.RunBasicVerification)
+            {
+                exitCode = BasicProgramVerificationRunner.Run(new BasicProgramVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.RunDebuggerVerification)
+            {
+                exitCode = DebuggerVerificationRunner.Run(new DebuggerVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.RunInterface1Verification)
+            {
+                exitCode = Interface1VerificationRunner.Run(new Interface1VerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomPath = options.Interface1RomPath
+                });
+                return true;
+            }
+
+            if (options.RunMultifaceVerification)
+            {
+                exitCode = MultifaceVerificationRunner.Run(new MultifaceVerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomDirectory = options.MultifaceRomDirectory
+                });
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(options.DiagnoseRzxPath))
+            {
+                exitCode = ReplayVerificationRunner.Diagnose(
+                    options.DiagnoseRzxPath,
+                    options.ReplayRomDirectory,
+                    options.OutputPath,
+                    options.ContentionTiming,
+                    options.TraceRzxFrames,
+                    options.DetailRzxFrame,
+                    traceTstates: options.TraceRzxTstates,
+                    exportPath: options.ExportRzxPath,
+                    runFrames: options.RzxRunFrames);
+                return true;
+            }
+
+            if (options.RunContentionVerification)
+            {
+                exitCode = ContentionVerificationRunner.Run(new ContentionVerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomDirectory = options.ReplayRomDirectory
+                });
+                return true;
+            }
+
+            if (options.RunZ80CoreTests)
+            {
+                exitCode = Z80CoreTestRunner.Run(new Z80CoreTestOptions
+                {
+                    OutputPath = options.OutputPath,
+                    TestsDirectory = options.Z80TestsDirectory
+                });
+                return true;
+            }
+
+            if (options.RunReplayVerification)
+            {
+                exitCode = ReplayVerificationRunner.Run(new ReplayVerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomDirectory = options.ReplayRomDirectory
+                });
+                return true;
+            }
+
+            if (options.RunTapeSaveVerification)
+            {
+                exitCode = TapeSaveVerificationRunner.Run(new TapeSaveVerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomDirectory = options.TapeSaveRomDirectory
+                });
+                return true;
+            }
+
+            if (options.RunSzxVerification)
+            {
+                exitCode = SzxSnapshotVerificationRunner.Run(new SzxSnapshotVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.RunZx8xVerification)
+            {
+                exitCode = Zx8xVerificationRunner.Run(new Zx8xVerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    RomDirectory = options.Zx8xRomDirectory
+                });
+                return true;
+            }
+
+            if (options.RunTapeAccelerationVerification)
+            {
+                exitCode = TapeAccelerationVerificationRunner.Run(new TapeAccelerationVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.RunSessionVerification)
+            {
+                exitCode = SessionVerificationRunner.Run(new SessionVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.RunSettingsVerification)
+            {
+                exitCode = SettingsVerificationRunner.Run(new SettingsVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.RunZxNextVerification)
+            {
+                exitCode = ZxNextVerificationRunner.Run(new ZxNextVerificationOptions
+                {
+                    OutputPath = options.OutputPath,
+                    SystemDirectory = options.ZxNextSystemDirectory,
+                    BootRomPath = options.ZxNextBootRomPath
+                });
+                return true;
+            }
+
+            if (options.RunFastForwardAudioVerification)
+            {
+                exitCode = FastForwardAudioVerificationRunner.Run(new FastForwardAudioVerificationOptions
+                {
+                    OutputPath = options.OutputPath
+                });
+                return true;
+            }
+
+            if (options.TapeGamePath != null)
+            {
+                exitCode = TapeGameVerificationRunner.Run(new TapeGameVerificationOptions
+                {
+                    TzxPath = options.TapeGamePath,
+                    OutputPath = options.OutputPath,
+                    Model = options.TapeGameModel,
+                    MaxFrames = options.TapeGameMaxFrames,
+                    UseFastTapeCpuBatching = options.TapeGameFastBatching,
+                    DumpRamAtPulses = options.TapeGameDumpPulses,
+                    TraceFromPulse = options.TapeGameTracePulse
+                });
+                return true;
+            }
+
+            if (options.RunBenchmark)
+            {
+                exitCode = SpectrumBenchmarkRunner.Run(new SpectrumBenchmarkOptions
+                {
+                    Model = options.BenchmarkModel,
+                    Frames = options.BenchmarkFrames,
+                    PresentEveryNFrames = options.BenchmarkPresentEvery,
+                    UseFastTapeCpuBatching = options.BenchmarkFastTapeBatching,
+                    OutputPath = options.BenchmarkOutputPath
+                });
+                return true;
+            }
+
+            if (options.RunZxNextBenchmark)
+            {
+                exitCode = ZxNextBenchmarkRunner.Run(new ZxNextBenchmarkOptions
+                {
+                    WarmupFrames = options.ZxNextBenchmarkWarmupFrames,
+                    Frames = options.ZxNextBenchmarkFrames,
+                    Repetitions = options.ZxNextBenchmarkRepetitions,
+                    Scenario = options.ZxNextBenchmarkScenario,
+                    OutputPath = options.ZxNextBenchmarkOutputPath,
+                    IsolateScenarios = options.ZxNextBenchmarkIsolate,
+                    SettleMilliseconds = options.ZxNextBenchmarkSettleMilliseconds,
+                    IsolatedChild = options.ZxNextBenchmarkIsolatedChild,
+                    SystemDirectory = options.ZxNextSystemDirectory,
+                    BootRomPath = options.ZxNextBootRomPath
+                });
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void Parse(string[] args, Options options)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                string arg = args[i];
+                switch (arg.ToLowerInvariant())
+                {
+                    case "--raxoft-z80full":
+                        options.RunRaxoft = true;
+                        break;
+                    case "--raxoft-z80memptr":
+                        options.RunRaxoftMemptr = true;
+                        break;
+                    case "--raxoft-z80flags":
+                        options.RunRaxoftFlags = true;
+                        break;
+                    case "--raxoft-z80ccf":
+                        options.RunRaxoftCcf = true;
+                        break;
+                    case "--verify-pentagon":
+                        options.RunPentagonVerification = true;
+                        break;
+                    case "--verify-basic":
+                        options.RunBasicVerification = true;
+                        break;
+                    case "--verify-debugger":
+                        options.RunDebuggerVerification = true;
+                        break;
+                    case "--verify-interface1":
+                        options.RunInterface1Verification = true;
+                        break;
+                    case "--verify-multiface":
+                        options.RunMultifaceVerification = true;
+                        break;
+                    case "--multiface-rom-directory":
+                        options.MultifaceRomDirectory = RequireValue(args, ref i, arg);
+                        options.RunMultifaceVerification = true;
+                        break;
+                    case "--diagnose-rzx":
+                        options.DiagnoseRzxPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--trace-rzx-frame":
+                        options.DetailRzxFrame = int.Parse(RequireValue(args, ref i, arg));
+                        options.TraceRzxFrames = true;
+                        break;
+                    case "--trace-rzx":
+                        options.TraceRzxFrames = true;
+                        break;
+                    case "--contention":
+                        options.ContentionTiming = RequireValue(args, ref i, arg).ToLowerInvariant() switch
+                        {
+                            "late" => Spectrum.Memory.SpectrumContentionTiming.Late,
+                            "early" => Spectrum.Memory.SpectrumContentionTiming.Early,
+                            _ => throw new ArgumentException($"Unknown contention timing for {arg}.")
+                        };
+                        break;
+                    case "--verify-contention":
+                        options.RunContentionVerification = true;
+                        break;
+                    case "--rzx-run-frames":
+                        options.RzxRunFrames = true;
+                        break;
+                    case "--export-rzx-state":
+                        options.ExportRzxPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--trace-rzx-tstates":
+                        options.TraceRzxTstates = true;
+                        break;
+                    case "--verify-z80-core":
+                        options.RunZ80CoreTests = true;
+                        break;
+                    case "--z80-tests-directory":
+                        options.Z80TestsDirectory = RequireValue(args, ref i, arg);
+                        break;
+                    case "--verify-replay":
+                        options.RunReplayVerification = true;
+                        break;
+                    case "--replay-rom-directory":
+                        options.ReplayRomDirectory = RequireValue(args, ref i, arg);
+                        options.RunReplayVerification = true;
+                        break;
+                    case "--verify-tape-save":
+                        options.RunTapeSaveVerification = true;
+                        break;
+                    case "--tape-save-rom-directory":
+                        options.TapeSaveRomDirectory = RequireValue(args, ref i, arg);
+                        options.RunTapeSaveVerification = true;
+                        break;
+                    case "--verify-szx":
+                        options.RunSzxVerification = true;
+                        break;
+                    case "--interface1-rom":
+                        options.Interface1RomPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--verify-zx8x":
+                        options.RunZx8xVerification = true;
+                        break;
+                    case "--verify-zxnext":
+                        options.RunZxNextVerification = true;
+                        break;
+                    case "--zxnext-system-directory":
+                        options.ZxNextSystemDirectory = RequireValue(args, ref i, arg);
+                        break;
+                    case "--zxnext-boot-rom":
+                        options.ZxNextBootRomPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--zx8x-rom-directory":
+                        options.Zx8xRomDirectory = RequireValue(args, ref i, arg);
+                        break;
+                    case "--verify-tape-acceleration":
+                        options.RunTapeAccelerationVerification = true;
+                        break;
+                    case "--verify-session":
+                        options.RunSessionVerification = true;
+                        break;
+                    case "--verify-settings":
+                        options.RunSettingsVerification = true;
+                        break;
+                    case "--verify-fast-forward-audio":
+                        options.RunFastForwardAudioVerification = true;
+                        break;
+                    case "--verify-tape-game":
+                        options.TapeGamePath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--diagnose-trdos":
+                        options.RunTrDosDiagnostic = true;
+                        break;
+                    case "--trdos-disk":
+                        options.TrDosDiskPath = RequireValue(args, ref i, arg);
+                        options.RunTrDosDiagnostic = true;
+                        break;
+                    case "--trdos-model":
+                        string trdosModel = RequireValue(args, ref i, arg);
+                        // Only Beta 128 capable clones are meaningful here, and the
+                        // benchmark parser does not cover them.
+                        options.TrDosModel = trdosModel.Trim().ToLowerInvariant() switch
+                        {
+                            "pentagon" or "pentagon128" => SpectrumModel.Pentagon128,
+                            "scorpion" or "scorpion256" => SpectrumModel.Scorpion256,
+                            _ => throw new ArgumentException($"Invalid {arg} value '{trdosModel}'. Use pentagon or scorpion.")
+                        };
+                        break;
+                    case "--trdos-menu-down":
+                        options.TrDosMenuDown = ParseNonNegativeInt(RequireValue(args, ref i, arg), arg);
+                        break;
+                    case "--trdos-type":
+                        options.TrDosType = RequireValue(args, ref i, arg);
+                        break;
+                    case "--trdos-frames":
+                        options.TrDosFrames = ParsePositiveInt(RequireValue(args, ref i, arg), arg);
+                        break;
+                    case "--trdos-fdc-trace":
+                        options.TrDosFdcTrace = true;
+                        break;
+                    case "--trdos-enter-at":
+                        options.TrDosEnterAt = ParsePositiveInt(RequireValue(args, ref i, arg), arg);
+                        break;
+                    case "--tape-game-model":
+                        string tapeModel = RequireValue(args, ref i, arg);
+                        if (!SpectrumBenchmarkRunner.TryParseModel(tapeModel, out SpectrumModel parsedTapeModel))
+                        {
+                            throw new ArgumentException($"Invalid {arg} value '{tapeModel}'.");
+                        }
+
+                        options.TapeGameModel = parsedTapeModel;
+                        break;
+                    case "--tape-game-max-frames":
+                        options.TapeGameMaxFrames = ParsePositiveInt(RequireValue(args, ref i, arg), arg);
+                        break;
+                    case "--tape-game-trace-pulse":
+                        options.TapeGameTracePulse = ParseNonNegativeInt(RequireValue(args, ref i, arg), arg);
+                        break;
+                    case "--tape-game-dump-pulse":
+                        string pulseList = RequireValue(args, ref i, arg);
+                        foreach (string part in pulseList.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        {
+                            options.TapeGameDumpPulses.Add(ParsePositiveInt(part, arg));
+                        }
+                        break;
+                    case "--tape-game-fast-batching":
+                        options.TapeGameFastBatching = true;
+                        break;
+                    case "--raxoft-program":
+                        options.ProgramPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--verify-output":
+                    case "--raxoft-output":
+                        options.OutputPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--raxoft-max-instructions":
+                        string instructionCount = RequireValue(args, ref i, arg);
+                        if (!long.TryParse(instructionCount, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsedInstructions)
+                            || parsedInstructions <= 0)
+                        {
+                            throw new ArgumentException($"Invalid {arg} value '{instructionCount}'.");
+                        }
+
+                        options.MaxInstructions = parsedInstructions;
+                        break;
+                    case "--benchmark":
+                        options.RunBenchmark = true;
+                        break;
+                    case "--benchmark-model":
+                        string benchmarkModel = RequireValue(args, ref i, arg);
+                        if (!SpectrumBenchmarkRunner.TryParseModel(benchmarkModel, out SpectrumModel parsedBenchmarkModel))
+                        {
+                            throw new ArgumentException($"Invalid {arg} value '{benchmarkModel}'.");
+                        }
+
+                        options.BenchmarkModel = parsedBenchmarkModel;
+                        options.RunBenchmark = true;
+                        break;
+                    case "--benchmark-frames":
+                        options.BenchmarkFrames = ParsePositiveInt(RequireValue(args, ref i, arg), arg);
+                        options.RunBenchmark = true;
+                        break;
+                    case "--benchmark-present-every":
+                        options.BenchmarkPresentEvery = ParseNonNegativeInt(RequireValue(args, ref i, arg), arg);
+                        options.RunBenchmark = true;
+                        break;
+                    case "--benchmark-fast-tape-batching":
+                        options.BenchmarkFastTapeBatching = true;
+                        options.RunBenchmark = true;
+                        break;
+                    case "--benchmark-output":
+                        options.BenchmarkOutputPath = RequireValue(args, ref i, arg);
+                        options.RunBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext":
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-warmup":
+                        options.ZxNextBenchmarkWarmupFrames = ParseNonNegativeInt(
+                            RequireValue(args, ref i, arg), arg);
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-frames":
+                        options.ZxNextBenchmarkFrames = ParsePositiveInt(
+                            RequireValue(args, ref i, arg), arg);
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-repetitions":
+                        options.ZxNextBenchmarkRepetitions = ParsePositiveInt(
+                            RequireValue(args, ref i, arg), arg);
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-scenario":
+                        options.ZxNextBenchmarkScenario = RequireValue(args, ref i, arg);
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-output":
+                        options.ZxNextBenchmarkOutputPath = RequireValue(args, ref i, arg);
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-no-isolate":
+                        options.ZxNextBenchmarkIsolate = false;
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-settle":
+                        options.ZxNextBenchmarkSettleMilliseconds = ParseNonNegativeInt(
+                            RequireValue(args, ref i, arg), arg);
+                        options.RunZxNextBenchmark = true;
+                        break;
+                    case "--benchmark-zxnext-isolated-child":
+                        // Set by the orchestrator on the process that measures one case.
+                        options.ZxNextBenchmarkIsolatedChild = true;
+                        options.ZxNextBenchmarkIsolate = false;
+                        options.ZxNextBenchmarkSettleMilliseconds = 0;
+                        options.RunZxNextBenchmark = true;
+                        break;
+                }
+            }
+        }
+
+        private static int ParsePositiveInt(string value, string option)
+        {
+            if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int result) || result <= 0)
+            {
+                throw new ArgumentException($"Invalid {option} value '{value}'.");
+            }
+
+            return result;
+        }
+
+        private static int ParseNonNegativeInt(string value, string option)
+        {
+            if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int result) || result < 0)
+            {
+                throw new ArgumentException($"Invalid {option} value '{value}'.");
+            }
+
+            return result;
+        }
+
+        private static string RequireValue(string[] args, ref int index, string option)
+        {
+            int valueIndex = index + 1;
+            if (valueIndex >= args.Length)
+            {
+                throw new ArgumentException($"{option} requires a value.");
+            }
+
+            index = valueIndex;
+            return args[valueIndex];
+        }
+
+        private sealed class Options
+        {
+            public bool RunRaxoft { get; set; }
+            public bool RunRaxoftMemptr { get; set; }
+            public bool RunRaxoftFlags { get; set; }
+            public bool RunRaxoftCcf { get; set; }
+            public bool RunBenchmark { get; set; }
+            public bool RunZxNextBenchmark { get; set; }
+            public bool RunPentagonVerification { get; set; }
+            public bool RunBasicVerification { get; set; }
+            public bool RunDebuggerVerification { get; set; }
+            public bool RunInterface1Verification { get; set; }
+            public bool RunMultifaceVerification { get; set; }
+            public string? MultifaceRomDirectory { get; set; }
+            public bool RunContentionVerification { get; set; }
+            public bool RunReplayVerification { get; set; }
+            public bool RunZ80CoreTests { get; set; }
+            public string? Z80TestsDirectory { get; set; }
+            public string? DiagnoseRzxPath { get; set; }
+            public Spectrum.Memory.SpectrumContentionTiming? ContentionTiming { get; set; }
+            public bool TraceRzxFrames { get; set; }
+            public bool TraceRzxTstates { get; set; }
+            public string? ExportRzxPath { get; set; }
+            public bool RzxRunFrames { get; set; }
+            public int DetailRzxFrame { get; set; } = -1;
+            public string? ReplayRomDirectory { get; set; }
+            public bool RunTapeSaveVerification { get; set; }
+            public string? TapeSaveRomDirectory { get; set; }
+            public bool RunSzxVerification { get; set; }
+            public bool RunZx8xVerification { get; set; }
+            public bool RunZxNextVerification { get; set; }
+            public string? ZxNextSystemDirectory { get; set; }
+            public string? ZxNextBootRomPath { get; set; }
+            public bool RunTapeAccelerationVerification { get; set; }
+            public bool RunSessionVerification { get; set; }
+            public bool RunSettingsVerification { get; set; }
+            public bool RunFastForwardAudioVerification { get; set; }
+            public string? TapeGamePath { get; set; }
+            public bool RunTrDosDiagnostic { get; set; }
+            public string? TrDosDiskPath { get; set; }
+            public SpectrumModel TrDosModel { get; set; } = SpectrumModel.Scorpion256;
+            public int TrDosMenuDown { get; set; }
+            public string? TrDosType { get; set; }
+            public int TrDosFrames { get; set; } = 1_200;
+            public bool TrDosFdcTrace { get; set; }
+            public int TrDosEnterAt { get; set; }
+            public string? Interface1RomPath { get; set; }
+            public string? Zx8xRomDirectory { get; set; }
+            public SpectrumModel TapeGameModel { get; set; } = SpectrumModel.Spectrum48K;
+            public int TapeGameMaxFrames { get; set; } = 90_000;
+            public bool TapeGameFastBatching { get; set; }
+            public List<int> TapeGameDumpPulses { get; } = [];
+            public int TapeGameTracePulse { get; set; }
+            public string? ProgramPath { get; set; }
+            public string? OutputPath { get; set; }
+            public long MaxInstructions { get; set; } = 5_000_000_000;
+            public SpectrumModel BenchmarkModel { get; set; } = SpectrumModel.Spectrum128K;
+            public int BenchmarkFrames { get; set; } = 2000;
+            public int BenchmarkPresentEvery { get; set; } = 5;
+            public bool BenchmarkFastTapeBatching { get; set; }
+            public string? BenchmarkOutputPath { get; set; }
+            public int ZxNextBenchmarkWarmupFrames { get; set; } = 20;
+            public int ZxNextBenchmarkFrames { get; set; } = 120;
+            public int ZxNextBenchmarkRepetitions { get; set; } = 1;
+            public string ZxNextBenchmarkScenario { get; set; } = "all";
+            public string? ZxNextBenchmarkOutputPath { get; set; }
+            public bool ZxNextBenchmarkIsolate { get; set; } = true;
+            public int ZxNextBenchmarkSettleMilliseconds { get; set; } = 250;
+            public bool ZxNextBenchmarkIsolatedChild { get; set; }
+        }
+    }
+}

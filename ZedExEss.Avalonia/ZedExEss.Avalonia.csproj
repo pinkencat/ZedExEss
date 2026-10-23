@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <RootNamespace>ZedExEss.AvaloniaHost</RootNamespace>
+  </PropertyGroup>
+	<PropertyGroup>
+		<InvariantGlobalization>true</InvariantGlobalization>
+	</PropertyGroup>
+
+
+	<ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.0" />
+    <PackageReference Include="SDL3-CS" Version="3.4.12.3" />
+    <PackageReference Include="SDL3-CS.Windows" Version="3.4.12.1" />
+    <PackageReference Include="SDL3-CS.Linux" Version="3.4.12.1" />
+    <PackageReference Include="SDL3-CS.MacOS" Version="3.4.12.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ZedExEss.Core\ZedExEss.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\ZedExEss\ROMs\**" Link="ROMs\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,25 @@
+<!--
+  === File overview ===
+  This file implements the WPF application shell and emulator-facing user interface.
+  Comments below describe responsibilities and boundaries; runtime behavior is unchanged.
+-->
+
+<Window x:Class="ZedExEss.AudioOscilloscopeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Audio Oscilloscope" Height="620" Width="860"
+        MinHeight="240" MinWidth="520"
+        Background="#101010"
+        UseLayoutRounding="True">
+    <DockPanel Margin="10">
+        <TextBlock x:Name="StatusText"
+                   DockPanel.Dock="Bottom"
+                   Foreground="#909090"
+                   Margin="4,8,0,0" />
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <!-- Groups and traces are built from AudioScopeLayout so the Spectrum's four
+                 channels and the Next's ten come from one definition. -->
+            <StackPanel x:Name="GroupPanel" />
+        </ScrollViewer>
+    </DockPanel>
+</Window>

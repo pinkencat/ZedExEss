@@ -1,0 +1,95 @@
+﻿<Window x:Class="ZedExEss.TasWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TAS" Height="380" Width="330"
+        MinHeight="330" MinWidth="300"
+        Background="#141414" Foreground="White"
+        WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="TransportButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="44" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+        <Style x:Key="SlotButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="26" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Margin" Value="0,0,2,0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="FontSize" Value="11" />
+        </Style>
+        <Style x:Key="SectionStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8AA9CC" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Margin" Value="0,10,0,4" />
+        </Style>
+    </Window.Resources>
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" x:Name="FrameText" Text="Frame 0"
+                   FontSize="22" FontWeight="SemiBold" />
+        <TextBlock Grid.Row="1" x:Name="RecordingText" Text="Not recording"
+                   Foreground="#B8D7FF" FontSize="12" Margin="0,2,0,0" />
+
+        <TextBlock Grid.Row="2" Style="{StaticResource SectionStyle}" Text="TRANSPORT" />
+        <StackPanel Grid.Row="3" Orientation="Horizontal">
+            <Button x:Name="BackTenthButton" Style="{StaticResource TransportButtonStyle}"
+                    Content="&#x25C0;&#x25C0;" ToolTip="Back a tenth of a second (F7)"
+                    Click="OnStepBackTenth" />
+            <Button x:Name="BackFrameButton" Style="{StaticResource TransportButtonStyle}"
+                    Content="&#x25C0;" ToolTip="Back one frame (Shift+F8)"
+                    Click="OnStepBackFrame" />
+            <Button x:Name="AdvanceButton" Style="{StaticResource TransportButtonStyle}"
+                    Content="&#x25B6;" ToolTip="Advance one frame (F8)"
+                    Click="OnAdvanceFrame" />
+            <Button x:Name="PauseButton" Style="{StaticResource TransportButtonStyle}"
+                    Content="&#x23F8;" ToolTip="Pause or resume"
+                    Click="OnTogglePause" />
+            <Button x:Name="RecordButton" Style="{StaticResource TransportButtonStyle}"
+                    Content="&#x25CF;" Foreground="#FF6B6B" ToolTip="Start or stop recording input"
+                    Click="OnToggleRecording" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="4" Style="{StaticResource SectionStyle}" Text="STATES" />
+        <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,0,0,3">
+            <TextBlock Text="Save" Width="36" Foreground="#AAAAAA" FontSize="11"
+                       VerticalAlignment="Center" />
+            <StackPanel x:Name="SaveSlotPanel" Orientation="Horizontal" />
+        </StackPanel>
+        <StackPanel Grid.Row="6" Orientation="Horizontal">
+            <TextBlock Text="Load" Width="36" Foreground="#AAAAAA" FontSize="11"
+                       VerticalAlignment="Center" />
+            <StackPanel x:Name="LoadSlotPanel" Orientation="Horizontal" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="7" Style="{StaticResource SectionStyle}" Text="HISTORY" />
+        <StackPanel Grid.Row="8">
+            <ProgressBar x:Name="HistoryBar" Height="8" Minimum="0" Maximum="1"
+                         Background="#202020" Foreground="#4C9A4C" BorderThickness="0" />
+            <TextBlock x:Name="HistoryText" Text="No history yet"
+                       Foreground="#AAAAAA" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Limit" Width="36" Foreground="#AAAAAA" FontSize="11"
+                           VerticalAlignment="Center" />
+                <ComboBox x:Name="BudgetCombo" Width="90" Height="22" FontSize="11"
+                          ToolTip="How much memory the rollback history may use"
+                          SelectionChanged="OnBudgetChanged" />
+            </StackPanel>
+            <TextBlock x:Name="HintText" Foreground="#666666" FontSize="10" Margin="0,10,0,0"
+                       TextWrapping="Wrap"
+                       Text="Ctrl+digit loads a state, Ctrl+Shift+digit saves one. The same keys work in the main window." />
+        </StackPanel>
+    </Grid>
+</Window>

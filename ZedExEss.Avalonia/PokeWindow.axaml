@@ -1,0 +1,40 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ZedExEss.AvaloniaHost.PokeWindow"
+        Title="Pokes"
+        Width="470"
+        Height="290"
+        MinWidth="390"
+        MinHeight="230"
+        WindowStartupLocation="CenterOwner">
+  <Grid Margin="12" RowDefinitions="Auto,*,Auto,Auto">
+    <StackPanel Grid.Row="0" Margin="0,0,0,8" Spacing="3">
+      <TextBlock Text="Enter one poke per line: address value [count]" />
+      <TextBlock Text="Hex: 0x8000, $8000 or #8000. Example: POKE 32768,0,16"
+                 Foreground="#A8A8A8" />
+    </StackPanel>
+
+    <TextBox x:Name="PokeInput"
+             Grid.Row="1"
+             AcceptsReturn="True"
+             FontFamily="Consolas,Menlo,Monospace"
+             TextWrapping="NoWrap"
+             ScrollViewer.HorizontalScrollBarVisibility="Auto"
+             ScrollViewer.VerticalScrollBarVisibility="Auto" />
+
+    <TextBlock x:Name="StatusText"
+               Grid.Row="2"
+               Margin="0,7,0,0"
+               Foreground="#E78B8B"
+               TextWrapping="Wrap" />
+
+    <StackPanel Grid.Row="3"
+                Margin="0,9,0,0"
+                Orientation="Horizontal"
+                HorizontalAlignment="Right"
+                Spacing="7">
+      <Button x:Name="ApplyButton" Width="90" Content="Apply" IsDefault="True" />
+      <Button x:Name="CancelButton" Width="90" Content="Cancel" IsCancel="True" />
+    </StackPanel>
+  </Grid>
+</Window>

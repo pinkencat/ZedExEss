@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ZedExEss.AvaloniaHost.AudioOscilloscopeWindow"
+        Title="Audio Oscilloscope"
+        Width="860"
+        Height="620"
+        MinWidth="520"
+        MinHeight="240"
+        Background="#101010"
+        WindowStartupLocation="CenterOwner">
+  <DockPanel Margin="10">
+    <TextBlock x:Name="StatusText"
+               DockPanel.Dock="Bottom"
+               Foreground="#909090"
+               Margin="4,8,0,0" />
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <!-- Groups and traces are built from AudioScopeLayout so the Spectrum's four
+           channels and the Next's ten come from one definition. -->
+      <StackPanel x:Name="GroupPanel" />
+    </ScrollViewer>
+  </DockPanel>
+</Window>

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+	<PropertyGroup>
+		<InvariantGlobalization>true</InvariantGlobalization>
+	</PropertyGroup>
+
+	<ItemGroup>
+    <ProjectReference Include="..\ZedExEss.Core\ZedExEss.Core.csproj" />
+  </ItemGroup>
+
+  <!-- ROM-backed diagnostics can run directly from a published headless host. -->
+  <ItemGroup>
+    <Content Include="..\ZedExEss\ROMs\**\*" Link="ROMs\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

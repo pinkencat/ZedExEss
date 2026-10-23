@@ -1,0 +1,14 @@
+ZedExEss licensing notice
+=========================
+
+The ZedExEss source code, except where a file states otherwise, is distributed
+under the GNU General Public License, version 3 or (at your option) any later
+version. The complete licence is provided in the root LICENSE file. The SPDX
+licence expression is GPL-3.0-or-later.
+
+Copyright in individual contributions remains with the respective copyright
+holders.
+
+ROM images, firmware, test media, and other third-party material included in or
+used with this repository are not relicensed by the ZedExEss GPL declaration.
+Those materials remain subject to their respective copyright and licence terms.

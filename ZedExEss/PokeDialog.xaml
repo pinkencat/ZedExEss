@@ -1,0 +1,30 @@
+<!--
+  === File overview ===
+  This file implements the WPF application shell and emulator-facing user interface.
+  Comments below describe responsibilities and boundaries; runtime behavior is unchanged.
+-->
+
+<Window x:Class="ZedExEss.PokeDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pokes"
+        SizeToContent="WidthAndHeight"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+            <TextBlock Text="Enter one poke per line: address value [count]" />
+            <TextBlock Text="Hex: 0x8000 or $8000. Example: 32768 0 16" Margin="0,4,0,0" />
+        </StackPanel>
+        <TextBox x:Name="PokeInput"
+                 MinWidth="360"
+                 Height="120"
+                 AcceptsReturn="True"
+                 VerticalScrollBarVisibility="Auto"
+                 TextWrapping="NoWrap" />
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+            <Button Content="OK" Width="80" IsDefault="True" Click="OnOk" />
+            <Button Content="Cancel" Width="80" IsCancel="True" Margin="6,0,0,0" />
+        </StackPanel>
+    </DockPanel>
+</Window>
