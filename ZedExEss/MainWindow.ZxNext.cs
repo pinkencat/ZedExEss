@@ -76,6 +76,58 @@ public partial class MainWindow
         return true;
     }
 
+    /// <summary>Points the Next at another System/Next folder and loader ROM.</summary>
+    /// <remarks>
+    /// Startup only asks when a saved path has gone missing, so without this a folder that
+    /// still exists but holds the wrong distro could only be changed by editing settings.json.
+    /// A running Next restarts on the new files; otherwise they are used when it next starts.
+    /// </remarks>
+    private async void OnChangeZxNextSystemFiles(object sender, RoutedEventArgs e)
+    {
+        ZxNextSystemFiles? chosen = await ZxNextSystemFiles.ChooseAsync(
+            _fileDialogs,
+            _zxNextBootRomPath);
+        if (chosen == null || chosen.Matches(_zxNextSystemDirectory, _zxNextBootRomPath))
+        {
+            Focus();
+            return;
+        }
+
+        string? previousDirectory = _zxNextSystemDirectory;
+        string? previousBootRomPath = _zxNextBootRomPath;
+        _zxNextSystemDirectory = chosen.SystemDirectory;
+        _zxNextBootRomPath = chosen.BootRomPath;
+
+        ZxNextMachine? running = _zxNextMachine;
+        if (running == null)
+        {
+            StatusText.Text = "ZX Next system files changed; they are used when the Next next starts";
+        }
+        else
+        {
+            // Stop the old machine and bring its folder up to date before the new session
+            // reads one: when only the ROM changed, both sessions project the same folder.
+            StopZxNextExecutionOwner();
+            SaveZxNextCardChanges();
+            InitializeZxNextMachine();
+            if (ReferenceEquals(_zxNextMachine, running))
+            {
+                // The new files would not start and the error has been shown. The old
+                // machine is untouched, so it carries on from the files it came from.
+                _zxNextSystemDirectory = previousDirectory;
+                _zxNextBootRomPath = previousBootRomPath;
+                Interlocked.Exchange(ref _renderPending, 0);
+                _lastNextFrameSeconds = _speedStopwatch.Elapsed.TotalSeconds;
+                _lastNextFrameNumber = running.UlaTiming.FrameNumber;
+                StartZxNextExecutionOwner();
+                StatusText.Text = "Kept the previous ZX Next system files";
+            }
+        }
+
+        SaveHostSettings();
+        Focus();
+    }
+
     private void InitializeZxNextMachine()
     {
         if (string.IsNullOrWhiteSpace(_zxNextSystemDirectory)
@@ -142,6 +194,9 @@ public partial class MainWindow
         _zxNextSession = replacement;
         _zxNextMachine = replacement.Machine;
         _zxNextMachine.SetHostJoystickType(_joystickType);
+
+        // The host plays audio_mixer.vhd's two sides; headless runs keep the mono default.
+        _zxNextMachine.StereoAudio = true;
         UpdateZxNextStateMenuState();
         _cpuHz = _zxNextMachine.CpuClockHz;
         _tstatesPerFrame = checked((int)(
@@ -195,6 +250,7 @@ public partial class MainWindow
 
     private void StopZxNextHostMachine()
     {
+        EndKempstonMouseCapture();
         StopZxNextExecutionOwner();
         if (_zxNextMachine != null)
         {
@@ -433,6 +489,7 @@ public partial class MainWindow
         _lastNextFrameNumber = frameNumber;
         _lastNextFrameSeconds = now;
         Title = $"{BaseTitle} - ZX Spectrum Next (experimental) - "
-            + $"{fps:0.0} fps - {machine.CpuClockHz / 1_000_000.0:0.#} MHz";
+            + $"{fps:0.0} fps - {machine.CpuClockHz / 1_000_000.0:0.#} MHz"
+            + KempstonMouseTitleSuffix;
     }
 }

@@ -629,11 +629,6 @@ public sealed class ZxNextSpriteDevice
                 continue;
             }
 
-            if (_lineOpaque[screenX])
-            {
-                _status |= CollisionFlag;
-            }
-
             _linePaletteIndices[screenX] = finalIndex;
             _lineOpaque[screenX] = true;
         }

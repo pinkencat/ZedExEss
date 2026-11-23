@@ -3,7 +3,8 @@ using ZedExEss.Spectrum.Abstractions;
 namespace ZedExEss.Spectrum.Audio;
 
 /// <summary>
-/// Compresses a mono PCM stream in time while retaining its approximate pitch.
+/// Compresses a PCM stream in time while retaining its approximate pitch. The output is mono;
+/// a stereo source is mixed down first.
 /// Pulling one host sample advances the wrapped emulator by <see cref="SpeedMultiplier"/>
 /// source samples, making it suitable as the audio clock for fast-forward execution.
 /// </summary>
@@ -32,6 +33,8 @@ public sealed class TimeStretchAudioSource : IAudioSource
     private readonly int _searchRadius;
     private readonly short[] _previousTail;
     private readonly short[] _sourceReadBuffer;
+    private readonly short[] _sourceFrameBuffer;
+    private readonly int _sourceChannels;
 
     private short[] _input = new short[16_384];
     private long _inputStart;
@@ -62,6 +65,13 @@ public sealed class TimeStretchAudioSource : IAudioSource
         _searchRadius = Math.Max(16, _hopLength / 4);
         _previousTail = new short[_hopLength];
         _sourceReadBuffer = new short[Math.Max(_windowLength, 4_096)];
+        _sourceChannels = source.Channels;
+        if (_sourceChannels is not (1 or 2))
+        {
+            throw new ArgumentException("Fast-forward audio takes a mono or stereo source.", nameof(source));
+        }
+
+        _sourceFrameBuffer = _sourceChannels == 1 ? _sourceReadBuffer : new short[_sourceReadBuffer.Length * 2];
     }
 
     public int SpeedMultiplier { get; }
@@ -188,7 +198,7 @@ public sealed class TimeStretchAudioSource : IAudioSource
         while (availableEnd < endExclusive)
         {
             int requested = (int)Math.Min(_sourceReadBuffer.Length, endExclusive - availableEnd);
-            int read = _source.ReadSamples(_sourceReadBuffer, 0, requested);
+            int read = ReadSourceFrames(requested);
             if (read <= 0)
             {
                 Array.Clear(_sourceReadBuffer, 0, requested);
@@ -200,6 +210,23 @@ public sealed class TimeStretchAudioSource : IAudioSource
             _inputCount += read;
             availableEnd += read;
         }
+    }
+
+    /// <summary>Reads up to <paramref name="frames"/> frames into the read buffer as mono.</summary>
+    private int ReadSourceFrames(int frames)
+    {
+        if (_sourceChannels == 1)
+        {
+            return _source.ReadSamples(_sourceReadBuffer, 0, frames);
+        }
+
+        int read = _source.ReadSamples(_sourceFrameBuffer, 0, frames * 2) / 2;
+        for (int frame = 0; frame < read; frame++)
+        {
+            _sourceReadBuffer[frame] = (short)((_sourceFrameBuffer[frame * 2] + _sourceFrameBuffer[(frame * 2) + 1]) / 2);
+        }
+
+        return read;
     }
 
     private void EnsureInputCapacity(int additional)

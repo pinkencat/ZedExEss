@@ -204,8 +204,29 @@ namespace ZedExEss.Spectrum.DivMmc
         {
             if (_response.Count > 0)
             {
-                // SPI is full-duplex, but for command responses the card mostly clocks out
-                // queued bytes while ignoring MOSI.
+                // SPI is full-duplex: the card clocks out whatever it has queued while its
+                // command decoder keeps listening on MOSI. During a multi-block read that
+                // matters, because a host may end the stream not with CMD12 or chip-select
+                // but simply by issuing its next command into it - Atic Atac Next streams
+                // its assets exactly that way - and a real card abandons the data it was
+                // sending and answers the new command. Outside a multi-block read the
+                // queued bytes are a command response and MOSI is dummy clocks.
+                if (_multipleRead && _writeState == WriteState.None
+                    && (_commandLength > 0 || (mosi & 0xC0) == 0x40))
+                {
+                    _command[_commandLength++] = mosi;
+                    byte abandoned = _response.Dequeue();
+                    if (_commandLength == _command.Length)
+                    {
+                        _response.Clear();
+                        _multipleRead = false;
+                        ExecuteCommand();
+                        _commandLength = 0;
+                    }
+
+                    return abandoned;
+                }
+
                 return _response.Dequeue();
             }
 

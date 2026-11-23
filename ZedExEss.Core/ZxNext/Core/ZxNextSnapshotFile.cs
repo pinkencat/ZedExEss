@@ -6,7 +6,9 @@ using System.Text;
 using ZedExEss.Spectrum.Audio;
 using ZedExEss.Spectrum.DivMmc;
 using ZedExEss.Z80CPU;
+using ZedExEss.ZxNext.Audio;
 using ZedExEss.ZxNext.Input;
+using ZedExEss.ZxNext.Video;
 
 namespace ZedExEss.ZxNext.Core
 {
@@ -81,6 +83,16 @@ namespace ZedExEss.ZxNext.Core
         private const string PortBusChunk = "PORT";
         private const string FloatingBusChunk = "FLBS";
         private const string MediaChunk = "MEDA";
+        private const string MouseChunk = "MOUS";
+        private const string DmaExtendedChunk = "DMAX";
+        private const string SramBehindVideoBramChunk = "SRBV";
+        private const string RegistersExtendedChunk = "NREX";
+        private const string PsgChunk = "PSGX";
+        private const string InterruptsChunk = "IM2X";
+        private const string CopperChunk = "COPR";
+        private const string DacChunk = "DACS";
+        private const string ClockExtendedChunk = "CLKX";
+        private const string CtcChunk = "CTCX";
 
         public static void Save(Stream stream, ZxNextMachineSnapshot snapshot)
         {
@@ -174,6 +186,11 @@ namespace ZedExEss.ZxNext.Core
                 chunk.Write(snapshot.Clock.MasterTicks);
                 chunk.Write((byte)snapshot.Clock.CpuSpeed);
             });
+            WriteChunk(writer, ClockExtendedChunk, chunk =>
+            {
+                chunk.Write((byte)(snapshot.Clock.RequestedCpuSpeed ?? snapshot.Clock.CpuSpeed));
+                chunk.Write((byte)(snapshot.Clock.ClockSpeed ?? snapshot.Clock.CpuSpeed));
+            });
             WriteChunk(writer, RamChunk, chunk => WriteByteArray(chunk, snapshot.PhysicalRam));
             WriteChunk(writer, MemoryBusChunk, chunk => WriteMemoryBus(chunk, snapshot.MemoryBus));
             WriteChunk(writer, PagingChunk, chunk =>
@@ -226,6 +243,64 @@ namespace ZedExEss.ZxNext.Core
                 chunk.Write(snapshot.FloatingBus.UlaDriving);
             });
             WriteChunk(writer, MediaChunk, chunk => WriteMedia(chunk, snapshot.Media));
+            WriteChunk(writer, MouseChunk, chunk =>
+            {
+                chunk.Write(snapshot.Mouse.X);
+                chunk.Write(snapshot.Mouse.Y);
+                chunk.Write(snapshot.Mouse.Wheel);
+                chunk.Write(snapshot.Mouse.LatchedButtons);
+            });
+            WriteChunk(writer, DmaExtendedChunk, chunk => WriteDmaExtended(chunk, snapshot.Dma.Extended));
+            WriteChunk(writer, SramBehindVideoBramChunk, chunk => WriteByteArray(
+                chunk,
+                snapshot.MemoryBus.SramBehindVideoBram ?? []));
+            if (snapshot.Audio.Psgs is { } psgs)
+            {
+                WriteChunk(writer, PsgChunk, chunk => WritePsgs(chunk, psgs));
+            }
+
+            if (snapshot.Audio.Dac is { } dac)
+            {
+                WriteChunk(writer, DacChunk, chunk =>
+                {
+                    WriteByteArray(chunk, dac.Channels);
+                    chunk.Write(dac.LeftLevelSum);
+                    chunk.Write(dac.RightLevelSum);
+                });
+            }
+
+            if (snapshot.Interrupts is { } interrupts)
+            {
+                WriteChunk(writer, InterruptsChunk, chunk =>
+                {
+                    chunk.Write(interrupts.Status);
+                    chunk.Write(interrupts.Pending);
+                    chunk.Write(interrupts.InService);
+                    chunk.Write(interrupts.Im2Line);
+                    chunk.Write(interrupts.CtcEnables);
+                    chunk.Write(interrupts.UartEnables);
+                    chunk.Write(interrupts.DmaEnables0);
+                    chunk.Write(interrupts.DmaEnablesCtc);
+                    chunk.Write(interrupts.DmaEnablesUart);
+                    chunk.Write(interrupts.RetiHoldOffEndTick);
+                });
+            }
+
+            if (snapshot.Copper is { } copper)
+            {
+                WriteChunk(writer, CopperChunk, chunk => WriteCopper(chunk, copper));
+            }
+
+            if (snapshot.Ctc is { } ctc)
+            {
+                WriteChunk(writer, CtcChunk, chunk => WriteCtc(chunk, ctc));
+            }
+
+            if (snapshot.Registers.Extended is ZxNextRegisterFileExtendedState registersExtended)
+            {
+                WriteChunk(writer, RegistersExtendedChunk, chunk =>
+                    WriteRegistersExtended(chunk, registersExtended));
+            }
 
             // Anything a newer build recorded goes back out after what this one understands.
             foreach (ZxNextSnapshotUnknownChunk unknown in snapshot.UnknownChunks)
@@ -275,7 +350,7 @@ namespace ZedExEss.ZxNext.Core
                 }
             }
 
-            return new ZxNextMachineSnapshot(
+            var snapshot = new ZxNextMachineSnapshot(
                 ReadChunk(chunks, CpuChunk, ReadCpu),
                 ReadChunk(chunks, ClockChunk, static reader =>
                     new ZxNextClockState(reader.ReadUInt64(), (ZxNextCpuSpeed)reader.ReadByte())),
@@ -322,7 +397,73 @@ namespace ZedExEss.ZxNext.Core
                     reader.ReadBoolean())),
                 ReadChunk(chunks, MediaChunk, ReadMedia))
             {
-                UnknownChunks = unknown
+                UnknownChunks = unknown,
+
+                // Added after version 1 shipped, so a file without it is a mouse at rest.
+                Mouse = chunks.ContainsKey(MouseChunk)
+                    ? ReadChunk(chunks, MouseChunk, static reader => new ZxNextMouseState(
+                        reader.ReadByte(),
+                        reader.ReadByte(),
+                        reader.ReadByte(),
+                        reader.ReadByte()))
+                    : default
+            };
+
+            // Also added after version 1: a file without them has a DMA that never used the
+            // WR4/WR5 modes or the zxnDDMA, zeroed SRAM behind the video block RAM, and NextReg
+            // state the register file rebuilds (ZxNextRegisterFile.RestoreState).
+            return snapshot with
+            {
+                Interrupts = chunks.ContainsKey(InterruptsChunk)
+                    ? ReadChunk(chunks, InterruptsChunk, static reader => new ZxNextInterruptControllerState(
+                        reader.ReadUInt16(),
+                        reader.ReadUInt16(),
+                        reader.ReadUInt16(),
+                        reader.ReadBoolean(),
+                        reader.ReadByte(),
+                        reader.ReadByte(),
+                        reader.ReadByte(),
+                        reader.ReadByte(),
+                        reader.ReadByte(),
+                        reader.ReadUInt64()))
+                    : null,
+                Copper = chunks.ContainsKey(CopperChunk) ? ReadChunk(chunks, CopperChunk, ReadCopper) : null,
+                Ctc = chunks.ContainsKey(CtcChunk) ? ReadChunk(chunks, CtcChunk, ReadCtc) : null,
+                Clock = chunks.ContainsKey(ClockExtendedChunk)
+                    ? ReadChunk(chunks, ClockExtendedChunk, reader => snapshot.Clock with
+                    {
+                        RequestedCpuSpeed = (ZxNextCpuSpeed)reader.ReadByte(),
+                        ClockSpeed = (ZxNextCpuSpeed)reader.ReadByte()
+                    })
+                    : snapshot.Clock,
+                Audio = snapshot.Audio with
+                {
+                    Psgs = chunks.ContainsKey(PsgChunk) ? ReadChunk(chunks, PsgChunk, ReadPsgs) : null,
+                    Dac = chunks.ContainsKey(DacChunk)
+                        ? ReadChunk(chunks, DacChunk, reader => new ZxNextDacState(
+                            ReadByteArray(reader),
+                            reader.ReadInt64(),
+                            reader.ReadInt64()))
+                        : null
+                },
+                Registers = snapshot.Registers with
+                {
+                    Extended = chunks.ContainsKey(RegistersExtendedChunk)
+                        ? ReadChunk(chunks, RegistersExtendedChunk, ReadRegistersExtended)
+                        : null
+                },
+                Dma = snapshot.Dma with
+                {
+                    Extended = chunks.ContainsKey(DmaExtendedChunk)
+                        ? ReadChunk(chunks, DmaExtendedChunk, ReadDmaExtended)
+                        : default
+                },
+                MemoryBus = snapshot.MemoryBus with
+                {
+                    SramBehindVideoBram = chunks.ContainsKey(SramBehindVideoBramChunk)
+                        ? ReadChunk(chunks, SramBehindVideoBramChunk, ReadByteArray)
+                        : null
+                }
             };
         }
 
@@ -330,7 +471,120 @@ namespace ZedExEss.ZxNext.Core
             or MemoryBusChunk or PagingChunk or RegistersChunk or UlaTimingChunk or RasterChunk
             or PalettesChunk or Layer2Chunk or TilemapChunk or SpritesChunk or DmaChunk
             or BusArbiterChunk or DivMmcChunk or MultifaceChunk or NmiRoutingChunk or AudioChunk
-            or InputChunk or PortBusChunk or FloatingBusChunk or MediaChunk;
+            or InputChunk or PortBusChunk or FloatingBusChunk or MediaChunk or MouseChunk
+            or DmaExtendedChunk or SramBehindVideoBramChunk or RegistersExtendedChunk or PsgChunk
+            or InterruptsChunk or CopperChunk or DacChunk or ClockExtendedChunk or CtcChunk;
+
+        private static void WriteCtc(BinaryWriter writer, ZxNextCtcState ctc)
+        {
+            writer.Write(ctc.Channels.Length);
+            foreach (ZxNextCtcChannelState channel in ctc.Channels)
+            {
+                writer.Write(channel.State);
+                writer.Write(channel.Control);
+                writer.Write(channel.TimeConstant);
+                writer.Write(channel.Prescaler);
+                writer.Write(channel.Count);
+                writer.Write(channel.LastZeroCountEdge);
+            }
+
+            writer.Write(ctc.Tick);
+            writer.Write(ctc.PendingWriteChannel);
+            writer.Write(ctc.PendingWriteValue);
+            writer.Write(ctc.PendingWriteEdge);
+            writer.Write(ctc.PendingRequests);
+            writer.Write(ctc.PendingRequestEdge);
+        }
+
+        private static ZxNextCtcState ReadCtc(BinaryReader reader)
+        {
+            var channels = new ZxNextCtcChannelState[ReadCount(reader, ZxNextCtcDevice.ChannelCount, "CTC channel")];
+            if (channels.Length != ZxNextCtcDevice.ChannelCount)
+            {
+                throw new InvalidDataException("A Next CTC has four channels.");
+            }
+
+            for (int index = 0; index < channels.Length; index++)
+            {
+                channels[index] = new ZxNextCtcChannelState(
+                    reader.ReadByte(),
+                    reader.ReadByte(),
+                    reader.ReadByte(),
+                    reader.ReadByte(),
+                    reader.ReadByte(),
+                    reader.ReadUInt64());
+            }
+
+            return new ZxNextCtcState(channels, reader.ReadUInt64(), reader.ReadSByte(), reader.ReadByte(), reader.ReadUInt64())
+            {
+                PendingRequests = reader.ReadByte(),
+                PendingRequestEdge = reader.ReadUInt64()
+            };
+        }
+
+        private static void WriteCopper(BinaryWriter writer, ZxNextCopperState copper)
+        {
+            writer.Write(copper.List.Length);
+            foreach (ushort instruction in copper.List)
+            {
+                writer.Write(instruction);
+            }
+
+            writer.Write(copper.WriteAddress);
+            writer.Write(copper.StoredByte);
+            writer.Write(copper.Mode);
+            writer.Write(copper.ProgramCounter);
+            writer.Write(copper.LastMode);
+            writer.Write(copper.ClearingMove);
+            writer.Write(copper.NextEdge);
+            writer.Write(copper.HasWrite0);
+            writer.Write(copper.WriteTick0);
+            writer.Write(copper.WriteRegister0);
+            writer.Write(copper.WriteValue0);
+            writer.Write(copper.HasWrite1);
+            writer.Write(copper.WriteTick1);
+            writer.Write(copper.WriteRegister1);
+            writer.Write(copper.WriteValue1);
+            writer.Write(copper.LineOffset);
+            writer.Write(copper.ActiveLineOffset);
+            writer.Write(copper.NextLineOffsetReloadTick);
+        }
+
+        private static ZxNextCopperState ReadCopper(BinaryReader reader)
+        {
+            int length = reader.ReadInt32();
+            if (length != 1024)
+            {
+                throw new InvalidDataException($"The copper chunk holds {length} instructions, not 1024.");
+            }
+
+            ushort[] list = new ushort[length];
+            for (int index = 0; index < length; index++)
+            {
+                list[index] = reader.ReadUInt16();
+            }
+
+            return new ZxNextCopperState(
+                list,
+                reader.ReadUInt16(),
+                reader.ReadByte(),
+                reader.ReadByte(),
+                reader.ReadUInt16(),
+                reader.ReadByte(),
+                reader.ReadBoolean(),
+                reader.ReadUInt64(),
+                reader.ReadBoolean(),
+                reader.ReadUInt64(),
+                reader.ReadByte(),
+                reader.ReadByte(),
+                reader.ReadBoolean(),
+                reader.ReadUInt64(),
+                reader.ReadByte(),
+                reader.ReadByte(),
+                reader.ReadByte(),
+                reader.ReadByte(),
+                reader.ReadUInt64());
+        }
 
         /// <summary>Reads one required chunk, naming it if it is absent or short.</summary>
         private static T ReadChunk<T>(
@@ -558,6 +812,160 @@ namespace ZedExEss.ZxNext.Core
             reader.ReadUInt16(),
             reader.ReadInt32(),
             reader.ReadInt32());
+
+        private static void WritePsgs(BinaryWriter writer, ZxNextPsgState[] psgs)
+        {
+            writer.Write(psgs.Length);
+            foreach (ZxNextPsgState psg in psgs)
+            {
+                WriteByteArray(writer, psg.Registers);
+                writer.Write(psg.ToneCount.Length);
+                foreach (int count in psg.ToneCount)
+                {
+                    writer.Write(count);
+                }
+
+                writer.Write(psg.ToneOutputs);
+                writer.Write(psg.EnableRemainder);
+                writer.Write(psg.EnablesToStep);
+                writer.Write(psg.NoiseHalf);
+                writer.Write(psg.NoiseCount);
+                writer.Write(psg.Poly17);
+                writer.Write(psg.EnvelopeCount);
+                writer.Write(psg.EnvelopeVolume);
+                writer.Write(psg.EnvelopeIncreasing);
+                writer.Write(psg.EnvelopeHeld);
+            }
+        }
+
+        private static ZxNextPsgState[] ReadPsgs(BinaryReader reader)
+        {
+            var psgs = new ZxNextPsgState[ReadCount(reader, 8, "PSG")];
+            for (int index = 0; index < psgs.Length; index++)
+            {
+                byte[] registers = ReadByteArray(reader);
+                var toneCount = new int[ReadCount(reader, 3, "tone counter")];
+                for (int channel = 0; channel < toneCount.Length; channel++)
+                {
+                    toneCount[channel] = reader.ReadInt32();
+                }
+
+                psgs[index] = new ZxNextPsgState(
+                    registers,
+                    toneCount,
+                    reader.ReadByte(),
+                    reader.ReadInt32(),
+                    reader.ReadInt32(),
+                    reader.ReadBoolean(),
+                    reader.ReadInt32(),
+                    reader.ReadInt32(),
+                    reader.ReadInt32(),
+                    reader.ReadByte(),
+                    reader.ReadBoolean(),
+                    reader.ReadBoolean());
+            }
+
+            return psgs;
+        }
+
+        private static void WriteRegistersExtended(BinaryWriter writer, ZxNextRegisterFileExtendedState extended)
+        {
+            writer.Write(extended.ResetType);
+            writer.Write((byte)extended.NmiSource);
+            writer.Write((byte)extended.NmiPhase);
+            writer.Write(extended.JoystickIoMode);
+            writer.Write(extended.BusPortDecoding);
+            writer.Write(extended.I2sControl);
+            writer.Write(extended.ContentionDisableBefore);
+            writer.Write(extended.ContentionDisableAppliesAt);
+            writer.Write(extended.ScandoublerEffective.HasValue);
+            writer.Write(extended.ScandoublerEffective ?? false);
+        }
+
+        private static ZxNextRegisterFileExtendedState ReadRegistersExtended(BinaryReader reader)
+        {
+            var extended = new ZxNextRegisterFileExtendedState(
+                reader.ReadByte(),
+                (ZxNextNmiSource)reader.ReadByte(),
+                (ZxNextNmiPhase)reader.ReadByte(),
+                reader.ReadByte(),
+                reader.ReadUInt32(),
+                reader.ReadByte());
+
+            // The NextReg $08 contention latch and the effective $05 scandoubler bit came after
+            // the chunk's first fields.
+            if (reader.BaseStream.Position < reader.BaseStream.Length)
+            {
+                extended = extended with
+                {
+                    ContentionDisableBefore = reader.ReadBoolean(),
+                    ContentionDisableAppliesAt = reader.ReadUInt64()
+                };
+            }
+
+            if (reader.BaseStream.Position < reader.BaseStream.Length)
+            {
+                bool hasScandoubler = reader.ReadBoolean();
+                bool scandoubler = reader.ReadBoolean();
+                extended = extended with { ScandoublerEffective = hasScandoubler ? scandoubler : null };
+            }
+
+            return extended;
+        }
+
+        private static void WriteDmaExtended(BinaryWriter writer, ZxNextDmaExtendedState extended)
+        {
+            writer.Write(extended.TransferMode);
+            writer.Write(extended.AutoRestart);
+            writer.Write(extended.CeWait);
+            writer.Write(extended.DimensionalFlags);
+            writer.Write(extended.PortAExtended);
+            writer.Write(extended.PortBExtended);
+            writer.Write(extended.RowLength);
+            writer.Write(extended.RowCount);
+            writer.Write(extended.PortAStride);
+            writer.Write(extended.PortBStride);
+            writer.Write(extended.TransparentValue);
+            writer.Write(extended.FillValue);
+            writer.Write(extended.Layer2XLow);
+            writer.Write(extended.Layer2XHigh);
+            writer.Write(extended.SourceHigh);
+            writer.Write(extended.DestinationHigh);
+            writer.Write(extended.SourceRowStart);
+            writer.Write(extended.DestinationRowStart);
+            writer.Write(extended.RowPosition);
+            writer.Write(extended.RowIndex);
+            writer.Write(extended.WaitClocks);
+            writer.Write(extended.ResumeTick);
+            writer.Write(extended.BusGranted);
+            writer.Write(extended.RequestTick);
+        }
+
+        private static ZxNextDmaExtendedState ReadDmaExtended(BinaryReader reader) => new(
+            reader.ReadByte(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadByte(),
+            reader.ReadByte(),
+            reader.ReadByte(),
+            reader.ReadUInt16(),
+            reader.ReadUInt16(),
+            reader.ReadUInt16(),
+            reader.ReadUInt16(),
+            reader.ReadByte(),
+            reader.ReadByte(),
+            reader.ReadByte(),
+            reader.ReadByte(),
+            reader.ReadByte(),
+            reader.ReadByte(),
+            reader.ReadInt32(),
+            reader.ReadInt32(),
+            reader.ReadUInt16(),
+            reader.ReadUInt16(),
+            reader.ReadInt32(),
+            reader.ReadUInt64(),
+            reader.ReadBoolean(),
+            reader.ReadUInt64());
 
         private static void WriteDivMmc(BinaryWriter writer, ZxNextDivMmcState divMmc)
         {
@@ -1071,6 +1479,10 @@ namespace ZedExEss.ZxNext.Core
             writer.Write(state.CurrentVideoMemoryTickProcessed);
             WriteIntArray(writer, state.FrameBuffer);
             WriteIntArray(writer, state.WorkingBuffer);
+            writer.Write(state.BorderLatch.Group);
+            writer.Write(state.BorderLatch.Index);
+            writer.Write(state.BorderLatch.Hires);
+            writer.Write(state.BorderLatch.Ink);
         }
 
         private static ZxNextRasterState ReadRaster(BinaryReader reader)
@@ -1078,7 +1490,7 @@ namespace ZedExEss.ZxNext.Core
             bool ulaGeneratorIsPlain = reader.ReadBoolean();
             byte machineTiming = reader.ReadByte();
             bool sixtyHertz = reader.ReadBoolean();
-            return new ZxNextRasterState(
+            ZxNextRasterState raster = new ZxNextRasterState(
                 ulaGeneratorIsPlain,
                 ZxNextUlaTimingProfile.Create(machineTiming, sixtyHertz),
                 reader.ReadInt32(),
@@ -1095,6 +1507,18 @@ namespace ZedExEss.ZxNext.Core
                 reader.ReadBoolean(),
                 ReadIntArray(reader),
                 ReadIntArray(reader));
+
+            // The border latch came after the chunk's first fields.
+            return reader.BaseStream.Position < reader.BaseStream.Length
+                ? raster with
+                {
+                    BorderLatch = new ZxNextBorderLatchState(
+                        reader.ReadInt32(),
+                        reader.ReadByte(),
+                        reader.ReadBoolean(),
+                        reader.ReadByte())
+                }
+                : raster;
         }
 
         private static void WritePalettes(BinaryWriter writer, ZxNextPaletteState state)

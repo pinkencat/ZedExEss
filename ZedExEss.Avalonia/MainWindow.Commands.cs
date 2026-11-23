@@ -182,6 +182,7 @@ public sealed partial class MainWindow
                 await ReplaceZxNextMachineAsync();
             }
         };
+        FindRequiredControl<MenuItem>("ZxNextSystemFilesMenuItem").Click += OnChangeZxNextSystemFilesClicked;
         RegisterZx8xRamMenuItem("Zx8xRam1KMenuItem", Zx8xRamConfiguration.Internal1K);
         RegisterZx8xRamMenuItem("Zx8xRam16KMenuItem", Zx8xRamConfiguration.Expansion16K);
         _zx8xWrxMenuItem.Click += (_, _) =>

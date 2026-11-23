@@ -7,9 +7,11 @@ namespace ZedExEss.ZxNext.Multiface;
 /// Multiface NMI and memory-page latches used by the Next's internal MF3.
 /// </summary>
 /// <remarks>
-/// The pinned core asserts NMI first and pages the 8 KiB ROM plus 8 KiB RAM
-/// only when the CPU fetches the NMI vector at $0066. RETN releases both the
-/// NMI-active and memory-enable latches.
+/// As multiface.vhd: the NMI button sets the NMI-active latch, and the 8 KiB ROM plus 8 KiB
+/// RAM page in only when the CPU fetches the NMI vector at $0066. A RETN (ED 45 only)
+/// releases both the NMI-active and memory-enable latches. While its port enable (internal
+/// port enable bit 9, NextReg $83 bit 1) is off the Multiface is held in reset, so it
+/// ignores the button and the NMI runs whatever is at $0066.
 /// </remarks>
 public sealed class ZxNextMultifaceDevice
 {
@@ -19,16 +21,22 @@ public sealed class ZxNextMultifaceDevice
     public bool NmiActive { get; private set; }
     public bool IsMapped { get; private set; }
 
-    public bool BeginNmi()
+    /// <summary>
+    /// <c>mf_is_active</c>: paged in or holding its NMI, either of which keeps a DivMMC NMI
+    /// request from being latched.
+    /// </summary>
+    public bool IsActive => IsMapped || NmiActive;
+
+    /// <summary>The NMI button pulse; ignored while disabled or while its NMI is already active.</summary>
+    public void PressButton()
     {
         if (!Enabled || NmiActive)
         {
-            return false;
+            return;
         }
 
         NmiActive = true;
         _invisible = false;
-        return true;
     }
 
     public void BeforeOpcodeFetch(ushort address)
@@ -39,6 +47,7 @@ public sealed class ZxNextMultifaceDevice
         }
     }
 
+    /// <summary>A RETN (ED 45) seen by the core's RETN decoder.</summary>
     public void CompleteNmi()
     {
         NmiActive = false;

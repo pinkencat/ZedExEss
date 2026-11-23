@@ -13,6 +13,8 @@ namespace ZedExEss.AvaloniaHost;
 /// SDL copies each submitted block into its audio stream. The producer maintains a deliberately
 /// small queue and asks the emulator for another block only as the device consumes it, making the
 /// physical audio clock the realtime master without doing emulator work in an SDL callback.
+/// The stream opens with the source's channel count; a stereo source's interleaved frames
+/// pass through unchanged, and the buffer sizes are in frames.
 /// </remarks>
 internal sealed class SdlAudioOutput : IAudioOutput
 {
@@ -32,8 +34,14 @@ internal sealed class SdlAudioOutput : IAudioOutput
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bufferSamples);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bufferCount);
 
-        _sampleBuffer = new short[bufferSamples];
-        _targetQueuedBytes = checked(bufferSamples * bufferCount * sizeof(short));
+        int channels = source.Channels;
+        if (channels is not (1 or 2))
+        {
+            throw new ArgumentException("The audio source must be mono or stereo.", nameof(source));
+        }
+
+        _sampleBuffer = new short[checked(bufferSamples * channels)];
+        _targetQueuedBytes = checked(_sampleBuffer.Length * bufferCount * sizeof(short));
         SdlAudioRuntime.Acquire();
 
         try
@@ -44,7 +52,7 @@ internal sealed class SdlAudioOutput : IAudioOutput
                 // little-endian; spelling this constant explicitly also avoids binding releases
                 // that expose only the canonical SDL macro aliases.
                 Format = (SDL.AudioFormat)0x8010,
-                Channels = 1,
+                Channels = channels,
                 Freq = sampleRate
             };
             _stream = SDL.OpenAudioDeviceStream(

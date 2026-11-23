@@ -22,6 +22,60 @@ namespace ZedExEss.Z80CPU
         /// <summary>Concrete machine port bus available to family-specific CPU extensions.</summary>
         protected TPorts MachinePorts => _ports;
 
+        /// <summary>
+        /// Follow the ZX Spectrum Next's T80N instead of a Zilog Z80 where the two differ.
+        /// </summary>
+        /// <remarks>
+        /// The Next's CPU is the FPGA core's <c>t80n.vhd</c>, not a Zilog die. Its documented
+        /// behaviour is the same, but some undocumented flag bits are not:
+        /// <list type="bullet">
+        /// <item>SCF and CCF take flag bits 5/3 from A alone (there is no Q latch).</item>
+        /// <item>BIT n,(HL) and BIT n,(IX+d) clear them; the undocumented DDCB/FDCB BIT forms take
+        /// them from the byte read. MEMPTR never shows.</item>
+        /// <item>IN r,(C), LD A,I and LD A,R leave them alone.</item>
+        /// <item>CPI and CPD take them from the byte compared.</item>
+        /// <item>INI, IND, OUTI and OUTD set every flag from decrementing B.</item>
+        /// <item>A repeating block instruction changes no flag in its extra M-cycle.</item>
+        /// </list>
+        /// Each is pinned by a single-instruction differential against the simulated T80N
+        /// (Klive IDE's F1, 115,854 cases) and read again from the pinned VHDL.
+        /// </remarks>
+        protected bool UsesT80nRules { get; init; }
+
+        /// <summary>
+        /// INT is a level, as the T80N samples it (<c>INT_s</c>, registered from <c>INT_n</c> every
+        /// clock): taking the interrupt does not clear the request, which stays as long as the
+        /// line driven through <see cref="Z80SetINTLine"/> does. A handler that enables
+        /// interrupts and returns while its source still holds the line is interrupted again.
+        /// </summary>
+        /// <remarks>
+        /// A Zilog Z80 samples INT as a level too, so this is a statement about the CPU; what
+        /// differs between machines is what drives the line. The Spectrum family (the ULA's
+        /// 32 or 36 T pulse) and the Next turn it on. It stays off where it would change
+        /// nothing: the ZX80/ZX81 bus drives the line from A6 at every refresh, the acknowledge's
+        /// own included, and the General Sound card drops its line after one instruction.
+        /// <see cref="MaskableInterruptIsOneShot"/> overrides it while a recording is replayed.
+        /// </remarks>
+        protected bool MaskableInterruptIsLevel { get; init; }
+
+        /// <summary>
+        /// Consumes each INT request as it is taken, even on a CPU whose INT is a level.
+        /// </summary>
+        /// <remarks>
+        /// For input-recording playback, which offers each recorded interrupt once, at the
+        /// boundary the recording names. A recording made with a level INT has a frame of its
+        /// own for every interrupt taken, a re-entry inside the pulse included (Fuse's
+        /// retriggered interrupt calls <c>rzx_frame</c> too), and one made with a latched INT has
+        /// none; a line held past the first entry would add entries that neither made.
+        /// </remarks>
+        internal bool MaskableInterruptIsOneShot { get; set; }
+
+        /// <summary>
+        /// True while a taken INT stays requested for as long as its line is held, rather than
+        /// being consumed by the acknowledge.
+        /// </summary>
+        public bool MaskableInterruptFollowsLine => MaskableInterruptIsLevel && !MaskableInterruptIsOneShot;
+
         public ulong Cyc; // Absolute CPU T-state count; do not wrap at frame boundaries.
 
         /// <summary>T-states spent waiting for the bus, for diagnostics.</summary>

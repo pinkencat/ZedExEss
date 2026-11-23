@@ -156,8 +156,10 @@ public sealed class ZxNextLayer2Device
             segment = _mapSegment;
         }
 
+        // zxnext.vhd adds the bank and offset in eight bits but addresses SRAM with the low
+        // eight bits of the resulting page, so the 16 KiB bank wraps at 128.
         int firstBank = MapShadowBank ? ShadowBank : ActiveBank;
-        int bank = (firstBank + segment + _mapOffset) & 0xFF;
+        int bank = (firstBank + segment + _mapOffset) & 0x7F;
         page = (bank * 2) + ((address >> 13) & 0x01);
         return true;
     }
@@ -281,7 +283,7 @@ public sealed class ZxNextLayer2Device
             }
 
             x = (x + ScrollX) & 0xFF;
-            y = Wrap(y + ScrollY, 192);
+            y = WrapScrolledY(y + ScrollY);
             address = (y << 8) | x;
         }
         else
@@ -295,7 +297,7 @@ public sealed class ZxNextLayer2Device
                 return false;
             }
 
-            x = Wrap(byteX + ScrollX, 320);
+            x = WrapScrolledWideX(byteX + ScrollX);
             y = (logicalY + ScrollY) & 0xFF;
             address = (x << 8) | y;
         }
@@ -309,6 +311,20 @@ public sealed class ZxNextLayer2Device
         pixel = memory.ReadMasked(page, address & (ZxNextPhysicalMemory.PageSize - 1));
         return true;
     }
+
+    /// <summary>
+    /// layer2.vhd's 256x192 row: past 191 it adds 64 to bits 7:6, which wraps once. A scroll
+    /// beyond the documented 0-191 therefore reaches rows 192-255, past the picture.
+    /// </summary>
+    private static int WrapScrolledY(int yPre) =>
+        yPre < 192 ? yPre : ((yPre & 0xFF) + 64) & 0xFF;
+
+    /// <summary>
+    /// layer2.vhd's 320- and 640-wide column: past 319 it adds 192 to bits 8:6, which wraps
+    /// once. A scroll beyond the documented 0-319 therefore reaches columns 320-511.
+    /// </summary>
+    private static int WrapScrolledWideX(int xPre) =>
+        xPre < 320 ? xPre : (xPre + 192) & 0x1FF;
 
     public void Reset()
     {
@@ -331,12 +347,6 @@ public sealed class ZxNextLayer2Device
         MapWritesEnabled = false;
         MapReadsEnabled = false;
         MapShadowBank = false;
-    }
-
-    private static int Wrap(int value, int modulus)
-    {
-        int result = value % modulus;
-        return result < 0 ? result + modulus : result;
     }
 
     /// <summary>Reads Layer 2's banks, scroll and clip window, for a snapshot.</summary>

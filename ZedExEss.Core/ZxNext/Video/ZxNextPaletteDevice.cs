@@ -43,6 +43,18 @@ public sealed class ZxNextPaletteDevice
     public bool UlaFineScrollX => (UlaControl & 0x04) != 0;
     public bool UlaPlusEnabled => (UlaControl & 0x08) != 0;
 
+    /// <summary>NextReg $28: the first byte of a nine-bit $44 write (<c>nr_stored_palette_value</c>).</summary>
+    public byte StoredNineBitValue => _storedNineBitValue;
+
+    /// <summary>NextReg $03 bit 7: a nine-bit $44 write is half done (<c>nr_palette_sub_idx</c>).</summary>
+    public bool NineBitSecondWritePending => _nineBitSecondWrite;
+
+    /// <summary>NextReg $68 bits 6:5, the blend source of layer orders 6 and 7.</summary>
+    public int BlendSource => (UlaControl >> 5) & 0x03;
+
+    /// <summary>NextReg $68 bit 0: the ULA and tilemap combine by AND where both are opaque.</summary>
+    public bool StencilMode => (UlaControl & 0x01) != 0;
+
     public bool HandlesRegister(byte register) => register is
         0x40 or 0x41 or 0x42 or 0x43 or 0x44 or 0x4A or 0x68;
 
@@ -116,11 +128,6 @@ public sealed class ZxNextPaletteDevice
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort GetUlaInkPaletteColor(byte attribute)
     {
-        if (!UlaOutputEnabled)
-        {
-            return GetFallbackPaletteColor();
-        }
-
         int index = UlaNextEnabled
             ? attribute & UlaNextAttributeMask
             : (attribute & 0x07) | ((attribute & 0x40) != 0 ? 0x08 : 0);
@@ -133,11 +140,6 @@ public sealed class ZxNextPaletteDevice
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort GetUlaPaperPaletteColor(byte attribute)
     {
-        if (!UlaOutputEnabled)
-        {
-            return GetFallbackPaletteColor();
-        }
-
         int index;
         if (!UlaNextEnabled)
         {
@@ -167,11 +169,6 @@ public sealed class ZxNextPaletteDevice
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort GetBorderPaletteColor(byte borderColor)
     {
-        if (!UlaOutputEnabled)
-        {
-            return GetFallbackPaletteColor();
-        }
-
         if (UlaNextEnabled && UlaNextAttributeMask == 0xFF)
         {
             return GetFallbackPaletteColor();

@@ -18,6 +18,15 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
     public const int RomBankSize = 16 * 1024;
     public const int BootRomSize = 8 * 1024;
     public const int SystemSramBytes = 256 * 1024;
+
+    /// <summary>
+    /// The address bits a physical SRAM address keeps on this board.
+    /// </summary>
+    /// <remarks>
+    /// The zxnDDMA's physical mode sends 22 bits. The issue 4 board has 2 MB of SRAM and
+    /// no address line 21, so bit 21 is dropped and the upper 2 MB wrap onto the lower.
+    /// </remarks>
+    public const int PhysicalSramAddressMask = 0x1F_FFFF;
     public const int AlternateRomFirstRawBank = 6;
     public const int GuestRamFirstRawBank = 16;
     public const int DivMmcRomRawPage = 8;
@@ -35,6 +44,11 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
     private readonly byte[] _mmuPages = new byte[MmuSlotCount];
     private readonly byte[] _systemSram = new byte[SystemSramBytes];
+
+    // Pages 10, 11 (bank 5) and 14 are block RAM inside the FPGA when reached through the
+    // MMU, which is what PhysicalMemory holds for them. The SRAM at their physical
+    // addresses is a separate store that only a physical address reaches.
+    private readonly byte[] _sramBehindVideoBram = new byte[3 * ZxNextPhysicalMemory.PageSize];
     private readonly byte[] _bootRom = new byte[BootRomSize];
     private readonly byte[][] _displayPageShadows =
     [
@@ -51,6 +65,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
     private ZxNextContentionController? _contention;
     private ZxNextFloatingBus? _floatingBus;
     private ZxNextClockCoordinator? _clock;
+    private ZxNextNmiController? _nmi;
 
     public ZxNextMemoryBus(
         ZxNextPhysicalMemory physicalMemory,
@@ -78,26 +93,101 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
     public bool AlternateRomEnabled => (AlternateRomRegister & 0x80) != 0;
     public bool AlternateRomWriteOnly => (AlternateRomRegister & 0x40) != 0;
 
+    /// <summary>
+    /// NextReg $03 bits 2:0, the machine type, which decides which ROMs the ROM slot can show
+    /// (zxnext.vhd's <c>machine_type_48/128/p3</c>): 0 and 1 are a 48K, 2 and 4 (the
+    /// Pentagon) a 128K, and anything else a +3.
+    /// </summary>
+    public byte MachineType { get; private set; } = 3;
+
+    private bool IsMachineType48 => MachineType <= 1;
+    private bool IsMachineType128 => MachineType is 2 or 4;
+
+    /// <summary>NextReg $8C bits 5:4, which lock the ROM selection.</summary>
+    private int RomLocks => (AlternateRomRegister >> 4) & 0x03;
+
+    /// <summary>
+    /// The 16 KiB ROM the ROM slot shows (zxnext.vhd's <c>sram_rom</c>). A 48K has only ROM 0;
+    /// a 128K takes <c>$7FFD</c> bit 4, or NextReg $8C bit 5 when locked; a +3 takes
+    /// <c>$1FFD</c> bit 2 as well, or both lock bits.
+    /// </summary>
     public int EffectiveRomBank
     {
         get
         {
-            int locks = (AlternateRomRegister >> 4) & 0x03;
+            int locks = RomLocks;
+            if (IsMachineType48)
+            {
+                return 0;
+            }
+
+            if (IsMachineType128)
+            {
+                return locks != 0 ? locks >> 1 : CurrentRomBank & 0x01;
+            }
+
             return locks != 0 ? locks : CurrentRomBank;
         }
     }
 
-    public int EffectiveAlternateRomBank =>
-        ((AlternateRomRegister & 0x30) != 0)
-            ? (AlternateRomRegister >> 5) & 0x01
-            : CurrentRomBank & 0x01;
+    /// <summary>
+    /// Which alternate ROM shows when it is enabled (<c>sram_alt_128_n</c>): 0, the 128K one,
+    /// or 1, the 48K one. A 48K shows the 48K one unless the locks are exactly 01.
+    /// </summary>
+    public int EffectiveAlternateRomBank
+    {
+        get
+        {
+            int locks = RomLocks;
+            if (IsMachineType48)
+            {
+                return locks == 0x01 ? 0 : 1;
+            }
+
+            return locks != 0 ? locks >> 1 : CurrentRomBank & 0x01;
+        }
+    }
+
+    /// <summary>
+    /// Whether the selected ROM is the 48K BASIC ROM (<c>sram_rom3</c>), which qualifies
+    /// DivMMC's ROM 3 entry points: always on a 48K, ROM 1 on a 128K, ROM 3 on a +3.
+    /// </summary>
+    private bool SelectedRomIs48kBasic
+    {
+        get
+        {
+            if (IsMachineType48)
+            {
+                return true;
+            }
+
+            if (IsMachineType128)
+            {
+                int locks = RomLocks;
+                return locks != 0 ? (locks & 0x02) != 0 : (CurrentRomBank & 0x01) != 0;
+            }
+
+            return EffectiveRomBank == 3;
+        }
+    }
+
+    /// <summary>Set by the register file whenever NextReg $03's machine type changes.</summary>
+    internal void SetMachineType(byte type) => MachineType = (byte)(type & 0x07);
+
+    /// <summary>
+    /// The first MMU page with <c>mmu_A21_A13</c> bit 8 set. In slots 0 and 1 any such page
+    /// shows the ROM (or the configuration SRAM), not just $FF; elsewhere it reaches nothing.
+    /// </summary>
+    public const byte FirstRomPage = 0xE0;
+
+    private static bool ShowsRom(int slot, byte page) => slot < 2 && page >= FirstRomPage;
 
     public byte Read(ushort address)
     {
         // Classifying the access is pure paging state, so only a read that can take
         // wait states has to publish the batched CPU time first. Publishing on every
         // read pinned the video advance to one machine cycle at a time.
-        bool contended = IsCpuAccessContended(address, write: false);
+        bool contended = IsCpuAccessContended(address);
         if (contended && MayIncurContentionDelay)
         {
             SynchronizeCpuTiming();
@@ -118,7 +208,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
     public void WriteCpu(ushort address, byte value)
     {
-        bool contended = IsCpuAccessContended(address, write: true);
+        bool contended = IsCpuAccessContended(address);
         byte displayPage = 0;
         int displayOffset = 0;
         bool displayWrite = _clock != null
@@ -153,6 +243,11 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
     public byte FetchOpcode(ushort address)
     {
+        if (address == 0x0066)
+        {
+            _nmi?.OnVectorFetch();
+        }
+
         _multiface.BeforeOpcodeFetch(address);
         // Multiface is above DivMMC in the FPGA's low-memory decode. Its
         // active window drives sram_pre_override to zero, so opcode addresses
@@ -163,7 +258,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
         _divMmc.BeforeOpcodeFetch(address, automapActive, rom3Active);
         // As in Read: the Multiface and DivMMC decodes are paging-only, so the batched
         // CPU time only has to be published for a fetch that can take wait states.
-        bool contended = IsCpuAccessContended(address, write: false);
+        bool contended = IsCpuAccessContended(address);
         if (contended && MayIncurContentionDelay)
         {
             SynchronizeCpuTiming();
@@ -215,7 +310,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
             return true;
         }
 
-        if (slot >= 2 || mappedPage != RomPageSentinel)
+        if (!ShowsRom(slot, mappedPage))
         {
             return false;
         }
@@ -242,7 +337,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
                 isRom: true,
                 isOpenBus: false,
                 isReadOnly: !CanWriteDirect(address),
-                isContended: false,
+                isContended: IsCpuAccessContended(address),
                 bankIndex: -1,
                 offset: address & (BootRomSize - 1),
                 romBank: BootRomDebuggerBank,
@@ -259,7 +354,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
                 isRom: multifaceIsRom,
                 isOpenBus: false,
                 isReadOnly: multifaceIsRom,
-                isContended: false,
+                isContended: IsCpuAccessContended(address),
                 bankIndex: multifaceIsRom ? -1 : 0,
                 offset: address & (ZxNextPhysicalMemory.PageSize - 1),
                 romBank: multifaceIsRom ? MultifaceRomDebuggerBank : -1,
@@ -277,7 +372,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
                 isRom: divMmcIsRom,
                 isOpenBus: false,
                 isReadOnly: _divMmc.IsMappedPageReadOnly(address),
-                isContended: false,
+                isContended: IsCpuAccessContended(address),
                 bankIndex: divMmcIsRom ? -1 : DivMmcRamFirstRawPage + ramBank,
                 offset: address & (ZxNextPhysicalMemory.PageSize - 1),
                 romBank: divMmcIsRom ? DivMmcRomDebuggerBank : -1,
@@ -294,7 +389,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
                 isRom: false,
                 isOpenBus: !installed,
                 isReadOnly: !CanWriteDirect(address),
-                isContended: installed && _contention?.IsPhysicalPageContended((byte)layer2Page) == true,
+                isContended: IsCpuAccessContended(address),
                 bankIndex: installed ? layer2Page : -1,
                 offset: layer2Offset,
                 romBank: -1,
@@ -302,7 +397,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
         }
 
         bool isRam = PhysicalMemory.IsPageInstalled(mappedPage);
-        bool isSentinel = slot < 2 && mappedPage == RomPageSentinel;
+        bool isSentinel = ShowsRom(slot, mappedPage);
         if (isSentinel && ConfigurationMode)
         {
             bool installed = IsRawSramBankInstalled(ConfigurationBank);
@@ -313,7 +408,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
                 isRom: false,
                 isOpenBus: !installed,
                 isReadOnly: !installed,
-                isContended: false,
+                isContended: IsCpuAccessContended(address),
                 bankIndex: installed ? ConfigurationBank : -1,
                 offset: address & (RomBankSize - 1),
                 romBank: -1,
@@ -332,7 +427,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
             isRom,
             isOpenBus: !isRam && !isRom,
             isReadOnly: !CanWriteDirect(address),
-            isContended: isRam && _contention?.IsPhysicalPageContended(mappedPage) == true,
+            isContended: IsCpuAccessContended(address),
             bankIndex: isRam ? mappedPage : -1,
             offset,
             romBank: isRom ? debuggerRomBank : -1,
@@ -358,6 +453,12 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
     internal void ConfigureFloatingBus(ZxNextFloatingBus floatingBus)
     {
         _floatingBus = floatingBus ?? throw new ArgumentNullException(nameof(floatingBus));
+    }
+
+    /// <summary>The NMI arbitration, which moves on when an opcode is fetched from $0066.</summary>
+    internal void ConfigureNmi(ZxNextNmiController nmi)
+    {
+        _nmi = nmi ?? throw new ArgumentNullException(nameof(nmi));
     }
 
     public bool IsContendedPage(int pageIndex)
@@ -422,6 +523,64 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
     }
 
     public byte[] CopyPhysicalRamPage(int page) => PhysicalMemory.CopyPage(page);
+
+    /// <summary>Reads SRAM by physical address, as the zxnDDMA's physical mode does.</summary>
+    /// <remarks>
+    /// The MMU is bypassed. <c>$000000-$03FFFF</c> is the system SRAM (ROMs, DivMMC,
+    /// Multiface, alternate ROM); from <c>$040000</c> 8K page n is at
+    /// <c>$040000 + n x $2000</c>, except that pages 10, 11 and 14 reach the SRAM behind the
+    /// video block RAM, never the block RAM the display shows.
+    /// </remarks>
+    public byte ReadPhysicalSram(int address)
+    {
+        address &= PhysicalSramAddressMask;
+        if (address < SystemSramBytes)
+        {
+            return _systemSram[address];
+        }
+
+        int page = (address - SystemSramBytes) / ZxNextPhysicalMemory.PageSize;
+        int offset = address & (ZxNextPhysicalMemory.PageSize - 1);
+        if (TryGetSramBehindVideoBram(page, out int behindOffset))
+        {
+            return _sramBehindVideoBram[behindOffset + offset];
+        }
+
+        return PhysicalMemory.IsPageInstalled(page) ? PhysicalMemory.Read(page, offset) : (byte)0xFF;
+    }
+
+    /// <summary>Writes SRAM by physical address; see <see cref="ReadPhysicalSram"/>.</summary>
+    public void WritePhysicalSram(int address, byte value)
+    {
+        address &= PhysicalSramAddressMask;
+        if (address < SystemSramBytes)
+        {
+            _systemSram[address] = value;
+            return;
+        }
+
+        int page = (address - SystemSramBytes) / ZxNextPhysicalMemory.PageSize;
+        int offset = address & (ZxNextPhysicalMemory.PageSize - 1);
+        if (TryGetSramBehindVideoBram(page, out int behindOffset))
+        {
+            _sramBehindVideoBram[behindOffset + offset] = value;
+            return;
+        }
+
+        WritePhysicalRam(page, offset, value);
+    }
+
+    private static bool TryGetSramBehindVideoBram(int page, out int offset)
+    {
+        offset = page switch
+        {
+            10 => 0,
+            11 => ZxNextPhysicalMemory.PageSize,
+            14 => 2 * ZxNextPhysicalMemory.PageSize,
+            _ => -1
+        };
+        return offset >= 0;
+    }
 
     public void SelectRomBank(int bank)
     {
@@ -506,7 +665,11 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
     public void SetConfigurationMode(bool enabled) => ConfigurationMode = enabled;
 
-    public void SetConfigurationBank(byte bank) => ConfigurationBank = bank;
+    /// <remarks>
+    /// NextReg $04 keeps seven bits on boards up to issue 4 (<c>gen_romram_234</c>), so bit 7
+    /// aliases; only the issue 5 board keeps eight.
+    /// </remarks>
+    public void SetConfigurationBank(byte bank) => ConfigurationBank = (byte)(bank & 0x7F);
 
     public void SetAlternateRomRegister(byte value) => AlternateRomRegister = value;
 
@@ -555,7 +718,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
         int slot = address >> 13;
         byte mappedPage = _mmuPages[slot];
-        if (slot < 2 && mappedPage == RomPageSentinel)
+        if (ShowsRom(slot, mappedPage))
         {
             int offset = address & (RomBankSize - 1);
             if (ConfigurationMode)
@@ -574,39 +737,22 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
     /// <summary>
     /// Classifies a CPU access once for both the synthetic ULA wait and the +3
-    /// floating-bus latch. Each used to re-run this decode independently.
+    /// floating-bus latch.
     /// </summary>
-    private bool IsCpuAccessContended(ushort address, bool write)
-    {
-        ZxNextContentionController? contention = _contention;
-        if (contention == null
-            || (address < 0x4000 && (_multiface.IsMapped || _divMmc.IsMapped)))
-        {
-            return false;
-        }
+    /// <remarks>
+    /// zxnext.vhd's <c>mem_contend</c> looks at the slot's MMU page alone
+    /// (<c>mem_active_page</c>): the boot ROM, the Multiface, DivMMC and a Layer 2 mapping
+    /// over it change what is read or written, not whether the access is contended. So a
+    /// Layer 2 write mapping over a contended bank still waits.
+    /// </remarks>
+    private bool IsCpuAccessContended(ushort address) =>
+        _contention?.IsPhysicalPageContended(_mmuPages[address >> 13]) == true;
 
-        if (!write && address < 0x4000 && BootRomEnabled)
-        {
-            return false;
-        }
-
-        byte physicalPage;
-        if (_layer2.TryResolveMappedAddress(address, write, out int layer2Page, out _))
-        {
-            if (!PhysicalMemory.IsPageInstalled(layer2Page))
-            {
-                return false;
-            }
-
-            physicalPage = (byte)layer2Page;
-        }
-        else
-        {
-            physicalPage = _mmuPages[address >> 13];
-        }
-
-        return contention.IsPhysicalPageContended(physicalPage);
-    }
+    /// <summary>
+    /// Whether the address on the bus is contended, for the cycles with no memory access:
+    /// internal cycles and the high byte of an I/O cycle. By its 8 KiB slot.
+    /// </summary>
+    public bool IsContendedAddress(ushort address) => IsCpuAccessContended(address);
 
     /// <summary>
     /// True when a contended access might be delayed. The synthetic legacy-ULA wait
@@ -619,7 +765,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
     /// video-timed edge writes, and every I/O access publishes before sampling it.
     /// </summary>
     private bool MayIncurContentionDelay =>
-        _clock?.CpuSpeed == ZxNextCpuSpeed.Mhz3_5;
+        _clock?.CpuOnContendedClock == true;
 
     /// <summary>Applies the wait states owed by an already-classified contended access.</summary>
     private bool ApplyContentionDelay()
@@ -728,7 +874,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
         int slot = address >> 13;
         byte mappedPage = _mmuPages[slot];
-        if (slot < 2 && mappedPage == RomPageSentinel)
+        if (ShowsRom(slot, mappedPage))
         {
             if (!ConfigurationMode || ConfigurationBank < GuestRamFirstRawBank)
             {
@@ -803,7 +949,7 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
 
         int slot = address >> 13;
         byte mappedPage = _mmuPages[slot];
-        if (slot < 2 && mappedPage == RomPageSentinel)
+        if (ShowsRom(slot, mappedPage))
         {
             int offset = address & (RomBankSize - 1);
             if (ConfigurationMode)
@@ -864,14 +1010,20 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
         }
 
         int slot = address >> 13;
-        if (_mmuPages[slot] != RomPageSentinel || ConfigurationMode)
+        if (!ShowsRom(slot, _mmuPages[slot]) || ConfigurationMode)
+        {
+            return false;
+        }
+
+        // sram_divmmc_automap_rom3_en: not under a Layer 2 read mapping.
+        if (_layer2.TryResolveMappedAddress(address, write: false, out _, out _))
         {
             return false;
         }
 
         return AlternateRomEnabled && !AlternateRomWriteOnly
             ? EffectiveAlternateRomBank == 1
-            : EffectiveRomBank == 3;
+            : SelectedRomIs48kBasic;
     }
 
     private readonly record struct PendingDisplayWrite(
@@ -924,7 +1076,10 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
             AlternateRomRegister,
             [.. shadowedPages],
             [.. shadows],
-            pending);
+            pending)
+        {
+            SramBehindVideoBram = _sramBehindVideoBram.ToArray()
+        };
     }
 
     /// <summary>Puts the mapping, system SRAM and in-flight display writes back.</summary>
@@ -933,6 +1088,15 @@ public sealed class ZxNextMemoryBus : IZ80MemoryBus, IZ80DebuggerMemory, IConten
         ArgumentNullException.ThrowIfNull(state);
 
         state.SystemSram.CopyTo(_systemSram, 0);
+        if (state.SramBehindVideoBram is { } sramBehindVideoBram)
+        {
+            sramBehindVideoBram.CopyTo(_sramBehindVideoBram, 0);
+        }
+        else
+        {
+            Array.Clear(_sramBehindVideoBram);
+        }
+
         state.MmuPages.CopyTo(_mmuPages, 0);
         CurrentRomBank = state.CurrentRomBank;
         BootRomEnabled = state.BootRomEnabled;

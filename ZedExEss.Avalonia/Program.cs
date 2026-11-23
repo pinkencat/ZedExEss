@@ -72,7 +72,7 @@ internal static class Program
                 return 1;
             }
 
-            // Ten channels with a four-sample ring, so the block writer, the wrap and
+            // The Next's channels with a four-sample ring, so the block writer, the wrap and
             // the silence guarantee for an unwritten channel are all exercised.
             var scope = new Spectrum.Audio.AudioScopeCapture(
                 Spectrum.Audio.AudioScopeLayout.ZxNext.ChannelCount, capacity: 4);

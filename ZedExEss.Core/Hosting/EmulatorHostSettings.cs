@@ -39,5 +39,11 @@ public sealed record EmulatorHostSettings
     public Zx8xRamConfiguration Zx8xRamConfiguration { get; init; } = Zx8xRamConfiguration.Expansion16K;
     public Zx8xHighResolutionMode Zx8xHighResolutionMode { get; init; } = Zx8xHighResolutionMode.Sinclair;
     public string? ZxNextSystemDirectory { get; init; }
+
+    /// <summary>
+    /// Let a click on the picture capture the host pointer as the Next's Kempston mouse.
+    /// Off by default, because a capture that arrives unasked takes the pointer away.
+    /// </summary>
+    public bool ZxNextKempstonMouseEnabled { get; init; }
     public string? ZxNextBootRomPath { get; init; }
 }

@@ -14,6 +14,8 @@ namespace ZedExEss.Spectrum.Audio
     /// waveOut thread owns native headers and drains that ring when callbacks return
     /// completed buffers. Keeping native callbacks free of emulation work avoids
     /// callback re-entry and long audio stalls during UI activity.
+    /// The device opens with the source's channel count; a stereo source's interleaved
+    /// frames pass through unchanged, and the buffer sizes are in frames.
     /// </remarks>
     public sealed class WaveOutAudioPlayer : IDisposable
     {
@@ -48,15 +50,23 @@ namespace ZedExEss.Spectrum.Audio
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bufferCount);
 
             _source = source ?? throw new ArgumentNullException(nameof(source));
+            int channels = source.Channels;
+            if (channels is not (1 or 2))
+            {
+                throw new ArgumentException("The audio source must be mono or stereo.", nameof(source));
+            }
+
+            // Every buffer holds whole frames, so the ring never splits a stereo pair.
+            int bufferValues = checked(bufferSamples * channels);
             _callback = OnWaveOutCallback;
-            _buffers = CreateBuffers(bufferSamples, bufferCount);
-            _producerBuffer = new short[bufferSamples];
-            _ringBuffer = new short[bufferSamples];
+            _buffers = CreateBuffers(bufferValues, bufferCount);
+            _producerBuffer = new short[bufferValues];
+            _ringBuffer = new short[bufferValues];
 
             var format = new WaveFormatEx
             {
                 wFormatTag = 1,
-                nChannels = 1,
+                nChannels = (short)channels,
                 nSamplesPerSec = sampleRate,
                 wBitsPerSample = 16
             };

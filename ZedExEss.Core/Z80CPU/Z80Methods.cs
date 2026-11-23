@@ -424,7 +424,7 @@ namespace ZedExEss.Z80CPU
                 return;
             }
 
-            if (!_noMreqContendedPages!.IsContendedPage(address >> 14))
+            if (!_noMreqContendedPages!.IsContendedAddress(address))
             {
                 ConsumeCycles(cycles);
                 return;
@@ -432,6 +432,9 @@ namespace ZedExEss.Z80CPU
 
             for (int i = 0; i < cycles; i++)
             {
+                // The wait depends on where the beam is, so batched instruction time has to
+                // reach the machine first (a no-op where nothing batches).
+                FlushBatchedInstructionTstates();
                 int delay = _noMreqContentionProfile!.GetNoMreqDelay(Cyc);
                 if (delay > 0)
                 {
@@ -788,6 +791,17 @@ namespace ZedExEss.Z80CPU
         private Action? _boundaryObserver;
         private bool _hasBoundaryObserver;
 
+        /// <summary>
+        /// Called as the CPU takes a maskable interrupt, before the acknowledge.
+        /// </summary>
+        /// <remarks>
+        /// Used while recording: replay offers each interrupt once, at a frame boundary, so
+        /// every interrupt taken needs a boundary of its own. The one a frame edge brings is
+        /// closed at the boundary before it; this catches the rest, such as a handler entered
+        /// again because it returned while INT was still held.
+        /// </remarks>
+        public Action? InterruptAcceptObserver { get; set; }
+
 
         /// <summary>Performs the M1 refresh increment: only R bits 0-6 participate.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1109,7 +1123,8 @@ namespace ZedExEss.Z80CPU
                 case 0x37:
                     {
                         byte oldFlags = F;
-                        byte undocumented = (byte)(((_lastQ ^ oldFlags) | A) & (YFMask | XFMask));
+                        byte qTerm = UsesT80nRules ? (byte)0 : (byte)(_lastQ ^ oldFlags);
+                        byte undocumented = (byte)((qTerm | A) & (YFMask | XFMask));
                         F = (byte)((oldFlags & (SFMask | ZFMask | PFMask)) | undocumented | CFMask);
                     }
                     break; // scf
@@ -1117,7 +1132,8 @@ namespace ZedExEss.Z80CPU
                 case 0x3F:
                     {
                         byte oldFlags = F;
-                        byte undocumented = (byte)(((_lastQ ^ oldFlags) | A) & (YFMask | XFMask));
+                        byte qTerm = UsesT80nRules ? (byte)0 : (byte)(_lastQ ^ oldFlags);
+                        byte undocumented = (byte)((qTerm | A) & (YFMask | XFMask));
                         F = (byte)((oldFlags & (SFMask | ZFMask | PFMask)) |
                                    undocumented |
                                    ((oldFlags & CFMask) != 0 ? HFMask : CFMask));
@@ -1464,7 +1480,8 @@ namespace ZedExEss.Z80CPU
                         // BIT (HL) exposes flags 5/3 from the existing WZ high byte. It does not
                         // load WZ with HL first; doing so destroys the previous instruction's
                         // MEMPTR value and makes diagnostic sequences unable to observe it.
-                        byte high = (byte)(MemPtr >> 8);
+                        // The T80N's BIT clears them for an opcode ending 110 (t80n_alu.vhd).
+                        byte high = UsesT80nRules ? (byte)0 : (byte)(MemPtr >> 8);
                         F = (byte)((F & ~(YFMask | XFMask)) | (high & (YFMask | XFMask)));
 
                         InternalCycle(GetHL(), 1);
@@ -1552,7 +1569,9 @@ namespace ZedExEss.Z80CPU
                 case 1:
                     {
                         result = CBBit(val, y_);
-                        byte high = (byte)(addr >> 8);
+                        // The T80N takes them from the byte read, or clears them for the
+                        // documented encoding ending 110 (t80n_alu.vhd's BIT).
+                        byte high = !UsesT80nRules ? (byte)(addr >> 8) : z_ == 6 ? (byte)0 : val;
                         F = (byte)((F & ~(YFMask | XFMask)) | (high & (YFMask | XFMask)));
                     }
                     break; // bit y,(iz+d)
@@ -1642,12 +1661,12 @@ namespace ZedExEss.Z80CPU
 
                 case 0x57:
                     A = I;
-                    F = (byte)((F & CFMask) | (A & (SFMask | YFMask | XFMask)) | (A == 0 ? ZFMask : 0) | (IFF2 ? PFMask : 0));
+                    F = LoadInterruptRegisterFlags(A);
                     break; // ld a,i
 
                 case 0x5F:
                     A = R;
-                    F = (byte)((F & CFMask) | (A & (SFMask | YFMask | XFMask)) | (A == 0 ? ZFMask : 0) | (IFF2 ? PFMask : 0));
+                    F = LoadInterruptRegisterFlags(A);
                     break; // ld a,r
 
                 case 0x45:
@@ -1657,11 +1676,15 @@ namespace ZedExEss.Z80CPU
                 case 0x6D:
                 case 0x75:
                 case 0x7D:
+                    OnRetnDecoded(opcode);
                     IFF1 = IFF2;
                     if (TryTakeStacklessNmiReturn(out ushort nmiReturnAddress))
                     {
-                        SP += 2;
-                        InternalCycle(6);
+                        // The T80 still runs RETN's two stack reads; zxnext.vhd puts $C2/$C3 on
+                        // the data bus in place of what they read (z80_retn_address). So they
+                        // take the stack's contention, and a DMA released by the RETN can take
+                        // the bus between them, as it does after an ordinary RETN.
+                        _ = PopWord();
                         PC = nmiReturnAddress;
                         MemPtr = PC;
                     }
@@ -1673,6 +1696,10 @@ namespace ZedExEss.Z80CPU
                     OnRetnExecuted();
                     break; // retn
                 case 0x4D:
+                    // RETI restores IFF1 from IFF2 exactly as RETN does; only the
+                    // peripherals' RETI decode tells the two apart.
+                    OnRetiDecoded();
+                    IFF1 = IFF2;
                     Ret();
                     break; // reti
 
@@ -1971,14 +1998,17 @@ namespace ZedExEss.Z80CPU
                 case 0x66:
                 case 0x6E:
                     InterruptMode = 0;
+                    OnInterruptModeChanged();
                     break; // im 0
                 case 0x56:
                 case 0x76:
                     InterruptMode = 1;
+                    OnInterruptModeChanged();
                     break; // im 1
                 case 0x5E:
                 case 0x7E:
                     InterruptMode = 2;
+                    OnInterruptModeChanged();
                     break; // im 2
 
                 case 0x67:
@@ -2884,29 +2914,7 @@ namespace ZedExEss.Z80CPU
             byte result = (byte)diff;
             bool h = ((A ^ val ^ result) & 0x10) != 0;
 
-            byte temp = (byte)(result - (h ? 1 : 0));
-            byte flags = (byte)(carryFlag | NFMask | (result & SFMask) | (temp & XFMask));
-            if (result == 0)
-            {
-                flags |= ZFMask;
-            }
-
-            if (h)
-            {
-                flags |= HFMask;
-            }
-
-            if (bc != 0)
-            {
-                flags |= PFMask;
-            }
-
-            if ((temp & 0x02) != 0)
-            {
-                flags |= YFMask;
-            }
-
-            F = flags;
+            F = CompareBlockFlags(carryFlag, val, result, h, bc);
             MemPtr = unchecked((ushort)(MemPtr + 1));
         }
 
@@ -2926,30 +2934,49 @@ namespace ZedExEss.Z80CPU
             byte result = (byte)diff;
             bool h = ((A ^ val ^ result) & 0x10) != 0;
 
-            byte temp = (byte)(result - (h ? 1 : 0));
-            byte flags = (byte)(carryFlag | NFMask | (result & SFMask) | (temp & XFMask));
+            F = CompareBlockFlags(carryFlag, val, result, h, bc);
+            MemPtr = unchecked((ushort)(MemPtr - 1));
+        }
+
+        /// <summary>CPI/CPD's flags.</summary>
+        /// <remarks>
+        /// A Zilog Z80 takes bits 3 and 1 of A - value - H as flag bits 3 and 5; the T80N's CP
+        /// takes bits 3 and 5 of the byte compared (t80n_alu.vhd).
+        /// </remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private byte CompareBlockFlags(byte carryFlag, byte value, byte result, bool halfBorrow, ushort remaining)
+        {
+            byte flags = (byte)(carryFlag | NFMask | (result & SFMask));
+            if (UsesT80nRules)
+            {
+                flags |= (byte)(value & (YFMask | XFMask));
+            }
+            else
+            {
+                byte temp = (byte)(result - (halfBorrow ? 1 : 0));
+                flags |= (byte)(temp & XFMask);
+                if ((temp & 0x02) != 0)
+                {
+                    flags |= YFMask;
+                }
+            }
+
             if (result == 0)
             {
                 flags |= ZFMask;
             }
 
-            if (h)
+            if (halfBorrow)
             {
                 flags |= HFMask;
             }
 
-            if (bc != 0)
+            if (remaining != 0)
             {
                 flags |= PFMask;
             }
 
-            if ((temp & 0x02) != 0)
-            {
-                flags |= YFMask;
-            }
-
-            F = flags;
-            MemPtr = unchecked((ushort)(MemPtr - 1));
+            return flags;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2965,7 +2992,69 @@ namespace ZedExEss.Z80CPU
             ushort port = GetBC();
             MemPtr = (ushort)(port + 1);
             r = ReadPortByte(port);
-            F = (byte)((F & CFMask) | SzpxyFlagsTable[r]);
+            F = UsesT80nRules
+                ? (byte)((F & (CFMask | YFMask | XFMask)) | (SzpxyFlagsTable[r] & ~(YFMask | XFMask)))
+                : (byte)((F & CFMask) | SzpxyFlagsTable[r]);
+        }
+
+        /// <summary>LD A,I and LD A,R: S, Z, P/V = IFF2, H = N = 0, C kept.</summary>
+        /// <remarks>A Zilog Z80 copies bits 5/3 of the value; the T80N keeps them.</remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private byte LoadInterruptRegisterFlags(byte value)
+        {
+            byte kept = UsesT80nRules ? (byte)(CFMask | YFMask | XFMask) : CFMask;
+            byte copied = UsesT80nRules ? SFMask : (byte)(SFMask | YFMask | XFMask);
+            return (byte)((F & kept) | (value & copied) | (value == 0 ? ZFMask : 0) | (IFF2 ? PFMask : 0));
+        }
+
+        /// <summary>
+        /// The T80N's INI, IND, OUTI and OUTD flags: those of its ALU's SUB B,1
+        /// (t80n_mcode.vhd's block I/O, first M-cycle).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetT80nDecrementBFlags(byte originalB)
+        {
+            byte result = (byte)(originalB - 1);
+            byte flags = (byte)((result & (SFMask | YFMask | XFMask)) | NFMask);
+            if (result == 0)
+            {
+                flags |= ZFMask;
+            }
+
+            if ((originalB & 0x0F) == 0)
+            {
+                flags |= HFMask;
+            }
+
+            if (originalB == 0x80)
+            {
+                flags |= PFMask;
+            }
+
+            if (originalB == 0)
+            {
+                flags |= CFMask;
+            }
+
+            F = flags;
+        }
+
+        /// <summary>
+        /// A read cycle whose data is not used: three T-states and their contention, with no
+        /// watchpoint, as the T80N's microcode runs at the end of NEXTREG and PUSH nn.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected void IdleReadCycle(ushort address)
+        {
+            byte value = _memory.Read(address);
+            if (_hasBusObserver)
+            {
+                _busObserver!.OnContend(address, 3);
+                _busObserver.OnRead(address, value);
+            }
+
+            ConsumeCycles(3);
+            NotifyMachineCycleCompleted();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2977,10 +3066,17 @@ namespace ZedExEss.Z80CPU
             byte val = ReadPortByte(bc);
             WriteByte(hl, val);
             MemPtr = (ushort)(bc + 1);
-            byte b = (byte)(B - 1);
+            byte originalB = B;
+            byte b = (byte)(originalB - 1);
             B = b;
             hl += 1;
             SetHL(hl);
+
+            if (UsesT80nRules)
+            {
+                SetT80nDecrementBFlags(originalB);
+                return val;
+            }
 
             byte sum8 = (byte)(val + C + 1);
             bool carry = sum8 < val;
@@ -2997,10 +3093,17 @@ namespace ZedExEss.Z80CPU
             byte val = ReadPortByte(bc);
             WriteByte(hl, val);
             MemPtr = (ushort)(bc - 1);
-            byte b = (byte)(B - 1);
+            byte originalB = B;
+            byte b = (byte)(originalB - 1);
             B = b;
             hl -= 1;
             SetHL(hl);
+
+            if (UsesT80nRules)
+            {
+                SetT80nDecrementBFlags(originalB);
+                return val;
+            }
 
             byte sum8 = (byte)(val + C - 1);
             bool carry = sum8 < val;
@@ -3014,12 +3117,18 @@ namespace ZedExEss.Z80CPU
             ushort hl = GetHL();
             InternalCycle(1);
             byte val = ReadByte(hl);
-            byte b = (byte)(B - 1);
+            byte originalB = B;
+            byte b = (byte)(originalB - 1);
             B = b;
             MemPtr = (ushort)(GetBC() + 1);
             WritePortByte(GetBC(), val);
             hl += 1;
             SetHL(hl);
+            if (UsesT80nRules)
+            {
+                SetT80nDecrementBFlags(originalB);
+                return val;
+            }
 
             byte l = (byte)(hl & 0xFF);
             byte sum8 = (byte)(val + l);
@@ -3034,12 +3143,18 @@ namespace ZedExEss.Z80CPU
             ushort hl = GetHL();
             InternalCycle(1);
             byte val = ReadByte(hl);
-            byte b = (byte)(B - 1);
+            byte originalB = B;
+            byte b = (byte)(originalB - 1);
             B = b;
             MemPtr = (ushort)(GetBC() - 1);
             WritePortByte(GetBC(), val);
             hl -= 1;
             SetHL(hl);
+            if (UsesT80nRules)
+            {
+                SetT80nDecrementBFlags(originalB);
+                return val;
+            }
 
             byte l = (byte)(hl & 0xFF);
             byte sum8 = (byte)(val + l);
@@ -3061,6 +3176,12 @@ namespace ZedExEss.Z80CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void SetBlockRepeatFlags()
         {
+            if (UsesT80nRules)
+            {
+                // The T80N's repeat M-cycle changes no flag.
+                return;
+            }
+
             F = (byte)((F & ~(YFMask | XFMask)) | ((PC >> 8) & (YFMask | XFMask)));
         }
 
@@ -3073,6 +3194,12 @@ namespace ZedExEss.Z80CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SetBlockIoRepeatFlags(byte value, byte addressLow)
         {
+            if (UsesT80nRules)
+            {
+                // The T80N's repeat M-cycle changes no flag.
+                return;
+            }
+
             int total = value + addressLow;
             byte sum8 = (byte)total;
             byte b = B;
@@ -3213,16 +3340,14 @@ namespace ZedExEss.Z80CPU
         }
         internal void ProcessInterrupts()
         {
-            // EI exposes interrupts only after one further instruction has completed.
-            if (IffDelay > 0)
-            {
-                IffDelay -= 1;
-                return;
-            }
-
+            // EI holds off the maskable interrupt alone: the T80's NMI_s has no SetEI term, and
+            // a Zilog Z80 takes an NMI at the end of any instruction. So the NMI is looked at
+            // first, and an NMI taken right after EI ends the EI's delay (IFF1 is then clear,
+            // and RETN brings back the IFF2 that EI set).
             if (NmiPending)
             {
                 NmiPending = false;
+                IffDelay = 0;
                 if (Halted)
                 {
                     // HALT parks the counter on its own opcode, so stepping past
@@ -3252,9 +3377,25 @@ namespace ZedExEss.Z80CPU
                 return;
             }
 
+            // EI exposes interrupts only after one further instruction has completed.
+            if (IffDelay > 0)
+            {
+                IffDelay -= 1;
+                return;
+            }
+
             if (IntPending && IFF1)
             {
-                IntPending = false;
+                // Before anything moves, so a recorder sees the fetch count this interrupt
+                // ends a frame at.
+                InterruptAcceptObserver?.Invoke();
+
+                // A level-triggered INT stays requested for as long as its source holds it.
+                if (!MaskableInterruptFollowsLine)
+                {
+                    IntPending = false;
+                }
+
                 if (Halted)
                 {
                     // HALT parks the counter on its own opcode, so stepping past
@@ -3272,11 +3413,14 @@ namespace ZedExEss.Z80CPU
                 // is not one.
                 M1Fetches--;
 
+                // The byte on the bus is the interrupting device's, read at the acknowledge.
+                byte busData = OnMaskableInterruptAcknowledge(IntData);
+
                 switch (InterruptMode)
                 {
                     case 0:
                         ConsumeCycles(4);
-                        ExecOpcode(IntData);
+                        ExecOpcode(busData);
                         break;
 
                     case 1:
@@ -3289,7 +3433,7 @@ namespace ZedExEss.Z80CPU
                     case 2:
                         BeginInstruction(19, 0);
                         InternalCycle(7);
-                        Call(ReadWord((ushort)((I << 8) | IntData)));
+                        Call(ReadWord((ushort)((I << 8) | busData)));
                         EndInstruction();
                         break;
 
@@ -3472,6 +3616,40 @@ namespace ZedExEss.Z80CPU
         /// overriding. Null while nothing is watching, which is the usual case.
         /// </remarks>
         public Action? RetnObserver { get; set; }
+
+        /// <summary>
+        /// Called when a RETN (any of its ED-prefixed aliases) has been fetched, before it
+        /// reads the stack.
+        /// </summary>
+        /// <remarks>
+        /// For hardware that watches the opcode fetches, as the ZX Spectrum Next's RETN decoder
+        /// does: it releases the devices paged over the bottom of memory at the fetch of ED 45,
+        /// so the return address is popped from whatever is underneath them.
+        /// </remarks>
+        protected virtual void OnRetnDecoded(byte opcode)
+        {
+        }
+
+        /// <summary>
+        /// The byte on the data bus during a maskable interrupt acknowledge, which IM 0 executes
+        /// and IM 2 uses as the vector's low byte.
+        /// </summary>
+        /// <remarks>
+        /// A Spectrum's bus holds what the device put there when it raised INT. The ZX
+        /// Spectrum Next's hardware IM2 chooses the device at the acknowledge itself.
+        /// </remarks>
+        protected virtual byte OnMaskableInterruptAcknowledge(byte busData) => busData;
+
+        /// <summary>Called when an IM instruction has set the interrupt mode.</summary>
+        protected virtual void OnInterruptModeChanged()
+        {
+        }
+
+        /// <summary>Called when a RETI (ED 4D) has been fetched, before it reads the stack.</summary>
+        /// <remarks>For daisy-chained peripherals, which end an interrupt's service on it.</remarks>
+        protected virtual void OnRetiDecoded()
+        {
+        }
 
         /// <summary>Notifies machine-specific paging hardware after RETN.</summary>
         protected virtual void OnRetnExecuted()

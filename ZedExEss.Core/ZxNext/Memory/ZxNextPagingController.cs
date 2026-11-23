@@ -10,7 +10,7 @@ public sealed class ZxNextPagingController
     [
         [0, 1, 2, 3],
         [4, 5, 6, 7],
-        [5, 5, 6, 3],
+        [4, 5, 6, 3],
         [4, 7, 6, 3]
     ];
 
@@ -29,6 +29,10 @@ public sealed class ZxNextPagingController
 
     public bool PagingLocked => (Port7Ffd & 0x20) != 0;
     public bool IsAllRamMode => (Port1Ffd & 0x01) != 0;
+    /// <remarks>
+    /// <c>$DFFD</c> stores bits 4:0 and 6, as zxnext.vhd does: bits 3:0 extend the bank, bit 4
+    /// and bit 6 serve the Profi mapping mode, and the Multiface +3 reads them all back.
+    /// </remarks>
     public int SelectedRamBank => ((PortDFfd & 0x0F) << 3) | (Port7Ffd & 0x07);
     public int SelectedRomBank => ((Port1Ffd & 0x04) >> 1) | ((Port7Ffd & 0x10) >> 4);
 
@@ -52,7 +56,7 @@ public sealed class ZxNextPagingController
         }
 
         bool wasAllRam = IsAllRamMode;
-        PortDFfd = (byte)(value & 0x0F);
+        PortDFfd = (byte)(value & 0x5F);
         ApplyMapping(wasAllRam, updateTopBank: true);
     }
 
@@ -100,7 +104,9 @@ public sealed class ZxNextPagingController
         if (updateTopBank)
         {
             Port7Ffd = (byte)((Port7Ffd & ~0x07) | ((value >> 4) & 0x07));
-            PortDFfd = (byte)((value >> 7) & 0x01);
+
+            // Bits 3:0 only: bits 4 and 6 belong to the Profi mode and are kept.
+            PortDFfd = (byte)((PortDFfd & 0x50) | ((value >> 7) & 0x01));
         }
 
         Port1Ffd = (byte)(((value & 0x02) << 1) | ((value & 0x01) << 1) | ((value & 0x04) >> 2));
@@ -124,6 +130,9 @@ public sealed class ZxNextPagingController
 
     private void ApplyMapping(bool wasAllRam, bool updateTopBank)
     {
+        // port_1ffd_rom follows the ports in every mode, so a ROM chosen while all-RAM mode
+        // is on is the ROM a later MMU write of $FF shows.
+        _memory.SelectRomBank(SelectedRomBank);
         if (IsAllRamMode)
         {
             byte[] banks = AllRamBanks[(Port1Ffd >> 1) & 0x03];
@@ -137,7 +146,6 @@ public sealed class ZxNextPagingController
             return;
         }
 
-        _memory.SelectRomBank(SelectedRomBank);
         if ((PortEff7 & 0x08) != 0)
         {
             _memory.SetMmuPage(0, 0);

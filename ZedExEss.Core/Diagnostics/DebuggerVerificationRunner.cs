@@ -52,6 +52,7 @@ namespace ZedExEss.Diagnostics
 
                 log.Check("Disassemble representative Z80 opcodes", VerifyDisassembler);
                 log.Check("Assemble representative Z80 snippets", VerifyAssembler);
+                log.Check("Assembler loads the interrupt and refresh registers", VerifyAssemblerInterruptRegisters);
                 log.Check("Assembler bitwise and shift expressions", VerifyAssemblerExpressions);
                 log.Check("Assembler storage and text directives", VerifyAssemblerDirectives);
                 log.Check("Assembler local label scoping", VerifyAssemblerLocalLabels);
@@ -147,6 +148,53 @@ namespace ZedExEss.Diagnostics
                 "A character literal did not combine with a mask.");
             RequireBytes(assembler.Assemble(TestAddress, "LD A,2 + 3 * 4"), [0x3E, 0x0E],
                 "Arithmetic precedence regressed.");
+        }
+
+        /// <summary>
+        /// <c>LD I,A</c>, <c>LD R,A</c>, <c>LD A,I</c> and <c>LD A,R</c> in the ordinary and the
+        /// Z80N assembler, and back through the matching disassembler.
+        /// </summary>
+        /// <remarks>
+        /// Every IM 2 setup starts with <c>LD I,A</c>; without it, test programs had to spell the
+        /// instruction as <c>DB $ED,$47</c>. Symbol names are not reserved, so the register has
+        /// to win over a symbol that happens to be called I or R; otherwise <c>LD A,R</c>
+        /// silently assembles as <c>LD A,n</c>, which is the same length and so moves no label
+        /// that might give it away.
+        /// </remarks>
+        private static void VerifyAssemblerInterruptRegisters()
+        {
+            (string Text, byte Opcode)[] forms =
+            [
+                ("LD I,A", 0x47), ("LD R,A", 0x4F), ("LD A,I", 0x57), ("LD A,R", 0x5F)
+            ];
+
+            foreach (bool z80n in new[] { false, true })
+            {
+                var assembler = new Z80InlineAssembler(enableZ80N: z80n);
+                var disassembler = new Z80Disassembler(enableZ80N: z80n);
+                string flavour = z80n ? "Z80N" : "Z80";
+                SpectrumMemory memory = CreateMemory();
+                foreach ((string text, byte opcode) in forms)
+                {
+                    byte[] expected = [0xED, opcode];
+                    RequireBytes(assembler.Assemble(TestAddress, text), expected,
+                        $"The {flavour} assembler did not encode {text} as ED {opcode:X2}.");
+                    string lower = text.ToLowerInvariant();
+                    RequireBytes(assembler.Assemble(TestAddress, lower), expected,
+                        $"The {flavour} assembler did not accept {lower}.");
+
+                    Write(memory, TestAddress, expected);
+                    Z80DisassembledInstruction decoded = disassembler.Disassemble(memory, TestAddress);
+                    Require(decoded.Text == text && decoded.Length == 2,
+                        $"The {flavour} disassembler printed ED {opcode:X2} as '{decoded.Text}', not {text}.");
+                    RequireBytes(assembler.Assemble(TestAddress, decoded.Text), expected,
+                        $"{text} did not round-trip through the {flavour} disassembler.");
+                }
+
+                RequireBytes(assembler.Assemble(TestAddress, "I EQU 6\nR EQU 5\nLD A,I\nLD A,R"),
+                    [0xED, 0x57, 0xED, 0x5F],
+                    $"The {flavour} assembler let a symbol called I or R stand in for the register.");
+            }
         }
 
         /// <summary>Reserving space, laying down text, and padding to a boundary.</summary>

@@ -1,4 +1,5 @@
-using ZedExEss.Spectrum.Audio;
+﻿using ZedExEss.Spectrum.Audio;
+using ZedExEss.ZxNext.Audio;
 using ZedExEss.ZxNext.Input;
 
 namespace ZedExEss.ZxNext.Core;
@@ -46,7 +47,46 @@ public sealed record ZxNextDmaState(
     ushort DestinationAddress,
     ushort Counter,
     int CurrentTransferLength,
-    int LastTransferLength);
+    int LastTransferLength)
+{
+    /// <summary>The WR4/WR5 modes and the zxnDDMA, kept since snapshot format 1 shipped.</summary>
+    public ZxNextDmaExtendedState Extended { get; init; }
+}
+
+/// <summary>
+/// DMA state added after snapshot format 1: the WR4 transfer mode, the WR5 bits, the
+/// zxnDDMA (core 3.03) registers and row position, and a prescaler wait in progress.
+/// </summary>
+/// <remarks>
+/// A file without it loads as all zero: byte transfer mode (which acts as continuous), no
+/// auto restart and a zxnDDMA that was never programmed, which is what such a file's
+/// machine could have been running.
+/// </remarks>
+public readonly record struct ZxNextDmaExtendedState(
+    byte TransferMode,
+    bool AutoRestart,
+    bool CeWait,
+    byte DimensionalFlags,
+    byte PortAExtended,
+    byte PortBExtended,
+    ushort RowLength,
+    ushort RowCount,
+    ushort PortAStride,
+    ushort PortBStride,
+    byte TransparentValue,
+    byte FillValue,
+    byte Layer2XLow,
+    byte Layer2XHigh,
+    byte SourceHigh,
+    byte DestinationHigh,
+    int SourceRowStart,
+    int DestinationRowStart,
+    ushort RowPosition,
+    ushort RowIndex,
+    int WaitClocks,
+    ulong ResumeTick,
+    bool BusGranted,
+    ulong RequestTick);
 
 /// <summary>Who owns the shared bus, and the tallies the diagnostics read.</summary>
 /// <remarks>
@@ -134,7 +174,30 @@ public sealed record ZxNextAudioState(
     ulong UlaLevelRunTicks,
     long UlaLevelSum,
     ulong UlaLevelWeight,
-    long SampleRemainder);
+    long SampleRemainder)
+{
+    /// <summary>
+    /// The PSGs' own state, which <see cref="Chips"/> (an AY-style record with only the
+    /// registers meaningful) cannot hold; null in a file from before the PSGs were the core's,
+    /// when the registers are restored and the generators restart.
+    /// </summary>
+    public ZxNextPsgState[]? Psgs { get; init; }
+
+    /// <summary>
+    /// The four DAC channels and their part-accumulated sample; null in a file from before
+    /// the DACs, when they restore to their reset value, $80.
+    /// </summary>
+    public ZxNextDacState? Dac { get; init; }
+}
+
+/// <summary>
+/// soundrive.vhd's four channels (A, B, C, D) and the level sums of the sample being
+/// accumulated, taken with the run up to the capture folded in.
+/// </summary>
+public sealed record ZxNextDacState(
+    byte[] Channels,
+    long LeftLevelSum,
+    long RightLevelSum);
 
 /// <summary>
 /// Which keys and joystick directions are held, and how the connectors are routed.
@@ -180,3 +243,11 @@ public readonly record struct ZxNextFloatingBusState(
     byte UlaFetchValue,
     byte Plus3CpuData,
     bool UlaDriving);
+
+/// <summary>The Kempston mouse's counters and the buttons its last packet latched.</summary>
+/// <remarks>
+/// Guest-readable state: a pointer drawn from these counters jumps if a restore puts them
+/// anywhere else. Movement the host had sent and the guest had not yet read is not part of
+/// it - that belongs to the host, which is still holding the mouse.
+/// </remarks>
+public readonly record struct ZxNextMouseState(byte X, byte Y, byte Wheel, byte LatchedButtons);

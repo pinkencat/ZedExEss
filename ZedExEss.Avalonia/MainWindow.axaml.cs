@@ -93,6 +93,7 @@ public sealed partial class MainWindow : Window
         _settingsStore = CreateSettingsStore();
         ApplyHostSettings(_settingsStore.Load());
         InitializeCommandUi();
+        InitializeKempstonMouse();
         InitializeSizingUi();
         InitializeMediaUi();
         InitializeTooling();
@@ -772,7 +773,7 @@ public sealed partial class MainWindow : Window
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
-        if (TryHandleCommandKey(e))
+        if (TryReleaseKempstonMouseForKey(e, pressed: true) || TryHandleCommandKey(e))
         {
             return;
         }
@@ -863,6 +864,11 @@ public sealed partial class MainWindow : Window
 
     private void OnKeyUp(object? sender, KeyEventArgs e)
     {
+        if (TryReleaseKempstonMouseForKey(e, pressed: false))
+        {
+            return;
+        }
+
         if (e.Key == Key.OemTilde)
         {
             _fastForwardShortcutHeld = false;
@@ -974,6 +980,7 @@ public sealed partial class MainWindow : Window
 
     private void OnDeactivated(object? sender, EventArgs e)
     {
+        EndKempstonMouseCapture();
         ClearPressedKeys();
     }
 

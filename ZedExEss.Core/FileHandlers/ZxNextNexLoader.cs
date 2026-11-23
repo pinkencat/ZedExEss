@@ -259,6 +259,9 @@ public static class ZxNextNexLoader
     private static void ApplyNexLoaderDefaults(ZxNextMachine machine)
     {
         machine.PortBus.WriteNextRegister(0x07, 0x03);
+
+        // .nexload leaves the program running at 28 MHz, in effect by the time it starts.
+        machine.ForceCpuSpeed(ZxNextCpuSpeed.Mhz28);
         machine.PortBus.WriteNextRegister(0x12, 9);
         machine.PortBus.WriteNextRegister(0x13, 12);
         machine.PortBus.WriteNextRegister(0x14, 0xE3);

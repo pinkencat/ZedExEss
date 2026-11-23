@@ -153,8 +153,24 @@ namespace ZedExEss.Spectrum.Core
         /// Set while replaying a recording, where the interrupt is delivered at the fetch
         /// count the recording gives rather than at our own frame edge. Two sources would
         /// mean two interrupts a frame.
+        ///
+        /// For as long as it is set the CPU also consumes each interrupt as it takes it,
+        /// instead of following the line. The recording offers every interrupt once; one
+        /// made with a level INT has a frame of its own for each re-entry inside the pulse,
+        /// and one made with a latched INT never re-enters, so holding the line would add
+        /// entries to either.
         /// </remarks>
-        public bool SuppressFrameInterrupts { get; set; }
+        public bool SuppressFrameInterrupts
+        {
+            get => _suppressFrameInterrupts;
+            set
+            {
+                _suppressFrameInterrupts = value;
+                _cpu.MaskableInterruptIsOneShot = value;
+            }
+        }
+
+        private bool _suppressFrameInterrupts;
 
         /// <summary>
         /// True once the ULA has crossed a frame edge that has not yet been acted on.
@@ -1146,6 +1162,28 @@ namespace ZedExEss.Spectrum.Core
             _intLineRemaining = _renderer.InterruptPulseTstates;
             _hasInterruptDeadline = true;
             _cpu.Z80SetINTLine(true, 0xff);
+        }
+
+        /// <summary>
+        /// True while the frame interrupt's pulse is holding INT, after any start delay.
+        /// </summary>
+        public bool FrameInterruptLineHeld => _intDelayRemaining == 0 && _intLineRemaining > 0;
+
+        /// <summary>
+        /// Offers the frame interrupt again inside the pulse that is already holding INT,
+        /// without starting a new one.
+        /// </summary>
+        /// <remarks>
+        /// For a replayed boundary that is a handler being entered again rather than a new
+        /// frame: the pulse keeps the length it had left, so the beam and the line stay where
+        /// the original run had them.
+        /// </remarks>
+        public void ReofferFrameInterrupt()
+        {
+            if (FrameInterruptLineHeld)
+            {
+                _cpu.Z80SetINTLine(true, 0xff);
+            }
         }
 
 

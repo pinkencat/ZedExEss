@@ -19,6 +19,7 @@ public sealed class ZxNextDivMmcDevice
     public const byte ResetEntryPointsValid0 = 0x01;
     public const byte ResetEntryPointsTiming0 = 0x00;
     public const byte ResetEntryPoints1 = 0xCD;
+    private const ushort NmiVector = 0x0066;
 
     private byte _controlRegister;
     private readonly object _sdLock = new();
@@ -29,7 +30,18 @@ public sealed class ZxNextDivMmcDevice
     public bool Enabled { get; private set; } = true;
     public bool AutomapEnabled { get; private set; }
     public bool AutomapHeld { get; private set; }
+
+    /// <summary>
+    /// divmmc.vhd's <c>button_nmi</c>: a DivMMC NMI that has not yet paged DivMMC in. Cleared
+    /// once automap holds, by a RETN, or by turning automap off.
+    /// </summary>
     public bool NmiActive { get; private set; }
+
+    /// <summary>
+    /// <c>divmmc_nmi_hold</c> (divmmc.vhd's <c>o_disable_nmi</c>): automap held or the NMI
+    /// button latched. Holds a DivMMC NMI active, and keeps a Multiface request from latching.
+    /// </summary>
+    public bool NmiHold => NmiActive || AutomapHeld;
     public bool IsMapped => Enabled && (Conmem || AutomapHeld);
     public bool Conmem => (_controlRegister & 0x80) != 0;
     public bool Mapram => (_controlRegister & 0x40) != 0;
@@ -51,12 +63,17 @@ public sealed class ZxNextDivMmcDevice
 
     public void ResetMapram() => _controlRegister = (byte)(_controlRegister & ~0x40);
 
+    /// <remarks>
+    /// Turning automap off is divmmc.vhd's <c>i_automap_reset</c>: it drops the automap and
+    /// the NMI button latch, an NMI service window included.
+    /// </remarks>
     public void SetAutomapEnabled(bool enabled)
     {
         AutomapEnabled = enabled;
-        if (!enabled && !NmiActive)
+        if (!enabled)
         {
             AutomapHeld = false;
+            NmiActive = false;
         }
     }
 
@@ -133,21 +150,27 @@ public sealed class ZxNextDivMmcDevice
 
     public void WriteEntryPoints1(byte value) => EntryPoints1 = value;
 
-    /// <summary>Maps the DivMMC NMI service window before the CPU acknowledges NMI.</summary>
-    public bool BeginNmi()
+    /// <summary>
+    /// The DivMMC NMI button pulse. It pages nothing itself: the $0066 opcode fetch does,
+    /// through NextReg $BB bit 1 (instant) or bit 0 (delayed).
+    /// </summary>
+    /// <remarks>
+    /// With automap off, or the port disabled, the latch is held clear and the NMI runs
+    /// whatever is at $0066. With automap already held the latch clears at once, and the
+    /// NMI is held by the automap instead.
+    /// </remarks>
+    public void PressButton()
     {
-        if (!Enabled || NmiActive)
+        if (!Enabled || !AutomapEnabled)
         {
-            return false;
+            return;
         }
 
-        NmiActive = true;
-        AutomapHeld = true;
-        return true;
+        NmiActive = !AutomapHeld;
     }
 
     /// <summary>
-    /// Releases the hardware-owned DivMMC mapping after RETN.
+    /// Releases the automap and the NMI button latch on a RETN (ED 45).
     /// </summary>
     /// <remarks>
     /// The FPGA clears the automap hold on every RETN seen while Multiface is
@@ -184,19 +207,20 @@ public sealed class ZxNextDivMmcDevice
         {
             AutomapHeld = true;
         }
+
+        if (NmiActive && address == NmiVector && automapActive && (EntryPoints1 & 0x02) != 0)
+        {
+            AutomapHeld = true;
+        }
     }
 
     /// <summary>Applies delayed entry and exit points after the opcode byte is read.</summary>
     public void AfterOpcodeFetch(ushort address, bool automapActive, bool rom3Active)
     {
-        if (NmiActive)
-        {
-            return;
-        }
-
         if (!Enabled || !AutomapEnabled)
         {
             AutomapHeld = false;
+            NmiActive = false;
             return;
         }
 
@@ -211,6 +235,7 @@ public sealed class ZxNextDivMmcDevice
         }
 
         delayedEntry |= rom3Active && IsFixedDelayedRom3Entry(address);
+        delayedEntry |= NmiActive && address == NmiVector && automapActive && (EntryPoints1 & 0x01) != 0;
         if (delayedEntry)
         {
             AutomapHeld = true;
@@ -221,6 +246,11 @@ public sealed class ZxNextDivMmcDevice
             && automapActive)
         {
             AutomapHeld = false;
+        }
+
+        if (AutomapHeld)
+        {
+            NmiActive = false;
         }
     }
 

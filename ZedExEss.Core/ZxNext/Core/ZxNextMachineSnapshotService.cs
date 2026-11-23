@@ -21,7 +21,7 @@ namespace ZedExEss.ZxNext.Core;
 /// captured from before writing a sector into it, and says so when it will not. The return
 /// value carries those notes to whoever is loading the state.
 ///
-/// What is <b>not</b> covered is the Copper, which does not exist yet (COP-001).
+/// The Copper and the CTC are covered too (chunks COPR and CTCX).
 /// </remarks>
 public static class ZxNextMachineSnapshotService
 {
@@ -55,7 +55,13 @@ public static class ZxNextMachineSnapshotService
             CaptureInput(machine),
             machine.PortBus.CaptureState(),
             machine.FloatingBus.CaptureState(),
-            machine.DivMmc.CaptureMediaState());
+            machine.DivMmc.CaptureMediaState())
+        {
+            Mouse = machine.Mouse.CaptureState(),
+            Interrupts = machine.Registers.Interrupts.CaptureState(),
+            Copper = machine.Registers.Copper.CaptureState(),
+            Ctc = machine.Registers.Ctc.CaptureState()
+        };
     }
 
     public static ZxNextMediaRestoreReport Restore(
@@ -90,13 +96,46 @@ public static class ZxNextMachineSnapshotService
         machine.PortBus.RestoreState(snapshot.PortBus);
         machine.FloatingBus.RestoreState(snapshot.FloatingBus);
         RestoreInput(machine, snapshot.Input);
+        machine.Mouse.RestoreState(snapshot.Mouse);
         machine.Dma.RestoreState(snapshot.Dma);
         machine.BusArbiter.RestoreState(snapshot.BusArbiter);
+        machine.Registers.Interrupts.RestoreState(
+            snapshot.Interrupts ?? new ZxNextInterruptControllerState(0, 0, 0, false, 0, 0, 0, 0, 0, 0));
+
+        // After the interrupts, whose IM2X chunk carries the CTC's enables for an older file.
+        if (snapshot.Ctc is { } ctc)
+        {
+            machine.Registers.Ctc.RestoreState(ctc);
+        }
+        else
+        {
+            byte enables = machine.Registers.Ctc.InterruptEnables;
+            machine.Registers.Ctc.Reset(machine.Clock.MasterTicks);
+            machine.Registers.Ctc.WriteInterruptEnables(enables);
+        }
+
+        // After the ULA timing, whose $64 offset the Copper's record carries.
+        if (snapshot.Copper is { } copper)
+        {
+            machine.Registers.Copper.RestoreState(copper);
+        }
+        else
+        {
+            machine.Registers.Copper.PowerOn();
+            machine.Registers.Copper.Reset(machine.Clock.MasterTicks);
+        }
 
         // The renderer last, so the beam is put back after the layers it composes.
         machine.Video.RestoreState(snapshot.Raster);
         machine.Cpu.RestoreSnapshotState(snapshot.Cpu);
         machine.Cpu.RestoreNmiRoutingState(snapshot.NmiRouting);
+        if (snapshot.Registers.Extended is null)
+        {
+            machine.Registers.Nmi.RestoreLegacy(
+                snapshot.Registers.PendingMultifaceNmi,
+                snapshot.Registers.PendingDivMmcNmi);
+        }
+
         return media;
     }
 

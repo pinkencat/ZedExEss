@@ -24,6 +24,14 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
     private bool _hasBeforeCpuStep;
     private bool _hasAfterCpuStep;
 
+    // Set when a DMA that never lets go was cut at a frame edge inside an instruction:
+    // the rest of that instruction's machine cycles leave the DMA alone.
+    private bool _dmaDeferredToBoundary;
+
+    // Set while the DMA runs from inside an instruction (between two of its machine cycles),
+    // where a reset or an NMI must wait for the instruction to end.
+    private bool _dmaInsideInstruction;
+
     internal ZxNextMachine(
         int sampleRate,
         ZxNextClockCoordinator clock,
@@ -34,6 +42,7 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
         ZxNextMultifaceDevice multiface,
         SpectrumKeyboard keyboard,
         ZxNextJoystickDevice joystick,
+        ZxNextMouseDevice mouse,
         ZxNextAudioDevice audio,
         ZxNextPortBus portBus,
         ZxNextUlaTiming ulaTiming,
@@ -58,6 +67,7 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
         Multiface = multiface ?? throw new ArgumentNullException(nameof(multiface));
         Keyboard = keyboard ?? throw new ArgumentNullException(nameof(keyboard));
         Joystick = joystick ?? throw new ArgumentNullException(nameof(joystick));
+        Mouse = mouse ?? throw new ArgumentNullException(nameof(mouse));
         Audio = audio ?? throw new ArgumentNullException(nameof(audio));
         PortBus = portBus ?? throw new ArgumentNullException(nameof(portBus));
         UlaTiming = ulaTiming ?? throw new ArgumentNullException(nameof(ulaTiming));
@@ -76,6 +86,8 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
         // A speed change revalues every batched T-state, so time is published at the old
         // rate before the change and the deadline is rebuilt on the new one after it.
         Clock.CpuSpeedChanging = Cpu.SynchronizeBatchedInstructionTstates;
+        Registers.Ctc.ZeroCount = (channel, tick) =>
+            Registers.Interrupts.Request((ZxNextInterruptSource)((int)ZxNextInterruptSource.Ctc0 + channel), tick);
         Clock.CpuSpeedChanged = Cpu.ResynchronizeBatchDeadline;
     }
 
@@ -90,6 +102,12 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
     public ZxNextMultifaceDevice Multiface { get; }
     public SpectrumKeyboard Keyboard { get; }
     public ZxNextJoystickDevice Joystick { get; }
+
+    /// <summary>
+    /// The Kempston mouse. Its counters survive soft and hard resets, as on the hardware,
+    /// where only a power-on clears them.
+    /// </summary>
+    public ZxNextMouseDevice Mouse { get; }
     public ZxNextAudioDevice Audio { get; }
     public ZxNextPortBus PortBus { get; }
     public ZxNextUlaTiming UlaTiming { get; }
@@ -157,6 +175,18 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
     /// </remarks>
     public void SynchronizeTime() => Cpu.SynchronizeBatchedInstructionTstates();
 
+    /// <summary>
+    /// Puts the CPU at <paramref name="speed"/> at once, as if it had long been in effect: for
+    /// loaders and diagnostics setting a machine up between runs. A guest's NextReg $07 write
+    /// instead waits for the next idle CPU edge and the clock handover.
+    /// </summary>
+    public void ForceCpuSpeed(ZxNextCpuSpeed speed)
+    {
+        Cpu.SynchronizeBatchedInstructionTstates();
+        Clock.ForceCpuSpeed(speed, UlaTiming.FrameMasterTick);
+        Cpu.ResynchronizeBatchDeadline();
+    }
+
     public void StepInstruction()
     {
         if (IsPaused)
@@ -164,10 +194,19 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
             return;
         }
 
-        if (Dma.BusRequestAsserted)
+        _dmaDeferredToBoundary = false;
+
+        if (DmaGrantDue)
         {
             DrainDmaBusRequest();
             return;
+        }
+
+        // A NextReg $07 write that landed between instructions (the Copper's, a host's) is
+        // latched on the instruction's first edge, which has no bus cycle under way.
+        if (Clock.SpeedLatchPending)
+        {
+            Clock.LatchRequestedSpeed();
         }
 
         if (_hasBeforeCpuStep)
@@ -195,9 +234,15 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
         ulong consumed = 0;
         while (!IsPaused && consumed < (ulong)minimumTstates)
         {
-            if (Dma.BusRequestAsserted)
+            if (DmaGrantDue)
             {
                 DrainDmaBusRequest();
+                if (Dma.HoldsBusIndefinitely)
+                {
+                    // The CPU is locked out for good; no T-state of its will come.
+                    break;
+                }
+
                 continue;
             }
 
@@ -213,13 +258,32 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
         }
     }
 
+    /// <summary>
+    /// Host channels: mono by default; the desktop hosts ask for stereo, the two sides of
+    /// audio_mixer.vhd interleaved.
+    /// </summary>
+    public int Channels => Audio.OutputChannels;
+
+    /// <summary>Whether <see cref="ReadSamples"/> gives interleaved stereo rather than mono.</summary>
+    public bool StereoAudio
+    {
+        get => Audio.OutputChannels == 2;
+        set => Audio.SetOutputChannels(value ? 2 : 1);
+    }
+
     /// <summary>Audio-driven execution on the fixed master timeline.</summary>
+    /// <remarks>In stereo <paramref name="count"/> counts samples, two to a frame, so it must be even.</remarks>
     public int ReadSamples(short[] buffer, int offset, int count)
     {
         ArgumentNullException.ThrowIfNull(buffer);
         if (offset < 0 || count < 0 || offset + count > buffer.Length)
         {
             throw new ArgumentOutOfRangeException(nameof(count));
+        }
+
+        if (count % Channels != 0)
+        {
+            throw new ArgumentException("A stereo read must ask for whole frames.", nameof(count));
         }
 
         if (IsPaused)
@@ -323,12 +387,29 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
 
     void IZ80TstateConsumer.OnMachineCycleCompleted()
     {
-        if (Dma.BusRequestAsserted)
+        // cpu_speed latches on a CPU edge with MREQ, IORQ and M1 high and the DMA off the bus:
+        // the edge that ends a machine cycle. So an OUT to $07 runs its whole I/O cycle at the
+        // old speed, and NEXTREG $07 switches after its fourth M-cycle.
+        if (Clock.SpeedLatchPending)
+        {
+            Clock.LatchRequestedSpeed();
+        }
+
+        // A burst-mode prescaler wait ends by the clock, so the CPU's time has to be
+        // published before asking whether the DMA wants the bus back.
+        if (_dmaDeferredToBoundary)
+        {
+            return;
+        }
+
+        if (Dma.HasPendingBusWork)
         {
             Cpu.SynchronizeBatchedInstructionTstates();
         }
 
+        _dmaInsideInstruction = true;
         DrainDmaBusRequest();
+        _dmaInsideInstruction = false;
     }
 
     /// <summary>
@@ -344,10 +425,32 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
     /// This used to return <c>Cpu.Cyc</c>, which made every instruction boundary a
     /// barrier and accounted for most of the remaining flushes. The division floors, so a
     /// deadline is never later than the event it is protecting.
+    ///
+    /// A running Copper adds the earliest tick one of its writes could land: they change
+    /// NextRegs under the CPU, so batched time must reach them by the instruction boundary.
     /// </remarks>
     ulong IZ80TstateConsumer.GetNextCpuBoundarySyncTstate()
     {
+        // Through a clock handover a T-state is not a fixed number of ticks, so time is
+        // published at the next boundary and the deadline rebuilt on the new clock.
+        if (Clock.ClockHandoverPending)
+        {
+            return Cpu.Cyc;
+        }
+
         ulong nextEventTick = UlaTiming.NextEventTick;
+        ZxNextCopperDevice copper = Registers.Copper;
+        if (copper.IsActive)
+        {
+            nextEventTick = Math.Min(nextEventTick, copper.NextWriteLowerBound());
+        }
+
+        // A CTC channel with its interrupt enabled can change INT at its next zero count.
+        if (Registers.Ctc.InterruptEnables != 0)
+        {
+            nextEventTick = Math.Min(nextEventTick, Registers.Ctc.NextEventEdge);
+        }
+
         ulong publishedTick = Clock.MasterTicks;
         if (nextEventTick <= publishedTick)
         {
@@ -361,9 +464,31 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
 
     private void AdvanceMasterTime(int cpuTstates)
     {
+        if (Clock.ClockHandoverPending && cpuTstates > 0)
+        {
+            CompleteClockHandover(ZxNextBusOwner.Cpu);
+            cpuTstates--;
+        }
+
         ulong masterTicks = checked(
             (ulong)cpuTstates * (ulong)Clock.MasterTicksPerCpuTstate);
         AdvanceMasterTicks(masterTicks, ZxNextBusOwner.Cpu);
+    }
+
+    /// <summary>
+    /// The clock handover after cpu_speed has latched: one T-state still on the old clock, then
+    /// the glitch-free BUFGMUX_1s wait for the new clock's next edge, strictly after.
+    /// </summary>
+    /// <remarks>
+    /// Klive matched this to the simulated core at every phase of 3.5 &lt;-&gt; 28 MHz (its
+    /// fidelity plan's finding F3-5, probe group S). Every clock's edges lie on the 3.5 MHz grid,
+    /// which is phase-locked to hc, so the pause is measured from the frame's start.
+    /// </remarks>
+    private void CompleteClockHandover(ZxNextBusOwner owner)
+    {
+        AdvanceMasterTicks((ulong)Clock.MasterTicksPerCpuTstate, owner);
+        ulong pause = Clock.CompleteClockHandover(UlaTiming.FrameMasterTick);
+        AdvanceMasterTicks(pause, owner);
     }
 
     internal void OnTilemapEnabledStateChanged(bool enabled)
@@ -385,6 +510,19 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
         _instructionTstateBatchingEnabled = enabled;
     }
 
+    /// <remarks>
+    /// The advance stops at two kinds of point on the way:
+    /// <list type="bullet">
+    /// <item>A NextReg $03 timing or $05 50/60 Hz change waits for the frame sync (zxnext.vhd's
+    /// eff_nr_03_machine_timing, eff_nr_05_5060), so the advance stops there to switch.</item>
+    /// <item>Each write of the Copper's lands at its own tick, with every device brought up to
+    /// it first. The Copper runs ahead to its next write against the beam, which is fixed
+    /// until a write or the frame sync changes it, and those are both stops.</item>
+    /// </list>
+    /// A write no device advancing with the timeline reads (NextReg $7F, the Copper's own
+    /// $60-$63) lands without a stop: the CPU and the DMA read registers only at the end of
+    /// a span. Atic Atac Next's delay loop is 245 MOVE $7F,0 a pass, 100,000 a frame.
+    /// </remarks>
     private void AdvanceMasterTicks(ulong masterTicks, ZxNextBusOwner owner)
     {
         if (masterTicks == 0)
@@ -392,10 +530,79 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
             return;
         }
 
-        UlaTiming.SynchronizeProfile();
+        ZxNextCopperDevice copper = Registers.Copper;
+        if (!copper.IsActive && !UlaTiming.ProfileChangePending)
+        {
+            AdvanceTimeline(masterTicks, owner);
+            return;
+        }
+
+        ulong end = Clock.MasterTicks + masterTicks;
+        while (Clock.MasterTicks < end)
+        {
+            ulong spanEnd = end;
+            bool atFrameEdge = false;
+            if (UlaTiming.ProfileChangePending && UlaTiming.NextFrameTick <= spanEnd)
+            {
+                spanEnd = UlaTiming.NextFrameTick;
+                atFrameEdge = true;
+            }
+
+            ulong writeTick = 0;
+            byte register = 0;
+            byte value = 0;
+            bool copperWrites = false;
+            while (copper.IsActive && copper.TryRunToNextWrite(spanEnd, out writeTick, out register, out value))
+            {
+                if (!ZxNextRegisterFile.CopperWriteLandsWithoutDevices(register))
+                {
+                    copperWrites = true;
+                    break;
+                }
+
+                Registers.WriteFromCopper(register, value, writeTick);
+            }
+
+            if (copperWrites && writeTick < spanEnd)
+            {
+                spanEnd = writeTick;
+                atFrameEdge = false;
+            }
+
+            AdvanceTimeline(spanEnd - Clock.MasterTicks, owner);
+            if (atFrameEdge)
+            {
+                UlaTiming.ApplyPendingProfileAtFrameEdge();
+            }
+
+            if (copperWrites)
+            {
+                Registers.WriteFromCopper(register, value, writeTick);
+
+                // A line interrupt the write moved is rescheduled before time goes on.
+                UlaTiming.Advance();
+            }
+        }
+    }
+
+    private void AdvanceTimeline(ulong masterTicks, ZxNextBusOwner owner)
+    {
+        if (masterTicks == 0)
+        {
+            return;
+        }
+
         Audio.AdvanceMasterTicks(masterTicks);
         int completedFrames = Video.AdvanceMasterTicks(masterTicks);
         Clock.AdvanceMasterTicks(masterTicks);
+
+        // The CTC's zero counts request interrupts at their own edges.
+        ZxNextCtcDevice ctc = Registers.Ctc;
+        if (ctc.NextEventEdge <= Clock.MasterTicks)
+        {
+            ctc.Advance(Clock.MasterTicks);
+        }
+
         if (owner == ZxNextBusOwner.Cpu)
         {
             BusArbiter.RecordCpuMasterTicks(masterTicks);
@@ -415,7 +622,18 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
         }
     }
 
+    /// <summary>
+    /// True when the DMA holds the bus, or its request is old enough for the CPU to grant it
+    /// at the end of the machine cycle that has just finished.
+    /// </summary>
+    private bool DmaGrantDue => Dma.BusRequestAsserted
+        && (Dma.BusGranted || Clock.MasterTicks >= Dma.GrantEligibleTick);
+
     /// <summary>Advances one granted DMA source or destination bus cycle.</summary>
+    /// <remarks>
+    /// Grants the bus whenever the DMA asks; the machine's own callers wait for the
+    /// request to become due first (<see cref="DmaGrantDue"/>).
+    /// </remarks>
     internal bool StepBusArbitration()
     {
         if (!BusArbiter.TryGrantDma(Cpu.Cyc))
@@ -424,26 +642,58 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
             return false;
         }
 
+        Dma.OnBusGranted();
+
+        // The DMA is clocked by the CPU clock, which hands over whoever has the bus.
+        if (Clock.ClockHandoverPending)
+        {
+            CompleteClockHandover(ZxNextBusOwner.Dma);
+        }
+
         int cpuClockCycles = Dma.CpuClockCyclesUntilBusEvent;
         ulong masterTicks = checked(
             (ulong)cpuClockCycles * (ulong)Clock.MasterTicksPerCpuTstate);
         AdvanceMasterTicks(masterTicks, ZxNextBusOwner.Dma);
         Dma.CompleteGrantedBusCycle();
-        ApplyPendingRequests();
-        if (!Dma.BusRequestAsserted)
+
+        // The bus goes back before anything can make the CPU run: an NMI raised during the
+        // DMA's cycles (by the Copper, or a button) is serviced once the DMA lets go.
+        if (!Dma.BusRequestAsserted || !Dma.BusGranted)
         {
             BusArbiter.ReleaseDma();
+        }
+
+        // Between instructions a reset or an NMI is taken here. Inside one, the CPU finishes
+        // the instruction first and StepInstruction applies them after it.
+        if (!_dmaInsideInstruction)
+        {
+            ApplyPendingRequests();
         }
 
         return true;
     }
 
+    /// <remarks>
+    /// A transfer that never gives the bus back (auto restart without burst pacing) is run
+    /// one frame at a time, so the frame loop and the host keep going while the CPU stays
+    /// locked out. Should that happen inside an instruction, the bus is handed back for the
+    /// rest of it, and no more of its cycles drain the DMA until the instruction ends: the
+    /// one place the CPU gets time the hardware would not give it.
+    /// </remarks>
     private void DrainDmaBusRequest()
     {
-        while (!IsPaused && Dma.BusRequestAsserted)
+        ulong frame = UlaTiming.FrameNumber;
+        while (!IsPaused && DmaGrantDue)
         {
             if (!StepBusArbitration())
             {
+                break;
+            }
+
+            if (UlaTiming.FrameNumber != frame && Dma.HoldsBusIndefinitely)
+            {
+                BusArbiter.ReleaseDma();
+                _dmaDeferredToBoundary = true;
                 break;
             }
         }
@@ -457,19 +707,13 @@ public sealed class ZxNextMachine : IEmulatedMachine, IAudioSource, IZ80TstateCo
             return;
         }
 
-        if (Dma.BusRequestAsserted || DivMmc.NmiActive || Multiface.NmiActive)
+        // A latched NMI reaches the CPU at the end of the instruction it is in, or once the
+        // DMA gives the bus back; the FPGA holds /NMI low until $0066 is fetched.
+        ZxNextNmiController nmi = Registers.Nmi;
+        nmi.Settle();
+        if (nmi.AwaitingCpu && !Dma.BusRequestAsserted)
         {
-            return;
-        }
-
-        if (Registers.TryTakeMultifaceNmiRequest() && Multiface.BeginNmi())
-        {
-            Cpu.RequestNmi(ZxNextNmiSource.Multiface);
-            Cpu.ServicePendingInterruptsAtBoundary();
-        }
-        else if (Registers.TryTakeDivMmcNmiRequest())
-        {
-            Cpu.RequestNmi(ZxNextNmiSource.DivMmc);
+            Cpu.RequestNmi(nmi.SignalCpu());
             Cpu.ServicePendingInterruptsAtBoundary();
         }
     }

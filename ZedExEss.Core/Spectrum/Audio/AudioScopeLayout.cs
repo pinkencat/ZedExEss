@@ -27,6 +27,8 @@ namespace ZedExEss.Spectrum.Audio
         private const string CovoxColor = "#E08A3C";
         private static readonly string[] GeneralSoundColors =
             ["#9BE04A", "#7ABF39", "#5C9E2C", "#3F7D1F"];
+        private static readonly string[] NextDacColors =
+            ["#E08A3C", "#C0702E", "#3CB8E0", "#2E92B3"];
 
         // One hue per PSG channel, darkening by chip so a TurboSound title still reads
         // as three A/B/C triples rather than nine unrelated traces.
@@ -81,8 +83,14 @@ namespace ZedExEss.Spectrum.Audio
             Create(chipCount: 1, includeCovox: true, includeGeneralSound: true)
         ];
 
-        /// <summary>Beeper plus three TurboSound AY chips.</summary>
-        public static AudioScopeLayout ZxNext { get; } = Create(chipCount: 3);
+        /// <summary>Beeper, three TurboSound AY chips and the four DACs.</summary>
+        public static AudioScopeLayout ZxNext { get; } = Create(chipCount: 3, includeNextDacs: true);
+
+        /// <summary>The Next's first DAC channel, after the beeper and the nine PSG channels.</summary>
+        private const int FirstNextDacChannelIndex = 1 + (3 * 3);
+
+        /// <summary>Returns the capture index of one of the Next's DACs, A to D (0 to 3).</summary>
+        public static int GetNextDacChannelIndex(int channel) => FirstNextDacChannelIndex + channel;
 
         /// <summary>The capture index of the beeper, which is always channel zero.</summary>
         public const int BeeperChannelIndex = 0;
@@ -93,7 +101,8 @@ namespace ZedExEss.Spectrum.Audio
         private static AudioScopeLayout Create(
             int chipCount,
             bool includeCovox = false,
-            bool includeGeneralSound = false)
+            bool includeGeneralSound = false,
+            bool includeNextDacs = false)
         {
             var groups = new List<AudioScopeGroup>(chipCount + 1)
             {
@@ -148,6 +157,21 @@ namespace ZedExEss.Spectrum.Audio
                 // Four sample channels is a lot of height for a card that is silent
                 // until something drives it, so the group starts collapsed.
                 groups.Add(new AudioScopeGroup("General Sound", channels, ExpandedByDefault: false));
+            }
+
+            if (includeNextDacs)
+            {
+                // A and B are the left side, C and D the right.
+                var channels = new List<AudioScopeChannel>(4);
+                for (int channel = 0; channel < 4; channel++)
+                {
+                    channels.Add(new AudioScopeChannel(
+                        next++,
+                        $"DAC {(char)('A' + channel)}",
+                        NextDacColors[channel]));
+                }
+
+                groups.Add(new AudioScopeGroup("DACs", channels, ExpandedByDefault: false));
             }
 
             return new AudioScopeLayout(next, groups, covoxIndex, firstGeneralSound);

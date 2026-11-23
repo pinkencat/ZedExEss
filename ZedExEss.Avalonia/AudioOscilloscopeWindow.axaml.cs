@@ -11,7 +11,7 @@ namespace ZedExEss.AvaloniaHost;
 /// <summary>Live beeper and independent PSG channel waveforms over the optional capture sink.</summary>
 /// <remarks>
 /// The trace set is built from the attached source's <see cref="AudioScopeLayout"/>,
-/// which is how a Next contributes ten channels where a Spectrum contributes four.
+/// which is how a Next contributes fourteen channels where a Spectrum contributes four.
 /// </remarks>
 internal sealed partial class AudioOscilloscopeWindow : Window
 {

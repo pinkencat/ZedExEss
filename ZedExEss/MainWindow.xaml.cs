@@ -196,6 +196,7 @@ namespace ZedExEss
             PreviewKeyDown += OnPreviewKeyDown;
             PreviewKeyUp += OnPreviewKeyUp;
             Deactivated += OnWindowDeactivated;
+            InitializeKempstonMouse();
             Loaded += (_, _) => Focus();
             _debugger.BreakHit += OnDebuggerBreakHit;
             _debugger.HooksChanged += OnDebuggerHooksChanged;
@@ -303,6 +304,7 @@ namespace ZedExEss
                 : Zx8xHighResolutionMode.Sinclair;
             _zxNextSystemDirectory = settings.ZxNextSystemDirectory;
             _zxNextBootRomPath = settings.ZxNextBootRomPath;
+            _kempstonMouseEnabled = settings.ZxNextKempstonMouseEnabled;
         }
         private void SaveHostSettings()
         {
@@ -327,7 +329,8 @@ namespace ZedExEss
                 Zx8xRamConfiguration = _zx8xRamConfiguration,
                 Zx8xHighResolutionMode = _zx8xHighResolutionMode,
                 ZxNextSystemDirectory = _zxNextSystemDirectory,
-                ZxNextBootRomPath = _zxNextBootRomPath
+                ZxNextBootRomPath = _zxNextBootRomPath,
+                ZxNextKempstonMouseEnabled = _kempstonMouseEnabled
             };
 
             try
@@ -4406,6 +4409,7 @@ namespace ZedExEss
         }
         private void OnWindowDeactivated(object? sender, EventArgs e)
         {
+            EndKempstonMouseCapture();
             if (_zxNextMachine != null)
             {
                 _zxNextMachine.Joystick.ReleaseAll();
@@ -5319,6 +5323,11 @@ namespace ZedExEss
         private bool HandleKeyEvent(KeyEventArgs e, bool pressed)
         {
             Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+            if (TryReleaseKempstonMouseForKey(key, pressed))
+            {
+                return true;
+            }
+
             if (_zxNextMachine != null)
             {
                 return HandleZxNextKeyEvent(key, pressed);

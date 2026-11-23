@@ -29,6 +29,9 @@ public sealed class ZxNextTilemapDevice
     private const int TimedFetchedFlag = 0x0100;
     private const int TimedValidFlag = 0x0200;
     private const int TimedBelowUlaFlag = 0x0400;
+    private const int TimedTextModeFlag = 0x0800;
+    private ZxNextPaletteDevice? _palettes;
+    private ZxNextLayer2Device? _layer2;
     private readonly ushort[] _timedPixels = new ushort[640];
     private byte _clipIndex;
     private TilemapFetchState _fetchState;
@@ -147,7 +150,7 @@ public sealed class ZxNextTilemapDevice
 
             case 0x6B:
                 bool wasEnabled = Enabled;
-                Control = (byte)(value & 0xFB);
+                Control = value;
                 if (Enabled != wasEnabled)
                 {
                     EnabledStateChanged?.Invoke(Enabled);
@@ -224,8 +227,8 @@ public sealed class ZxNextTilemapDevice
             byte glyphRow = ReadBanked(memory, TileBase, (tileIndex * 8) + pixelY);
             paletteIndex = (byte)((attribute & 0xFE)
                 | ((glyphRow >> (7 - pixelX)) & 0x01));
-            // Text mode deliberately ignores the transparency index.
-            return true;
+            // Text mode ignores the transparency index; the colour is compared with $14.
+            return !IsTransparentTextColour(paletteIndex);
         }
 
         TransformPixel(attribute, ref pixelX, ref pixelY);
@@ -285,7 +288,10 @@ public sealed class ZxNextTilemapDevice
             return false;
         }
 
-        if (hcounter < (ClipX1 << 1)
+        // The below flag is stored with the pixel whether or not the pixel is shown.
+        belowUla = (packed & TimedBelowUlaFlag) != 0;
+        if (!Enabled
+            || hcounter < (ClipX1 << 1)
             || hcounter > ((ClipX2 << 1) | 0x01)
             || logicalY < ClipY1
             || logicalY > ClipY2)
@@ -294,8 +300,8 @@ public sealed class ZxNextTilemapDevice
         }
 
         paletteIndex = (byte)packed;
-        belowUla = (packed & TimedBelowUlaFlag) != 0;
-        opaque = (packed & TimedValidFlag) != 0;
+        opaque = (packed & TimedValidFlag) != 0
+            && ((packed & TimedTextModeFlag) == 0 || !IsTransparentTextColour(paletteIndex));
         return true;
     }
 
@@ -617,18 +623,18 @@ public sealed class ZxNextTilemapDevice
             && ((_fetchedAttribute & 0x01) != 0 || _fetchFiveHundredTwelveTiles);
         if (_fetchEightyColumns)
         {
-            StoreTimedOutput(_fetchGroupStart + _fetchPixel, palette, valid, below);
+            StoreTimedOutput(_fetchGroupStart + _fetchPixel, palette, valid, below, _fetchTextMode);
         }
         else
         {
             int outputX = _fetchGroupStart + (_fetchPixel * 2);
-            StoreTimedOutput(outputX, palette, valid, below);
-            StoreTimedOutput(outputX + 1, palette, valid, below);
+            StoreTimedOutput(outputX, palette, valid, below, _fetchTextMode);
+            StoreTimedOutput(outputX + 1, palette, valid, below, _fetchTextMode);
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void StoreTimedOutput(int outputX, byte palette, bool valid, bool below)
+    private void StoreTimedOutput(int outputX, byte palette, bool valid, bool below, bool textMode)
     {
         if ((uint)outputX >= 640)
         {
@@ -638,8 +644,25 @@ public sealed class ZxNextTilemapDevice
         _timedPixels[outputX] = (ushort)(palette
             | TimedFetchedFlag
             | (valid ? TimedValidFlag : 0)
-            | (below ? TimedBelowUlaFlag : 0));
+            | (below ? TimedBelowUlaFlag : 0)
+            | (textMode ? TimedTextModeFlag : 0));
     }
+
+    /// <summary>
+    /// The palettes and NextReg $14 a text-mode pixel is compared with: zxnext.vhd makes a
+    /// text-mode tilemap pixel transparent when its colour's bits 8:1 equal $14.
+    /// </summary>
+    internal void ConfigureTextModeTransparency(ZxNextPaletteDevice palettes, ZxNextLayer2Device layer2)
+    {
+        _palettes = palettes ?? throw new ArgumentNullException(nameof(palettes));
+        _layer2 = layer2 ?? throw new ArgumentNullException(nameof(layer2));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsTransparentTextColour(byte paletteIndex) =>
+        _palettes != null
+        && (byte)(_palettes.GetTilemapPaletteColor(paletteIndex, SecondPalette) >> 1)
+            == _layer2!.GlobalTransparencyColor;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetFetchSourceX(int pixel)

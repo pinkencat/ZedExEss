@@ -1,4 +1,5 @@
 using ZedExEss.Spectrum.Abstractions;
+using ZedExEss.ZxNext.Ports;
 
 namespace ZedExEss.ZxNext.Core;
 
@@ -26,7 +27,7 @@ public sealed class ZxNextContentionController : IContentionProfile
         _timing = timing ?? throw new ArgumentNullException(nameof(timing));
     }
 
-    public bool Enabled => _clock.CpuSpeed == ZxNextCpuSpeed.Mhz3_5
+    public bool Enabled => _clock.CpuOnContendedClock
         && !_registers.ContentionDisabled
         && !_timing.Profile.IsPentagon;
 
@@ -68,13 +69,15 @@ public sealed class ZxNextContentionController : IContentionProfile
             return true;
         }
 
-        // zxnext.vhd qualifies 7FFD contention with the active 128K/+3 timing
-        // hardware, while the enabled ULA+ aliases use their full 16-bit ports.
-        bool pagingTiming = !_timing.Profile.IsPentagon
-            && (_timing.Profile.MachineTiming & 0x03) is 2 or 3;
-        return (pagingTiming && (port & 0xC003) == 0x4001)
-            || port == 0xBF3B
-            || port == 0xFF3B;
+        // zxnext.vhd's port_contend: $7FFD as decoded (port_7ffd_active, in 128K or +3
+        // timing only) and the ULA+ ports while their enable is set.
+        ZxNextUlaTimingProfile profile = _timing.Profile;
+        bool plus3 = profile.IsPlus3;
+        bool pagingTiming = !profile.IsPentagon && (profile.MachineTiming & 0x03) is 2 or 3;
+        return (pagingTiming
+                && _registers.IsInternalPortEnabled(1)
+                && ZxNextPortBus.IsPort7Ffd(port, plus3, _registers.IsInternalPortEnabled(3)))
+            || ((port == 0xBF3B || port == 0xFF3B) && _registers.IsInternalPortEnabled(24));
     }
 
     /// <summary>Returns the source-derived delay for deterministic timing diagnostics.</summary>
@@ -108,14 +111,20 @@ public sealed class ZxNextContentionController : IContentionProfile
         return CountWaitStates(_clock.MasterTicks);
     }
 
+    /// <remarks>
+    /// 48K/128K contention holds the generated CPU clock high at the start of the machine cycle
+    /// (zxula.vhd's <c>o_cpu_contend</c>). The +3 personality instead drives the T80's WAIT
+    /// (<c>o_cpu_wait_n</c>, while MREQ is low), which it samples at the end of T2: the core
+    /// decides 2 hc (one T-state) after the 48K/128K point. That is measured, not derived: Klive's
+    /// simulated-core probes (its fidelity plan's F3-4, probe group C, 40 of 40) put a contended
+    /// read on bank 7 at the core's maximum wait from T 22,903, and its 48K/128K pattern agrees
+    /// with ours at every point the CPU can sample. This model sampled two T-states after the
+    /// start until 23 November 2026, a T-state early.
+    /// </remarks>
     private ulong GetMemorySampleTick(ulong cycleStartMasterTick)
     {
-        // 48K/128K contention holds the generated CPU clock high at the start of
-        // the machine cycle. The +3 personality instead drives T80 WAIT: MREQ is
-        // asserted after T1 and WAIT is sampled at the end of T2.
         return _timing.Profile.IsPlus3
-            ? checked(cycleStartMasterTick
-                + (2UL * (ulong)_clock.MasterTicksPerCpuTstate))
+            ? checked(cycleStartMasterTick + (ulong)_clock.MasterTicksPerCpuTstate)
             : cycleStartMasterTick;
     }
 

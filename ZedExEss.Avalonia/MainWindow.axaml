@@ -53,6 +53,7 @@
         <MenuItem x:Name="ModelZx81MenuItem" Header="Sinclair ZX8_1" Tag="Zx81" ToggleType="Radio" GroupName="Model" />
         <Separator />
         <MenuItem x:Name="ModelZxNextMenuItem" Header="ZX Spectrum Next (experimental)" ToggleType="Radio" GroupName="Model" />
+        <MenuItem x:Name="ZxNextSystemFilesMenuItem" Header="ZX Next system _files..." />
       </MenuItem>
       <MenuItem Header="_Hardware">
         <MenuItem Header="_Joystick">
@@ -62,6 +63,7 @@
           <MenuItem x:Name="JoystickSinclair2MenuItem" Header="Sinclair _2" ToggleType="Radio" GroupName="Joystick" />
           <MenuItem x:Name="JoystickCursorMenuItem" Header="_Cursor/Protek" ToggleType="Radio" GroupName="Joystick" />
         </MenuItem>
+        <MenuItem x:Name="KempstonMouseMenuItem" Header="Kempston _mouse (ZX Next)" ToggleType="CheckBox" InputGesture="F11" />
         <Separator />
         <MenuItem Header="+3 drive _A">
           <MenuItem x:Name="MenuPlus3AInsert" Header="_Insert..." />

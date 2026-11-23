@@ -26,7 +26,14 @@ public sealed record ZxNextMemoryBusState(
     byte AlternateRomRegister,
     int[] ShadowedPages,
     byte[][] DisplayShadows,
-    ZxNextPendingDisplayWriteState[] PendingDisplayWrites);
+    ZxNextPendingDisplayWriteState[] PendingDisplayWrites)
+{
+    /// <summary>
+    /// The 24K of SRAM behind banks 5 and 7's block RAM, which only physical-mode DMA
+    /// reaches; null from a file written before it was kept, meaning all zero.
+    /// </summary>
+    public byte[]? SramBehindVideoBram { get; init; }
+}
 
 /// <summary>The legacy paging ports, which still drive the Next's mapping.</summary>
 public readonly record struct ZxNextPagingState(
@@ -77,7 +84,48 @@ public sealed record ZxNextRegisterFileState(
     byte LoresScrollY,
     byte LoresControl,
     ZxNextResetKind LastResetKind,
-    ZxNextResetKind? PendingReset);
+    ZxNextResetKind? PendingReset)
+{
+    /// <summary>
+    /// What was added after version 1 of the state format; null in a file from before it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PendingDivMmcNmi"/> and <see cref="PendingMultifaceNmi"/> are still written,
+    /// as "latched and not yet given to the CPU", but the NMI is restored from here.
+    /// </remarks>
+    public ZxNextRegisterFileExtendedState? Extended { get; init; }
+}
+
+/// <summary>
+/// NextReg state added after version 1 of the state format.
+/// </summary>
+/// <param name="ResetType">NextReg $02's three-bit reset-type shift register.</param>
+/// <param name="NmiSource">The NMI latch: which device the active NMI belongs to.</param>
+/// <param name="NmiPhase">Where that NMI is: waiting for the CPU, for $0066, or held.</param>
+/// <param name="JoystickIoMode">NextReg $0B.</param>
+/// <param name="BusPortDecoding">NextRegs $86-$89, $89 in the top byte.</param>
+/// <param name="I2sControl">NextReg $A2 as written.</param>
+/// <param name="ContentionDisableBefore">
+/// NextReg $08 bit 6 as in effect before its last write took effect.
+/// </param>
+/// <param name="ContentionDisableAppliesAt">
+/// The master tick at which that write takes effect: the end of the contention window it was
+/// made in.
+/// </param>
+/// <param name="ScandoublerEffective">
+/// NextReg $05 bit 0 as copied at the last frame sync; null in a file from before it, when
+/// the written bit is used.
+/// </param>
+public readonly record struct ZxNextRegisterFileExtendedState(
+    byte ResetType,
+    ZxNextNmiSource NmiSource,
+    ZxNextNmiPhase NmiPhase,
+    byte JoystickIoMode,
+    uint BusPortDecoding,
+    byte I2sControl,
+    bool ContentionDisableBefore = false,
+    ulong ContentionDisableAppliesAt = 0,
+    bool? ScandoublerEffective = null);
 
 /// <summary>
 /// The raster cadence and the interrupt line, including where the beam is.
@@ -137,7 +185,20 @@ public sealed record ZxNextRasterState(
     bool CurrentFetchPhaseProcessed,
     bool CurrentVideoMemoryTickProcessed,
     int[] FrameBuffer,
-    int[] WorkingBuffer);
+    int[] WorkingBuffer)
+{
+    /// <summary>The border colour taken for the current 8-pixel group; default in older files.</summary>
+    public ZxNextBorderLatchState BorderLatch { get; init; }
+}
+
+/// <summary>
+/// The border colour as zxula.vhd loads it with the pixel shift register, once per 8-pixel group.
+/// </summary>
+/// <param name="Group">Which group it was taken for (line and column); 0 for none.</param>
+/// <param name="Index">The $FE border colour then.</param>
+/// <param name="Hires">Whether Timex hi-res was on, which gives the border the ink's bright paper.</param>
+/// <param name="Ink">The port $FF hi-res ink then.</param>
+public readonly record struct ZxNextBorderLatchState(int Group, byte Index, bool Hires, byte Ink);
 
 /// <summary>The eight palettes and the write cursor into them.</summary>
 /// <remarks>

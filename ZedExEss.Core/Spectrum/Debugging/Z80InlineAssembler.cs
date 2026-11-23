@@ -875,6 +875,14 @@ namespace ZedExEss.Spectrum.Debugging
                 return true;
             }
 
+            // Interrupt-vector and refresh registers. Symbol names are not reserved, so these
+            // must come ahead of the immediate forms or a symbol called I or R would turn
+            // LD A,R into LD A,n.
+            if (dst.Equals("I", StringComparison.OrdinalIgnoreCase) && src.Equals("A", StringComparison.OrdinalIgnoreCase)) { EmitEd(output, 0x47); return true; }
+            if (dst.Equals("R", StringComparison.OrdinalIgnoreCase) && src.Equals("A", StringComparison.OrdinalIgnoreCase)) { EmitEd(output, 0x4F); return true; }
+            if (dst.Equals("A", StringComparison.OrdinalIgnoreCase) && src.Equals("I", StringComparison.OrdinalIgnoreCase)) { EmitEd(output, 0x57); return true; }
+            if (dst.Equals("A", StringComparison.OrdinalIgnoreCase) && src.Equals("R", StringComparison.OrdinalIgnoreCase)) { EmitEd(output, 0x5F); return true; }
+
             if (dst.Equals("A", StringComparison.OrdinalIgnoreCase) && src.Equals("(BC)", StringComparison.OrdinalIgnoreCase)) { output.Add(0x0A); return true; }
             if (dst.Equals("A", StringComparison.OrdinalIgnoreCase) && src.Equals("(DE)", StringComparison.OrdinalIgnoreCase)) { output.Add(0x1A); return true; }
             if (dst.Equals("(BC)", StringComparison.OrdinalIgnoreCase) && src.Equals("A", StringComparison.OrdinalIgnoreCase)) { output.Add(0x02); return true; }

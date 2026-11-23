@@ -47,10 +47,14 @@ public readonly record struct ZxNextUlaTimingProfile(
     /// Returns the registered line-interrupt assertion offset for the selected
     /// copper/active line, or null when that line does not exist in this profile.
     /// </summary>
+    /// <remarks>
+    /// With NextReg $64 at 0. A selected line equal to the frame's line count compares with
+    /// the last line, c_max_vc, and so does 0; anything larger never matches.
+    /// </remarks>
     public ulong? GetLineInterruptOffsetMasterTicks(ushort line)
     {
         int selectedLine = line & 0x01FF;
-        if (selectedLine >= LinesPerFrame)
+        if (selectedLine > LinesPerFrame)
         {
             return null;
         }

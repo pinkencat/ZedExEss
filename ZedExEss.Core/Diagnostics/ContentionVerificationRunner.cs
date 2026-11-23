@@ -84,6 +84,7 @@ public static class ContentionVerificationRunner
         Check("Code running from contended memory", () => VerifyContendedCode(machineRom), ref failed);
         Check("Opcode fetch counts match the M1 cycles", () => VerifyFetchCounts(machineRom), ref failed);
         Check("Contention table matches the reference formula", VerifyContentionTable, ref failed);
+        Check("INT is a level for the whole pulse", VerifyIntLevelForWholePulse, ref failed);
 
         writer.WriteLine();
         writer.WriteLine(failed == 0 ? "Result: PASS" : $"Result: FAIL ({failed} failed checks)");
@@ -713,6 +714,98 @@ public static class ContentionVerificationRunner
 
     private static void Write(SpectrumMachine machine, ushort address, byte value) =>
         machine.Memory.WriteDirect(address, value);
+
+    /// <summary>
+    /// The ULA's INT is a level for the whole of its pulse and the Z80 takes it at the end of
+    /// any instruction while it is held, so a handler that enables interrupts and returns
+    /// inside the pulse is entered again.
+    /// </summary>
+    /// <remarks>
+    /// Fuse 1.9.1 does the same: z80_interrupt accepts while tstates is under the model's
+    /// interrupt_length, and every EI retries one instruction later. The pulse is 32 T on the
+    /// 48K and +2A/+3 and 36 T on the 128K, Pentagon and Scorpion. Run by whole frames, as a
+    /// host runs the machine, then by single instructions to see where the second entry falls.
+    /// </remarks>
+    private static string? VerifyIntLevelForWholePulse()
+    {
+        SpectrumModel[] models =
+        [
+            SpectrumModel.Spectrum48K,
+            SpectrumModel.Spectrum128K,
+            SpectrumModel.SpectrumPlus2A,
+            SpectrumModel.SpectrumPlus3,
+            SpectrumModel.Pentagon128,
+            SpectrumModel.Scorpion256
+        ];
+
+        foreach (SpectrumModel model in models)
+        {
+            int pulse = SpectrumTimingModel.ForModel(model).InterruptPulseTstates;
+            (string Name, byte[] Handler, int PerFrame)[] cases =
+            [
+                ("EI; RET", SpectrumInterruptTestMachines.ShortHandler, 2),
+                ("EI then four NOPs", SpectrumInterruptTestMachines.NestedHandler, 2),
+                ("four NOPs then EI; RET", SpectrumInterruptTestMachines.LongHandler, 1),
+                ("NOP; EI; RET NZ (32 T)", SpectrumInterruptTestMachines.PulseLengthHandler, pulse > 32 ? 2 : 1)
+            ];
+
+            foreach ((string name, byte[] handler, int perFrame) in cases)
+            {
+                SpectrumMachine machine = SpectrumInterruptTestMachines.Create(model, handler);
+
+                // Past the reset and the program's own EI.
+                machine.Emulator.RunFrame(presentFrame: false);
+                machine.Emulator.RunFrame(presentFrame: false);
+
+                ulong before = machine.Cpu.InterruptsAccepted;
+                for (int frame = 0; frame < 3; frame++)
+                {
+                    machine.Emulator.RunFrame(presentFrame: false);
+                }
+
+                ulong accepted = machine.Cpu.InterruptsAccepted - before;
+                if (accepted != (ulong)(3 * perFrame))
+                {
+                    return $"{model} ({pulse} T pulse), {name}: {accepted} interrupts taken in three frames, not {3 * perFrame}.";
+                }
+            }
+        }
+
+        // The second entry is taken at the end of the first RET, with the line still held, and
+        // the second RET ends past the pulse and returns to the loop.
+        SpectrumMachine stepped = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        int steps = 0;
+        while (stepped.Cpu.InterruptsAccepted == 0 && steps++ < 200_000)
+        {
+            stepped.Emulator.StepInstruction();
+        }
+
+        if (stepped.Cpu.PC != SpectrumInterruptTestMachines.Handler || !stepped.Cpu.InterruptPending)
+        {
+            return $"Taking the interrupt cleared the request while the pulse still held INT (PC ${stepped.Cpu.PC:X4}).";
+        }
+
+        stepped.Emulator.StepInstruction(); // EI
+        stepped.Emulator.StepInstruction(); // RET
+        if (stepped.Cpu.InterruptsAccepted != 2 || stepped.Cpu.PC != SpectrumInterruptTestMachines.Handler)
+        {
+            return $"EI; RET inside the pulse was not entered again at the RET's end "
+                + $"(PC ${stepped.Cpu.PC:X4}, {stepped.Cpu.InterruptsAccepted} taken).";
+        }
+
+        stepped.Emulator.StepInstruction(); // EI
+        stepped.Emulator.StepInstruction(); // RET
+        if (stepped.Cpu.InterruptsAccepted != 2
+            || stepped.Cpu.PC != SpectrumInterruptTestMachines.LoopReturn
+            || stepped.Cpu.InterruptPending)
+        {
+            return $"The second entry did not return to the loop with the pulse over "
+                + $"(PC ${stepped.Cpu.PC:X4}, {stepped.Cpu.InterruptsAccepted} taken, request {stepped.Cpu.InterruptPending}).";
+        }
+
+        return null;
+    }
 
     private static SpectrumMachine CreateMachine(string machineRom) =>
         SpectrumMachineFactory.Create(new SpectrumMachineOptions

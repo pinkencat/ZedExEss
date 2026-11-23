@@ -49,7 +49,7 @@ public static class ZxNextBenchmarkRunner
     private static readonly byte[] DmaCopy16KCommand =
     [
         0xC3, 0xC7, 0xCB,
-        0x7D, 0x00, 0xC0, 0xFF, 0x3F,
+        0x7D, 0x00, 0xC0, 0x00, 0x40,
         0x54, 0x01,
         0x50, 0x01,
         0xAD, 0x00, 0x00,
@@ -59,7 +59,7 @@ public static class ZxNextBenchmarkRunner
     private static readonly byte[] DmaFill16KCommand =
     [
         0xC3, 0xC7, 0xCB,
-        0x7D, 0x23, 0xC1, 0xFF, 0x3F,
+        0x7D, 0x23, 0xC1, 0x00, 0x40,
         0x64, 0x01,
         0x50, 0x01,
         0xAD, 0x00, 0x00,
@@ -911,7 +911,7 @@ public static class ZxNextBenchmarkRunner
         var startupPcs = new Dictionary<ushort, int>();
         while (startupInstructions < maximumStartupInstructions
             && machine.Cpu.PC != entryPc
-            && !(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90))
+            && !(ZxNextRomLandmarks.IsAtKeyWait(machine)))
         {
             if ((startupInstructions & 0x3FFF) == 0)
             {
@@ -927,7 +927,7 @@ public static class ZxNextBenchmarkRunner
             return;
         }
 
-        if (!(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90)
+        if (!(ZxNextRomLandmarks.IsAtKeyWait(machine))
             || !PressGuestChord(machine, [SpectrumKey.Enter]))
         {
             string commonPcs = string.Join(
@@ -955,7 +955,7 @@ public static class ZxNextBenchmarkRunner
             while (commandInstructions < 3_000_000
                 && machine.Cpu.PC != entryPc
                 && ReadGuestWord(machine, 0x5C45) != 120
-                && !(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90))
+                && !(ZxNextRomLandmarks.IsAtKeyWait(machine)))
             {
                 machine.StepInstruction();
                 commandInstructions++;
@@ -967,8 +967,7 @@ public static class ZxNextBenchmarkRunner
             }
 
             if (ReadGuestWord(machine, 0x5C45) != 120
-                && machine.Cpu.IsHalted
-                && machine.Cpu.PC is 0x0C8F or 0x0C90)
+                && ZxNextRomLandmarks.IsAtKeyWait(machine))
             {
                 _ = PressGuestChord(machine, [SpectrumKey.Enter]);
             }
@@ -978,8 +977,7 @@ public static class ZxNextBenchmarkRunner
         while (welcomeInstructions < maximumStartupInstructions
             && machine.Cpu.PC != entryPc
             && !(ReadGuestWord(machine, 0x5C45) == 120
-                && machine.Cpu.IsHalted
-                && machine.Cpu.PC is 0x0C8F or 0x0C90))
+                && ZxNextRomLandmarks.IsAtKeyWait(machine)))
         {
             machine.StepInstruction();
             welcomeInstructions++;
@@ -991,8 +989,7 @@ public static class ZxNextBenchmarkRunner
         }
 
         if (!(ReadGuestWord(machine, 0x5C45) == 120
-                && machine.Cpu.IsHalted
-                && machine.Cpu.PC is 0x0C8F or 0x0C90)
+                && ZxNextRomLandmarks.IsAtKeyWait(machine))
             || !PressGuestChord(machine, [SpectrumKey.Space]))
         {
             throw new InvalidOperationException(
@@ -1034,8 +1031,7 @@ public static class ZxNextBenchmarkRunner
             {
                 ushort previousPc = machine.Cpu.PC;
                 machine.StepInstruction();
-                accepted = previousPc == 0x0C95
-                    && machine.Cpu.PC == 0x0C97
+                accepted = ZxNextRomLandmarks.LeftKeyWaitWithKey(previousPc, machine.Cpu.PC)
                     && machine.MemoryBus.CurrentRomBank == 0
                     && !machine.DivMmc.IsMapped;
             }

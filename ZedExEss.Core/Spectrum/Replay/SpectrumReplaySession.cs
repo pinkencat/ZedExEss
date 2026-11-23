@@ -47,6 +47,12 @@ namespace ZedExEss.Spectrum.Replay
         private byte[] _previousInputs = [];
         private bool _startPending;
         private bool _frameEdgeSeen;
+
+        /// <summary>
+        /// Set while the last recorded boundary still has its interrupt to come, so the CPU
+        /// taking it does not close another frame.
+        /// </summary>
+        private bool _acceptanceCovered;
         private bool _suspendedEdgeLoading;
         private bool _suspendedSemanticAcceleration;
         private bool _suspendedAutoPlay;
@@ -127,6 +133,7 @@ namespace ZedExEss.Spectrum.Replay
             {
                 _machine.Cpu.PortReadObserver = null;
                 _machine.Cpu.BoundaryObserver = null;
+                _machine.Cpu.InterruptAcceptObserver = null;
                 _machine.Emulator.FrameEdgeObserver = null;
                 _machine.Emulator.SuppressFrameInterrupts = false;
                 _machine.Emulator.PresentOnReplayFramesOnly = false;
@@ -135,6 +142,7 @@ namespace ZedExEss.Spectrum.Replay
             _machine = machine;
             machine.Emulator.FrameEdgeObserver = OnFrameEdge;
             machine.Cpu.BoundaryObserver = OnInstructionBoundary;
+            machine.Cpu.InterruptAcceptObserver = OnInterruptAccepted;
             machine.Cpu.PortReadObserver = OnPortRead;
 
             // A different machine is a different history: neither the rewind states nor a
@@ -156,6 +164,7 @@ namespace ZedExEss.Spectrum.Replay
 
             _machine.Cpu.PortReadObserver = null;
             _machine.Cpu.BoundaryObserver = null;
+            _machine.Cpu.InterruptAcceptObserver = null;
             _machine.Emulator.FrameEdgeObserver = null;
             _machine.Emulator.SuppressFrameInterrupts = false;
                 _machine.Emulator.PresentOnReplayFramesOnly = false;
@@ -183,6 +192,7 @@ namespace ZedExEss.Spectrum.Replay
             _startSnapshot = [];
             _startPending = true;
             _frameEdgeSeen = false;
+            _acceptanceCovered = false;
         }
 
         /// <summary>True once armed, until the first whole frame begins.</summary>
@@ -473,6 +483,10 @@ namespace ZedExEss.Spectrum.Replay
                 _startSnapshot = CaptureSnapshotBytes(machine);
                 _frameStartFetches = machine.Cpu.M1Fetches;
                 _frameInputs.Clear();
+
+                // The snapshot carries this frame's interrupt, and replay restores it with
+                // the snapshot rather than at a boundary, so taking it closes nothing.
+                _acceptanceCovered = machine.Emulator.HeldInterruptTstates != 0;
                 Mode = SpectrumReplayMode.Recording;
                 return;
             }
@@ -513,7 +527,39 @@ namespace ZedExEss.Spectrum.Replay
             }
 
             _frameEdgeSeen = false;
+
+            // Replay raises this boundary's interrupt and the CPU will take it, here or after
+            // an EI's one-instruction delay. When the line has dropped instead, nothing is
+            // owed and the next interrupt taken needs a boundary of its own.
+            _acceptanceCovered = machine.Cpu.InterruptPending && machine.Cpu.Iff1;
             CloseRecordedFrame(machine);
+        }
+
+        /// <summary>
+        /// Closes a frame at an interrupt that no boundary has accounted for.
+        /// </summary>
+        /// <remarks>
+        /// INT is a level, so a handler that enables interrupts and returns while the ULA
+        /// still holds it is entered again inside the same pulse. Replay offers each
+        /// interrupt once, at a frame boundary, so that entry needs a frame of its own -
+        /// which is what Fuse writes as well (its retriggered interrupt calls
+        /// <c>rzx_frame</c>). Called by the CPU before the acknowledge, so the frame ends at
+        /// the fetch count replay will raise it at.
+        /// </remarks>
+        private void OnInterruptAccepted()
+        {
+            if (Mode != SpectrumReplayMode.Recording)
+            {
+                return;
+            }
+
+            if (_acceptanceCovered)
+            {
+                _acceptanceCovered = false;
+                return;
+            }
+
+            CloseRecordedFrame(_machine!);
         }
 
         private void CloseRecordedFrame(SpectrumMachine machine)
@@ -583,14 +629,25 @@ namespace ZedExEss.Spectrum.Replay
             _frameStartFetches += frame.FetchCount;
             _playbackFrame++;
             _playbackInput = 0;
-            // The recording's frame boundary was also the machine's frame edge, so put
-            // both the beam and the contention phase back to the top of a frame before
+
+            // A boundary inside the pulse the previous one started is not a new frame: it is
+            // a handler being entered again because it enabled interrupts and returned while
+            // INT was still held, which the run that made the recording gave a frame of its
+            // own. The beam has not reached another frame, so it is left alone and nothing
+            // is presented; the interrupt is offered again in the pulse already running.
+            bool reentry = machine.Emulator.FrameInterruptLineHeld;
+
+            // Otherwise the recording's frame boundary was also the machine's frame edge, so
+            // put both the beam and the contention phase back to the top of a frame before
             // raising the interrupt that ends it. Left to free-run they drift against the
             // code, and accesses get charged for the wrong part of the display.
-            machine.Emulator.AlignFrameStart();
-            if (machine.Contention != null)
+            if (!reentry)
             {
-                machine.Contention.PhaseOrigin = ContentionPhaseOrigin(machine);
+                machine.Emulator.AlignFrameStart();
+                if (machine.Contention != null)
+                {
+                    machine.Contention.PhaseOrigin = ContentionPhaseOrigin(machine);
+                }
             }
 
             // A recorded frame's interrupt is offered once, at the boundary, and lost if
@@ -609,9 +666,20 @@ namespace ZedExEss.Spectrum.Replay
             // moment later rather than thrown away. Refusing to raise it in that case
             // strands any frame whose last instruction is an EI, and its handler never
             // runs at all.
+            //
+            // Each offer is consumed when it is taken: while replaying, the CPU does not
+            // follow the line (see SpectrumEmulator.SuppressFrameInterrupts), or a handler
+            // that returns inside the pulse would be entered again without a boundary.
             if (machine.Cpu.Iff1)
             {
-                machine.Emulator.RaiseFrameInterrupt();
+                if (reentry)
+                {
+                    machine.Emulator.ReofferFrameInterrupt();
+                }
+                else
+                {
+                    machine.Emulator.RaiseFrameInterrupt();
+                }
             }
 
             if (_playbackFrame >= _playbackFrames.Count)

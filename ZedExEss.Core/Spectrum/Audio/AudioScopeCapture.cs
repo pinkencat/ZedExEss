@@ -10,7 +10,7 @@ namespace ZedExEss.Spectrum.Audio
     /// </summary>
     /// <remarks>
     /// Channels are written a block at a time rather than a sample at a time: a Next
-    /// machine separates ten sources, and taking the lock and advancing the ring per
+    /// machine separates fourteen sources, and taking the lock and advancing the ring per
     /// sample per channel cost more than the mixing it was observing.
     /// </remarks>
     public sealed class AudioScopeCapture

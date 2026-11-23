@@ -1,5 +1,6 @@
 ﻿using ZedExEss.Spectrum.DivMmc;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using ZedExEss.Hosting;
 using ZedExEss.ZxNext.Core;
 using ZedExEss.ZxNext.Video;
@@ -47,6 +48,9 @@ public sealed partial class MainWindow
             _zxNextSession = replacement;
             _zxNextMachine = replacement.Machine;
             _zxNextMachine.SetHostJoystickType(_joystickType);
+
+            // The host plays audio_mixer.vhd's two sides; headless runs keep the mono default.
+            _zxNextMachine.StereoAudio = true;
             UpdateZxNextStateMenuState();
             _presenter?.Dispose();
             _presenter = new AvaloniaFramePresenter(
@@ -94,6 +98,64 @@ public sealed partial class MainWindow
             _replacingMachine = false;
             Focus();
         }
+    }
+
+    /// <summary>Points the Next at another System/Next folder and loader ROM.</summary>
+    /// <remarks>
+    /// Startup only asks when a saved path has gone missing, so without this a folder that
+    /// still exists but holds the wrong distro could only be changed by editing settings.json.
+    /// A running Next restarts on the new files; otherwise they are used when it next starts.
+    /// </remarks>
+    private async void OnChangeZxNextSystemFilesClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_closing || _replacingMachine)
+        {
+            return;
+        }
+
+        ZxNextSystemFiles? chosen = await ZxNextSystemFiles.ChooseAsync(
+            _fileDialogs,
+            _zxNextBootRomPath);
+        if (chosen == null
+            || _closing
+            || _replacingMachine
+            || chosen.Matches(_zxNextSystemDirectory, _zxNextBootRomPath))
+        {
+            Focus();
+            return;
+        }
+
+        string? previousDirectory = _zxNextSystemDirectory;
+        string? previousBootRomPath = _zxNextBootRomPath;
+        _zxNextSystemDirectory = chosen.SystemDirectory;
+        _zxNextBootRomPath = chosen.BootRomPath;
+
+        ZxNextMachine? running = _zxNextMachine;
+        if (running == null)
+        {
+            _statusText.Text = "ZX Next system files changed; they are used when the Next next starts";
+        }
+        else
+        {
+            // Stop the old machine and bring its folder up to date before the new session
+            // reads one: when only the ROM changed, both sessions project the same folder.
+            StopExecutionOwner();
+            SaveZxNextCardChanges();
+            await ReplaceZxNextMachineAsync();
+            if (ReferenceEquals(_zxNextMachine, running))
+            {
+                // The new files would not start and the reason is in the status bar. The old
+                // machine is untouched, so it carries on from the files it came from.
+                _zxNextSystemDirectory = previousDirectory;
+                _zxNextBootRomPath = previousBootRomPath;
+                Interlocked.Exchange(ref _renderPending, 0);
+                _ = StartSelectedZxNextExecution(running);
+                _statusText.Text += " — kept the previous files";
+            }
+        }
+
+        SaveHostSettings();
+        Focus();
     }
 
     private async Task<bool> EnsureZxNextAssetPathsAsync()
@@ -180,6 +242,7 @@ public sealed partial class MainWindow
 
     private void DisposeZxNextSession()
     {
+        EndKempstonMouseCapture();
         if (_zxNextMachine != null)
         {
             _zxNextMachine.Registers.RegisterWritten = null;

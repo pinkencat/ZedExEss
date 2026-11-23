@@ -99,16 +99,24 @@ public sealed class ZxNextPhysicalMemory
     /// <summary>Copies all installed RAM, for a snapshot.</summary>
     public byte[] CopyAll() => _ram.ToArray();
 
-    /// <summary>Puts a snapshot's RAM back, which must be the same size as this machine's.</summary>
+    /// <summary>Puts a snapshot's RAM back.</summary>
+    /// <remarks>
+    /// A snapshot from a smaller machine restores too. A 1 MiB Next has no pages above 95,
+    /// so nothing its guest did can depend on them; they are cleared rather than left
+    /// holding whatever this machine had in them. That is what keeps state files saved
+    /// before the move to 2 MiB loadable. A larger image is refused before anything is
+    /// changed, because pages this machine does not have cannot be put back.
+    /// </remarks>
     public void LoadAll(ReadOnlySpan<byte> ram)
     {
-        if (ram.Length != _ram.Length)
+        if (ram.Length > _ram.Length || ram.Length % PageSize != 0)
         {
             throw new ArgumentException(
-                $"This machine has {_ram.Length} bytes of RAM, not {ram.Length}.",
+                $"This machine has {_ram.Length} bytes of RAM and cannot take {ram.Length}.",
                 nameof(ram));
         }
 
         ram.CopyTo(_ram);
+        _ram.AsSpan(ram.Length).Clear();
     }
 }

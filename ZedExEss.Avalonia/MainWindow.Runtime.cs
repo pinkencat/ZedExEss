@@ -112,6 +112,7 @@ public sealed partial class MainWindow
             : Zx8xHighResolutionMode.Sinclair;
         _zxNextSystemDirectory = _hostSettings.ZxNextSystemDirectory;
         _zxNextBootRomPath = _hostSettings.ZxNextBootRomPath;
+        _kempstonMouseEnabled = _hostSettings.ZxNextKempstonMouseEnabled;
     }
 
     private void SaveHostSettings()
@@ -136,7 +137,8 @@ public sealed partial class MainWindow
             Zx8xRamConfiguration = _zx8xRamConfiguration,
             Zx8xHighResolutionMode = _zx8xHighResolutionMode,
             ZxNextSystemDirectory = _zxNextSystemDirectory,
-            ZxNextBootRomPath = _zxNextBootRomPath
+            ZxNextBootRomPath = _zxNextBootRomPath,
+            ZxNextKempstonMouseEnabled = _kempstonMouseEnabled
         };
 
         try

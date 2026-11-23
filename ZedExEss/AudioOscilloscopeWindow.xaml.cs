@@ -13,7 +13,7 @@ namespace ZedExEss
     /// Attaching installs the source's optional capture sink; closing removes it
     /// completely, so ordinary emulation pays no ring-buffer or drawing cost while the
     /// oscilloscope is hidden. The trace set is built from the attached source's
-    /// <see cref="AudioScopeLayout"/>, which is how a Next contributes ten channels
+    /// <see cref="AudioScopeLayout"/>, which is how a Next contributes fourteen channels
     /// where a Spectrum contributes four.
     /// </remarks>
     public partial class AudioOscilloscopeWindow : Window

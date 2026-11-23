@@ -74,6 +74,7 @@
                 <MenuItem x:Name="ModelZx81Menu" Header="Sinclair ZX81" Tag="Zx81" IsCheckable="True" Click="OnZx8xModelMenuClick" />
                 <Separator />
                 <MenuItem x:Name="ModelZxNextMenu" Header="ZX Spectrum Next (experimental)" IsCheckable="True" Click="OnZxNextModelMenuClick" />
+                <MenuItem Header="ZX Next System _Files..." Click="OnChangeZxNextSystemFiles" />
             </MenuItem>
             <MenuItem Header="_Hardware">
                 <MenuItem Header="_Joystick">
@@ -83,6 +84,7 @@
                     <MenuItem x:Name="JoystickSinclair2Menu" Header="Sinclair _2" Tag="Sinclair2" IsCheckable="True" Click="OnJoystickMenuClick" />
                     <MenuItem x:Name="JoystickCursorMenu" Header="_Cursor/Protek" Tag="Cursor" IsCheckable="True" Click="OnJoystickMenuClick" />
                 </MenuItem>
+                <MenuItem x:Name="KempstonMouseMenu" Header="Kempston _Mouse (ZX Next)" InputGestureText="F11 releases" IsCheckable="True" Click="OnKempstonMouseToggle" />
                 <MenuItem Header="ZX80/ZX81 _RAM">
                     <MenuItem x:Name="Zx8xRam1KMenu" Header="_1 KiB internal" Tag="Internal1K" IsCheckable="True" Click="OnZx8xRamMenuClick" />
                     <MenuItem x:Name="Zx8xRam16KMenu" Header="_16 KiB expansion" Tag="Expansion16K" IsCheckable="True" Click="OnZx8xRamMenuClick" />

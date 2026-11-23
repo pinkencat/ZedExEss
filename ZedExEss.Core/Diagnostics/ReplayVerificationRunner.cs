@@ -72,6 +72,11 @@ public static class ReplayVerificationRunner
         Check("Frame advance yields to a breakpoint", () => VerifyFrameAdvanceStopsAtBreak(machineRom), ref failed);
         Check("A loaded state drops the frames it re-takes", () => VerifyStateSlotRetake(machineRom), ref failed);
         Check("A state slot refuses another model", () => VerifyStateSlotModelMismatch(machineRom), ref failed);
+        Check("A capture between two entries resumes into the second", VerifyCaptureBetweenEntries, ref failed);
+        Check("A restored request with no pulse behind it is not held", VerifyRestoredRequestNeedsALine, ref failed);
+        Check("A handler entered again inside the pulse replays", () => VerifyReentryReplays(writer), ref failed);
+        Check("A replayed re-entry presents no frame of its own", VerifyReentryPresentsNoFrame, ref failed);
+        Check("A recording made with a latched INT replays without re-entering", VerifyLatchedRecordingReplays, ref failed);
 
         writer.WriteLine();
         writer.WriteLine(failed == 0 ? "Result: PASS" : $"Result: FAIL ({failed} failed checks)");
@@ -1764,6 +1769,301 @@ public static class ReplayVerificationRunner
         session.History.Clear();
         Require(session.History.BytesUsed == 0,
             $"Clearing left {session.History.BytesUsed} bytes behind.");
+    }
+
+    /// <summary>
+    /// A machine captured between a short handler's two entries - INT still held, the request
+    /// still up - carries on into the second as the original does, through a file.
+    /// </summary>
+    private static void VerifyCaptureBetweenEntries()
+    {
+        SpectrumMachine original = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        int steps = 0;
+        while (original.Cpu.InterruptsAccepted == 0 && steps++ < 200_000)
+        {
+            original.Emulator.StepInstruction();
+        }
+
+        Require(original.Cpu.InterruptPending,
+            "Taking the interrupt cleared the request while the pulse still held INT.");
+
+        SpectrumMachineSnapshot reloaded;
+        using (var stream = new MemoryStream())
+        {
+            SzxSnapshotCodec.Write(stream, SpectrumMachineSnapshotService.Capture(original));
+            stream.Position = 0;
+            reloaded = SzxSnapshotCodec.Read(stream);
+        }
+
+        SpectrumMachine restored = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        SpectrumMachineSnapshotService.Restore(restored, reloaded);
+
+        ulong originalBefore = original.Cpu.InterruptsAccepted;
+        ulong restoredBefore = restored.Cpu.InterruptsAccepted;
+        for (int step = 0; step < 2; step++) // EI, then RET and the second entry
+        {
+            original.Emulator.StepInstruction();
+            restored.Emulator.StepInstruction();
+        }
+
+        Require(original.Cpu.InterruptsAccepted - originalBefore == 1
+                && restored.Cpu.InterruptsAccepted - restoredBefore == 1
+                && original.Cpu.PC == SpectrumInterruptTestMachines.Handler
+                && restored.Cpu.PC == original.Cpu.PC,
+            $"A restore between the two entries did not run the handler again as the original did "
+                + $"(original PC ${original.Cpu.PC:X4}, restored PC ${restored.Cpu.PC:X4}).");
+    }
+
+    /// <summary>
+    /// A snapshot that says an interrupt is pending with no pulse left to hold it - what a
+    /// latched INT could leave behind - must not hold INT on a CPU that follows the line.
+    /// </summary>
+    /// <remarks>
+    /// Nothing would ever release it: the handler would run over and over until the next
+    /// frame's interrupt came round, thousands of times.
+    /// </remarks>
+    private static void VerifyRestoredRequestNeedsALine()
+    {
+        SpectrumMachine source = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        source.Emulator.RunFrame(presentFrame: false);
+        source.Emulator.RunFrame(presentFrame: false);
+
+        // Past this frame's pulse, back in the loop.
+        int steps = 0;
+        while ((source.Emulator.HeldInterruptTstates != 0 || source.Cpu.InterruptPending
+                || source.Cpu.PC < SpectrumInterruptTestMachines.LoopReturn - 1
+                || source.Cpu.PC > SpectrumInterruptTestMachines.LoopReturn)
+            && steps++ < 200_000)
+        {
+            source.Emulator.StepInstruction();
+        }
+
+        Require(source.Emulator.HeldInterruptTstates == 0, "The pulse never ended.");
+        SpectrumMachineSnapshot clean = SpectrumMachineSnapshotService.Capture(source);
+        var stale = new SpectrumMachineSnapshot(
+            clean.Model,
+            clean.Cpu with { IntPending = true },
+            [.. Enumerable.Range(0, clean.RamBankCount).Select(clean.CopyRamBank)],
+            clean.Port7FFD,
+            clean.Port1FFD,
+            clean.UlaOutput,
+            clean.FrameTstate,
+            clean.FrameCounter,
+            clean.Ay,
+            clean.Interface1,
+            heldInterruptTstates: 0);
+
+        SpectrumMachine restored = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        SpectrumMachineSnapshotService.Restore(restored, stale);
+
+        ulong before = restored.Cpu.InterruptsAccepted;
+        restored.Emulator.RunFrame(presentFrame: false);
+        ulong restOfFrame = restored.Cpu.InterruptsAccepted - before;
+
+        before = restored.Cpu.InterruptsAccepted;
+        for (int frame = 0; frame < 3; frame++)
+        {
+            restored.Emulator.RunFrame(presentFrame: false);
+        }
+
+        ulong threeFrames = restored.Cpu.InterruptsAccepted - before;
+        Require(restOfFrame == 0 && threeFrames == 6,
+            $"A request restored without a pulse was taken {restOfFrame} times in the rest of its frame "
+                + $"and {threeFrames} times in the next three (expected none, then six).");
+    }
+
+    /// <summary>
+    /// Records a short handler that is entered twice a frame and replays it: every entry is
+    /// back, and the machines end in the same state.
+    /// </summary>
+    /// <remarks>
+    /// Replay offers each recorded interrupt once, so the recording has to give the second
+    /// entry a frame of its own, as Fuse's does - a frame two fetches long, EI and RET.
+    /// </remarks>
+    private static void VerifyReentryReplays(StreamWriter writer)
+    {
+        const int RealFrames = 10;
+        ShortHandlerRun run = RecordShortHandler(latched: false, 1 + (2 * RealFrames));
+        writer.WriteLine("  re-entry fetch counts: "
+            + string.Join(" ", run.Recording.Frames.Take(6).Select(f => f.FetchCount)));
+
+        int reentries = run.Recording.Frames.Count(f => f.FetchCount == 2);
+        Require(reentries == RealFrames,
+            $"{run.Recording.Frames.Count} recorded frames hold {reentries} two-fetch re-entries, not {RealFrames}.");
+        Require(run.Accepted == (ulong)(2 * (RealFrames + 1)),
+            $"Recording took {run.Accepted} interrupts, not {2 * (RealFrames + 1)}.");
+
+        SpectrumMachine replayMachine = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        var replay = new SpectrumReplaySession();
+        replay.AttachMachine(replayMachine);
+        replay.StartPlayback(run.Recording);
+        ulong before = replayMachine.Cpu.InterruptsAccepted;
+        int budget = 0;
+        while (replay.Mode == SpectrumReplayMode.Playing && budget++ < 4_000_000)
+        {
+            replayMachine.Emulator.StepInstruction();
+        }
+
+        Require(replay.DesyncReason == null, $"Replay diverged: {replay.DesyncReason}");
+        Require(replay.PlaybackFrame == run.Recording.Frames.Count,
+            $"Replay reached frame {replay.PlaybackFrame} of {run.Recording.Frames.Count}.");
+        ulong replayed = replayMachine.Cpu.InterruptsAccepted - before;
+        Require(replayed == run.Accepted,
+            $"Replay took {replayed} interrupts; the recording took {run.Accepted}.");
+        Require(Fingerprint(replayMachine) == run.Fingerprint,
+            $"The replayed machine ended at {Fingerprint(replayMachine):X16}, the recorded one at {run.Fingerprint:X16}.");
+
+        // The recording ends on a re-entry, inside the pulse. Offered again in the pulse that
+        // was already running, the line lets go when it did in the original, and the second
+        // entry returns to the loop; a fresh pulse would hold it long enough for a third.
+        before = replayMachine.Cpu.InterruptsAccepted;
+        for (int step = 0; step < ShortHandlerRun.ContinuationSteps; step++)
+        {
+            replayMachine.Emulator.StepInstruction();
+        }
+
+        ulong afterwards = replayMachine.Cpu.InterruptsAccepted - before;
+        Require(afterwards == run.AcceptedAfterwards && Fingerprint(replayMachine) == run.FingerprintAfterwards,
+            $"After the recording ended the replayed machine took {afterwards} more interrupts, "
+                + $"the recorded one {run.AcceptedAfterwards}.");
+    }
+
+    /// <summary>
+    /// A host running whole frames over a recording with re-entries gets one presented frame
+    /// for each frame of the display, not one more for each re-entry.
+    /// </summary>
+    /// <remarks>
+    /// A re-entry's boundary falls a few dozen T-states into the frame. Treating it as a frame
+    /// of its own would put the beam back to the top and present a frame that showed nothing
+    /// new, and playback would run at half speed.
+    /// </remarks>
+    private static void VerifyReentryPresentsNoFrame()
+    {
+        const int RealFrames = 10;
+        ShortHandlerRun run = RecordShortHandler(latched: false, 1 + (2 * RealFrames));
+        SpectrumMachine replayMachine = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        var replay = new SpectrumReplaySession();
+        replay.AttachMachine(replayMachine);
+        replay.StartPlayback(run.Recording);
+
+        int presented = 0;
+        replayMachine.Emulator.FrameCompleted += () => presented++;
+        int calls = 0;
+        while (replay.Mode == SpectrumReplayMode.Playing && calls < run.Recording.Frames.Count + 4)
+        {
+            replayMachine.Emulator.RunFrame(presentFrame: true);
+            calls++;
+        }
+
+        Require(replay.DesyncReason == null, $"Replay diverged: {replay.DesyncReason}");
+        Require(presented == calls, $"{calls} frame runs presented {presented} frames; they should match.");
+
+        // The recording ends on a re-entry, so the run that reaches it goes on to the display's
+        // own frame edge.
+        Require(calls == RealFrames + 1,
+            $"{RealFrames} frames of display with a re-entry each took {calls} frame runs to play, not {RealFrames + 1}.");
+    }
+
+    /// <summary>
+    /// A recording whose INT was consumed by the acknowledge - made by an emulator that
+    /// latches it, or before this one followed the line - has no frames for re-entries, and
+    /// replaying it must not add them.
+    /// </summary>
+    private static void VerifyLatchedRecordingReplays()
+    {
+        const int Frames = 10;
+        ShortHandlerRun run = RecordShortHandler(latched: true, Frames);
+        Require(run.Recording.Frames.All(f => f.FetchCount > 2),
+            "A recording made with a latched INT has re-entry frames.");
+        Require(run.Accepted == Frames + 1, $"Recording took {run.Accepted} interrupts, not {Frames + 1}.");
+
+        SpectrumMachine replayMachine = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        var replay = new SpectrumReplaySession();
+        replay.AttachMachine(replayMachine);
+        replay.StartPlayback(run.Recording);
+        ulong before = replayMachine.Cpu.InterruptsAccepted;
+        int budget = 0;
+        while (replay.Mode == SpectrumReplayMode.Playing && budget++ < 4_000_000)
+        {
+            replayMachine.Emulator.StepInstruction();
+        }
+
+        Require(replay.DesyncReason == null, $"Replay diverged: {replay.DesyncReason}");
+        ulong replayed = replayMachine.Cpu.InterruptsAccepted - before;
+        Require(replayed == run.Accepted,
+            $"Replay took {replayed} interrupts; the recording took {run.Accepted}.");
+        Require(Fingerprint(replayMachine) == run.Fingerprint,
+            $"The replayed machine ended at {Fingerprint(replayMachine):X16}, the recorded one at {run.Fingerprint:X16}.");
+    }
+
+    private sealed record ShortHandlerRun(
+        RzxRecording Recording,
+        ulong Accepted,
+        long Fingerprint,
+        ulong AcceptedAfterwards,
+        long FingerprintAfterwards)
+    {
+        /// <summary>Instructions run on past the recording's end: the rest of the handler and some HALTs.</summary>
+        public const int ContinuationSteps = 40;
+    }
+
+    /// <summary>
+    /// Records <paramref name="frames"/> frames of IM 1 with EI; RET at $0038 on a 48K.
+    /// </summary>
+    /// <param name="latched">
+    /// Consume each INT at the acknowledge, as an emulator that latches it would have.
+    /// </param>
+    private static ShortHandlerRun RecordShortHandler(bool latched, int frames)
+    {
+        SpectrumMachine machine = SpectrumInterruptTestMachines.Create(
+            SpectrumModel.Spectrum48K, SpectrumInterruptTestMachines.ShortHandler);
+        var session = new SpectrumReplaySession();
+        session.AttachMachine(machine);
+
+        // Past the reset and the program's own EI.
+        machine.Emulator.RunFrame(presentFrame: false);
+        machine.Emulator.RunFrame(presentFrame: false);
+
+        session.StartRecording();
+        machine.Cpu.MaskableInterruptIsOneShot = latched;
+
+        // The recording begins at the frame edge that ends this run.
+        machine.Emulator.RunFrame(presentFrame: false);
+        Require(session.Mode == SpectrumReplayMode.Recording, "Recording should have started.");
+        ulong start = machine.Cpu.InterruptsAccepted;
+
+        // Stepped, so recording stops exactly on the last frame's boundary.
+        int budget = 0;
+        while (session.FrameCount < frames && budget++ < 4_000_000)
+        {
+            machine.Emulator.StepInstruction();
+        }
+
+        session.Stop();
+        machine.Cpu.MaskableInterruptIsOneShot = false;
+        RzxRecording recording = session.BuildRecording();
+        ulong accepted = machine.Cpu.InterruptsAccepted - start;
+        long fingerprint = Fingerprint(machine);
+
+        ulong before = machine.Cpu.InterruptsAccepted;
+        for (int step = 0; step < ShortHandlerRun.ContinuationSteps; step++)
+        {
+            machine.Emulator.StepInstruction();
+        }
+
+        return new ShortHandlerRun(
+            recording,
+            accepted,
+            fingerprint,
+            machine.Cpu.InterruptsAccepted - before,
+            Fingerprint(machine));
     }
 
     private static SpectrumMachine CreateMachine(string machineRom) =>

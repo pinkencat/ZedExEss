@@ -28,6 +28,7 @@ namespace ZedExEss.Diagnostics
             "  --verify-szx\n" +
             "  --verify-zx8x [--zx8x-rom-directory <path>]\n" +
             "  --verify-zxnext [--zxnext-system-directory <path>] [--zxnext-boot-rom <path>]\n" +
+            "                  [--zxnext-ddma-compare <zxnddma_compare.nex>]\n" +
             "  --verify-pentagon\n" +
             "  --verify-session\n" +
             "  --verify-settings\n" +
@@ -288,7 +289,8 @@ namespace ZedExEss.Diagnostics
                 {
                     OutputPath = options.OutputPath,
                     SystemDirectory = options.ZxNextSystemDirectory,
-                    BootRomPath = options.ZxNextBootRomPath
+                    BootRomPath = options.ZxNextBootRomPath,
+                    DdmaCompareNexPath = options.ZxNextDdmaCompareNexPath
                 });
                 return true;
             }
@@ -456,6 +458,9 @@ namespace ZedExEss.Diagnostics
                         break;
                     case "--zxnext-boot-rom":
                         options.ZxNextBootRomPath = RequireValue(args, ref i, arg);
+                        break;
+                    case "--zxnext-ddma-compare":
+                        options.ZxNextDdmaCompareNexPath = RequireValue(args, ref i, arg);
                         break;
                     case "--zx8x-rom-directory":
                         options.Zx8xRomDirectory = RequireValue(args, ref i, arg);
@@ -690,6 +695,7 @@ namespace ZedExEss.Diagnostics
             public bool RunZxNextVerification { get; set; }
             public string? ZxNextSystemDirectory { get; set; }
             public string? ZxNextBootRomPath { get; set; }
+            public string? ZxNextDdmaCompareNexPath { get; set; }
             public bool RunTapeAccelerationVerification { get; set; }
             public bool RunSessionVerification { get; set; }
             public bool RunSettingsVerification { get; set; }

@@ -13,11 +13,14 @@ public static class SpectrumMachineSnapshotService
 
         // Reading the machine must not change it. Bringing the subsystems up to the CPU
         // can run the INT line past the point the CPU has not yet looked at, which would
-        // lose an interrupt that was about to be taken - so the flag is put back.
+        // lose an interrupt that was about to be taken - so a latched request is put back.
+        // A CPU that follows the line has no latch to lose: the line it would sample next
+        // is the one just brought up to date, and putting the request back would hold INT
+        // with no pulse left to release it.
         bool interruptPending = machine.Cpu.InterruptPending;
         byte interruptData = machine.Cpu.PendingInterruptData;
         machine.Emulator.SyncToCpu();
-        if (interruptPending && !machine.Cpu.InterruptPending)
+        if (interruptPending && !machine.Cpu.InterruptPending && !machine.Cpu.MaskableInterruptFollowsLine)
         {
             machine.Cpu.Z80SetINTLine(true, interruptData);
         }
@@ -124,8 +127,10 @@ public static class SpectrumMachineSnapshotService
 
         // Resynchronising drops the INT line, which would quietly cost the restored
         // machine the interrupt it was about to take. A snapshot taken at a frame
-        // boundary always has one waiting, so put it back last.
-        if (snapshot.Cpu.IntPending)
+        // boundary always has one waiting, so put it back last. A CPU that follows the
+        // line has just had it back with the held pulse, and a request with no pulse
+        // behind it would never be released.
+        if (snapshot.Cpu.IntPending && !machine.Cpu.MaskableInterruptFollowsLine)
         {
             machine.Cpu.Z80SetINTLine(true, snapshot.Cpu.InterruptData);
         }

@@ -1,5 +1,5 @@
 ﻿BASIC editor headless verification
-Output: C:\Users\brain\source\repos\ZedExEss\TEST\basic-editor-verification-results.txt
+Output: C:\Users\brain\source\repos\pinkencat\ZedExEss\TEST\basic-editor-verification-results.txt
 
 PASS: Tokenize PRINT with hidden numeric value
 PASS: Gate 128 BASIC-only tokens by token mode

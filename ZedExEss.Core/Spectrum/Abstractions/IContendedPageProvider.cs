@@ -6,5 +6,11 @@ namespace ZedExEss.Spectrum.Abstractions
     public interface IContendedPageProvider
     {
         bool IsContendedPage(int pageIndex);
+
+        /// <summary>
+        /// Whether the address on the bus is contended during a cycle with no memory access.
+        /// The Spectrum decides by 16 KiB page; the ZX Spectrum Next by 8 KiB MMU slot.
+        /// </summary>
+        bool IsContendedAddress(ushort address) => IsContendedPage(address >> 14);
     }
 }

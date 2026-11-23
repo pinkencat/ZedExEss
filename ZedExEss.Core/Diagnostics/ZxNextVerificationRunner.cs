@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using ZedExEss.FileHandlers;
 using ZedExEss.Machines;
+using ZedExEss.Spectrum.Abstractions;
 using ZedExEss.Spectrum.Audio;
 using ZedExEss.Spectrum.Core;
 using ZedExEss.Spectrum.Debugging;
@@ -27,6 +28,9 @@ public sealed class ZxNextVerificationOptions
     public string? OutputPath { get; init; }
     public string? SystemDirectory { get; init; }
     public string? BootRomPath { get; init; }
+
+    /// <summary>A locally assembled <c>zxnddma_compare.nex</c>, its <c>.sym</c> beside it.</summary>
+    public string? DdmaCompareNexPath { get; init; }
 }
 
 /// <summary>Headless checks for the ZX Spectrum Next architecture foundation.</summary>
@@ -46,8 +50,12 @@ public static class ZxNextVerificationRunner
         using var writer = new StreamWriter(outputPath, false, Encoding.UTF8) { AutoFlush = true };
         int failed = 0;
         writer.WriteLine("ZX Spectrum Next foundation verification");
-        writer.WriteLine($"FPGA source: {ZxNextReferenceBaseline.FpgaRepositoryCommit}");
-        writer.WriteLine($"Core target: {ZxNextReferenceBaseline.CoreVersion}");
+        writer.WriteLine(
+            $"Core target: {ZxNextReferenceBaseline.CoreVersion} " +
+            $"(System/Next {ZxNextReferenceBaseline.SystemDistributionVersion})");
+        writer.WriteLine(
+            $"VHDL reference: {ZxNextReferenceBaseline.VhdlReferenceVersion} " +
+            $"({ZxNextReferenceBaseline.VhdlReferenceCommit})");
         writer.WriteLine($"Output: {outputPath}");
         writer.WriteLine();
 
@@ -62,21 +70,35 @@ public static class ZxNextVerificationRunner
         Check("Raster line interrupt timing and pulse", VerifyRasterLineInterrupt, ref failed);
         Check("Software DivMMC stackless NMI", VerifyDivMmcStacklessNmi, ref failed);
         Check("Software Multiface stackless NMI", VerifyMultifaceStacklessNmi, ref failed);
+        Check("NMI arbitration follows zxnext.vhd", VerifyNmiArbitrationRules, ref failed);
+        Check("NextReg values and resets follow zxnext.vhd", VerifyNextRegValueRules, ref failed);
         Check("ULA contention schedule and bus waits", VerifyUlaContention, ref failed);
         Check("ULA and +3 floating bus", VerifyUlaFloatingBus, ref failed);
         Check("ULA keyboard matrix and output latch", VerifyUlaKeyboard, ref failed);
         Check("Next joystick connectors and cursor-key fallback", VerifyJoystickAndCursorInput, ref failed);
+        Check("Next Kempston mouse ports, buttons, wheel and NextReg $0A", VerifyKempstonMouse, ref failed);
+        Check("Next Kempston mouse survives resets and snapshots", VerifyKempstonMouseState, ref failed);
         Check("Next beeper and TurboSound audio", VerifyNextAudio, ref failed);
+        Check("The DACs follow soundrive.vhd, audio_mixer.vhd and zxnext.vhd's DAC decode", VerifyNextDacs, ref failed);
+        Check("The host stream carries audio_mixer.vhd's two sides in stereo", VerifyNextStereoOutput, ref failed);
         Check("Legacy ULA framebuffer", VerifyLegacyUlaFramebuffer, ref failed);
         Check("Timex high-resolution and LoRes video", VerifyTimexAndLoresVideoModes, ref failed);
         Check("Layer 2 registers and CPU aperture", VerifyLayer2RegistersAndAperture, ref failed);
         Check("Layer 2 bitmap modes and compositor", VerifyLayer2BitmapModes, ref failed);
+        Check("The compositor and border follow zxnext.vhd and zxula.vhd", VerifyCompositorRules, ref failed);
         Check("Tilemap registers, addressing and compositor", VerifyTilemapRegistersAndRendering, ref failed);
         Check("ULA-over-tilemap video-memory arbitration", VerifyVideoMemoryArbitration, ref failed);
         Check("Sprite ports, attributes and compositor", VerifySpritePortsAndRendering, ref failed);
         Check("Relative and unified sprite chains", VerifyRelativeAndUnifiedSprites, ref failed);
         Check("Timed sprite preparation, collision and overtime", VerifyTimedSpritePreparation, ref failed);
         Check("zxnDMA Layer 2 screen transfer", VerifyZxnDmaLayer2Transfer, ref failed);
+        Check("zxnDMA block length, enable, status, WR4 and reset follow dma.vhd",
+            VerifyZxnDmaRegisterRules, ref failed);
+        Check("zxnDDMA commands, physical addresses, rectangles, transparency and fill",
+            VerifyZxnDdma, ref failed);
+        Check("DMA prescaler pacing, burst mode and auto restart",
+            VerifyDmaPrescalerAndBurst, ref failed);
+        Check("DMA accesses to the SPI port wait for its byte", VerifyDmaSpiWait, ref failed);
         Check("clk28 DMA BUSREQ arbitration and endpoint timing", VerifyTimedDmaArbitration, ref failed);
         Check("Raster-visible incremental DMA writes", VerifyDmaRasterInterleaving, ref failed);
         Check("Cycle-accounted ULA raster writes", VerifyCycleAccountedUlaRaster, ref failed);
@@ -93,6 +115,7 @@ public static class ZxNextVerificationRunner
         Check("Every peripheral field survives a file round trip",
             VerifyPeripheralFieldsRoundTrip, ref failed);
         Check("A Next snapshot rewinds its SD card", VerifySnapshotRewindsSdCard, ref failed);
+        Check("A 1 MiB Next snapshot restores into the 2 MiB machine", VerifyOneMiBSnapshotRestores, ref failed);
         Check("A Next snapshot refuses to rewind the wrong card",
             VerifySnapshotRefusesForeignSdCard, ref failed);
         Check("A Next resumes from every instruction boundary around an interrupt",
@@ -114,6 +137,8 @@ public static class ZxNextVerificationRunner
         Check("NextReg select/data ports", VerifyNextRegPorts, ref failed);
         Check("Legacy paging and ROM selection", VerifyLegacyPaging, ref failed);
         Check("Guest legacy paging I/O", VerifyGuestLegacyPaging, ref failed);
+        Check("Memory, paging and contention follow zxnext.vhd", VerifyMemoryPagingContentionRules, ref failed);
+        Check("Port decode follows zxnext.vhd", VerifyPortDecodeRules, ref failed);
         Check("Boot ROM and config SRAM mapping", VerifyBootAndConfigMapping, ref failed);
         Check("Alternate ROM read/write overlays", VerifyAlternateRomOverlay, ref failed);
         Check("Hard and soft ROM reset state", VerifyRomResetKinds, ref failed);
@@ -121,6 +146,7 @@ public static class ZxNextVerificationRunner
         Check("DivMMC programmable opcode automap", VerifyDivMmcAutomap, ref failed);
         Check("DivMMC NextReg and reset state", VerifyDivMmcRegisterResetState, ref failed);
         Check("Next SPI ports and SD sector path", VerifyNextSpiAndSdCard, ref failed);
+        Check("A command during a multi-block read ends it", VerifySdCommandDuringMultipleRead, ref failed);
         Check("FAT16 folder overlay projection", VerifyFat16FolderOverlay, ref failed);
         Check("Guest changes merge back into the SD folder", VerifySdFolderMerge, ref failed);
         Check("A persistent SD folder still takes an overlay", VerifySdFolderPersistencePolicy, ref failed);
@@ -129,10 +155,18 @@ public static class ZxNextVerificationRunner
         Check("Z80N immediate and stack instructions", VerifyZ80NImmediateOperations, ref failed);
         Check("Z80N pixel address instructions", VerifyZ80NPixelOperations, ref failed);
         Check("Z80N I/O instructions", VerifyZ80NIoOperations, ref failed);
+        Check("RETI and RETN restore IFF1 from IFF2", VerifyReturnRestoresIff1, ref failed);
         Check("Z80N extended block transfers", VerifyZ80NBlockTransfers, ref failed);
+        Check("The Next CPU follows the T80N where it differs from a Zilog Z80", VerifyT80nDifferences, ref failed);
+        Check("Hardware IM2 follows im2_peripheral.vhd and zxnext.vhd", VerifyHardwareIm2, ref failed);
+        Check("The Copper follows copper.vhd and zxula_timing.vhd's cvc", VerifyCopper, ref failed);
         Check("Opt-in Z80N assembler and disassembler", VerifyZ80NDeveloperTools, ref failed);
         Check("NEXTREG turbo boundary timing", VerifyNextRegTurboTiming, ref failed);
         Check("All CPU speed ratios", VerifyAllCpuSpeedRatios, ref failed);
+        Check("The CPU speed switch follows zxnext.vhd's cpu_speed latch and the clock handover", VerifyCpuSpeedSwitch, ref failed);
+        Check("+3 contention is decided where the simulated core decides it", VerifyPlus3WaitPhase, ref failed);
+        Check("INT is a level for the whole pulse, and EI does not hold off NMI", VerifyIntLevelAndNmiAfterEi, ref failed);
+        Check("The CTC follows ctc.vhd and ctc_chan.vhd", VerifyCtc, ref failed);
         Check("Foundation reset and pause", VerifyResetAndPause, ref failed);
         Check("Debugger attaches to the Next machine", VerifyDebuggerAttach, ref failed);
         Check("NextReg write breakpoints", VerifyNextRegBreakpoints, ref failed);
@@ -147,6 +181,14 @@ public static class ZxNextVerificationRunner
                     options.SystemDirectory,
                     options.BootRomPath,
                     writer),
+                ref failed);
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.DdmaCompareNexPath))
+        {
+            Check(
+                "zxnddma_compare reproduces the board's five timings",
+                () => VerifyZxnDdmaCompareTimings(options.DdmaCompareNexPath, writer),
                 ref failed);
         }
 
@@ -547,6 +589,10 @@ public static class ZxNextVerificationRunner
         Require(actual.Multiface == expected.Multiface, "Multiface did not come back as captured.");
         Require(actual.NmiRouting == expected.NmiRouting,
             "The pending NMI's owner did not come back as captured.");
+        Require(actual.Interrupts == expected.Interrupts,
+            "The hardware IM2 chain did not come back as captured.");
+        Require(actual.Registers.Extended == expected.Registers.Extended,
+            "The NMI latch or the NextRegs stored beside it did not come back as captured.");
         Require(actual.PortBus == expected.PortBus, "The port bus did not come back as captured.");
         Require(actual.FloatingBus == expected.FloatingBus,
             "The floating bus did not come back as captured.");
@@ -586,6 +632,64 @@ public static class ZxNextVerificationRunner
             Require(actualChip with { Registers = expectedChip.Registers } == expectedChip,
                 $"PSG {chip}'s generator phase did not come back as captured.");
         }
+
+        Require(PsgStatesMatch(expectedAudio.Psgs, actualAudio.Psgs),
+            "The PSGs' generator state did not come back as captured.");
+        Require(DacStatesMatch(expectedAudio.Dac, actualAudio.Dac),
+            "The DACs did not come back as captured.");
+    }
+
+    /// <summary>Two CTC states, channel by channel.</summary>
+    private static bool CtcStatesMatch(ZxNextCtcState? expected, ZxNextCtcState? actual)
+    {
+        if (expected is null || actual is null)
+        {
+            return expected is null && actual is null;
+        }
+
+        return expected.Channels.AsSpan().SequenceEqual(actual.Channels)
+            && expected with { Channels = actual.Channels } == actual;
+    }
+
+    /// <summary>Two soundrive.vhd states: the channels and the sample's level sums.</summary>
+    private static bool DacStatesMatch(ZxNextDacState? expected, ZxNextDacState? actual)
+    {
+        if (expected is null || actual is null)
+        {
+            return expected is null && actual is null;
+        }
+
+        return expected.Channels.AsSpan().SequenceEqual(actual.Channels)
+            && expected.LeftLevelSum == actual.LeftLevelSum
+            && expected.RightLevelSum == actual.RightLevelSum;
+    }
+
+    /// <summary>Two sets of ym2149.vhd generator states, field by field.</summary>
+    private static bool PsgStatesMatch(ZxNextPsgState[]? expected, ZxNextPsgState[]? actual)
+    {
+        if (expected is null || actual is null)
+        {
+            return expected is null && actual is null;
+        }
+
+        if (expected.Length != actual.Length)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < expected.Length; index++)
+        {
+            ZxNextPsgState left = expected[index];
+            ZxNextPsgState right = actual[index];
+            if (!left.Registers.AsSpan().SequenceEqual(right.Registers)
+                || !left.ToneCount.AsSpan().SequenceEqual(right.ToneCount)
+                || right with { Registers = left.Registers, ToneCount = left.ToneCount } != left)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>NextRegs the register file itself owns, for the continuation fingerprint.</summary>
@@ -833,7 +937,34 @@ public static class ZxNextVerificationRunner
                 DestinationAddress: 0x0FED,
                 Counter: 0xCBA9,
                 CurrentTransferLength: 0x00123456,
-                LastTransferLength: 0x00654321),
+                LastTransferLength: 0x00654321)
+            {
+                Extended = new ZxNextDmaExtendedState(
+                    TransferMode: 2,
+                    AutoRestart: true,
+                    CeWait: true,
+                    DimensionalFlags: 0x2F,
+                    PortAExtended: 0x0A,
+                    PortBExtended: 0x1C,
+                    RowLength: 0x1234,
+                    RowCount: 0x5678,
+                    PortAStride: 0x9ABC,
+                    PortBStride: 0xDEF0,
+                    TransparentValue: 0xE3,
+                    FillValue: 0x5A,
+                    Layer2XLow: 0x44,
+                    Layer2XHigh: 0x01,
+                    SourceHigh: 0x0B,
+                    DestinationHigh: 0x1D,
+                    SourceRowStart: 0x0B1234,
+                    DestinationRowStart: 0x1D5678,
+                    RowPosition: 0x0102,
+                    RowIndex: 0x0304,
+                    WaitClocks: 0x0777,
+                    ResumeTick: 0x0000_0012_3456_789A,
+                    BusGranted: true,
+                    RequestTick: 0x0000_0098_7654_3210)
+            },
             BusArbiter = new ZxNextBusArbiterState(ZxNextBusOwner.Dma, 11, 22, 33, 44),
             DivMmc = new ZxNextDivMmcState(
                 ControlRegister: 0xC7,
@@ -853,6 +984,31 @@ public static class ZxNextVerificationRunner
                 IsMapped: true,
                 Invisible: false),
             NmiRouting = new ZxNextNmiRoutingState(2),
+            Interrupts = new ZxNextInterruptControllerState(
+                Status: 0x2ABC,
+                Pending: 0x0809,
+                InService: 0x0001,
+                Im2Line: true,
+                CtcEnables: 0x0A,
+                UartEnables: 0x55,
+                DmaEnables0: 0x83,
+                DmaEnablesCtc: 0xC3,
+                DmaEnablesUart: 0x66,
+                RetiHoldOffEndTick: 0x0000_0012_3456_789C),
+
+            // The CTC's channels, with control bit 7 matching the IM2X enables ($0A): the CTC's
+            // own record carries them on a restore.
+            Ctc = new ZxNextCtcState(
+                [
+                    new ZxNextCtcChannelState(3, 0x28, 0x10, 0x07, 0x0C, 0x0000_0012_3456_7000),
+                    new ZxNextCtcChannelState(4, 0xC0, 0x00, 0x3F, 0x00, 0),
+                    new ZxNextCtcChannelState(2, 0x18, 0xFE, 0x00, 0xFE, 0x0000_0012_3456_7010),
+                    new ZxNextCtcChannelState(1, 0x90, 0x55, 0x00, 0x55, 0)
+                ],
+                Tick: 0x0000_0012_3456_7400,
+                PendingWriteChannel: 2,
+                PendingWriteValue: 0x85,
+                PendingWriteEdge: 0x0000_0012_3456_7401),
             PortBus = new ZxNextPortBusState(
                 LastWrittenPort: 0x243B,
                 HasLastWrittenPort: true,
@@ -862,7 +1018,20 @@ public static class ZxNextVerificationRunner
             FloatingBus = new ZxNextFloatingBusState(
                 UlaFetchValue: 0x3C,
                 Plus3CpuData: 0xC3,
-                UlaDriving: true)
+                UlaDriving: true),
+            Registers = captured.Registers with
+            {
+                Extended = new ZxNextRegisterFileExtendedState(
+                    ResetType: 0b101,
+                    NmiSource: ZxNextNmiSource.Multiface,
+                    NmiPhase: ZxNextNmiPhase.Hold,
+                    JoystickIoMode: 0xB1,
+                    BusPortDecoding: 0x8123_4567,
+                    I2sControl: 0xC5,
+                    ContentionDisableBefore: true,
+                    ContentionDisableAppliesAt: 0x0000_0012_3456_789B,
+                    ScandoublerEffective: false)
+            }
         };
 
         using var file = new MemoryStream();
@@ -880,10 +1049,16 @@ public static class ZxNextVerificationRunner
             "A Multiface field did not survive the round trip.");
         Require(reloaded.NmiRouting == distinctive.NmiRouting,
             "The pending NMI's owner did not survive the round trip.");
+        Require(reloaded.Interrupts == distinctive.Interrupts,
+            "A hardware IM2 field (IM2X) did not survive the round trip.");
+        Require(CtcStatesMatch(reloaded.Ctc, distinctive.Ctc),
+            "A CTC field (CTCX) did not survive the round trip.");
         Require(reloaded.PortBus == distinctive.PortBus,
             "A port bus latch did not survive the round trip.");
         Require(reloaded.FloatingBus == distinctive.FloatingBus,
             "A floating bus latch did not survive the round trip.");
+        Require(reloaded.Registers.Extended == distinctive.Registers.Extended,
+            "A NextReg reset-type, NMI latch, $0B, $86-$89 or $A2 field did not survive the round trip.");
 
         // The two records with arrays in them, where equality would pass for free.
         RequireAudioAndInputMatch(distinctive, reloaded);
@@ -900,10 +1075,16 @@ public static class ZxNextVerificationRunner
             "Multiface's restored latches disagree with the file they came from.");
         Require(recaptured.NmiRouting == distinctive.NmiRouting,
             "The restored NMI owner disagrees with the file it came from.");
+        Require(recaptured.Interrupts == distinctive.Interrupts,
+            "The restored hardware IM2 chain disagrees with the file it came from.");
+        Require(CtcStatesMatch(recaptured.Ctc, distinctive.Ctc),
+            "The restored CTC disagrees with the file it came from.");
         Require(recaptured.PortBus == distinctive.PortBus,
             "The restored port bus latches disagree with the file they came from.");
         Require(recaptured.FloatingBus == distinctive.FloatingBus,
             "The restored floating bus latches disagree with the file it came from.");
+        Require(recaptured.Registers.Extended == distinctive.Registers.Extended,
+            "The restored NextReg reset type, NMI latch, $0B, $86-$89 or $A2 disagree with the file they came from.");
         Require(recaptured.Dma == distinctive.Dma,
             "The restored DMA controller disagrees with the file it came from.");
         Require(recaptured.BusArbiter == distinctive.BusArbiter,
@@ -933,9 +1114,15 @@ public static class ZxNextVerificationRunner
                 $"PSG {chip}'s generator phase did not survive the round trip.");
         }
 
+        Require(PsgStatesMatch(expected.Audio.Psgs, actual.Audio.Psgs),
+            "The PSGs' generator state (PSGX) did not survive the round trip.");
+        Require(DacStatesMatch(expected.Audio.Dac, actual.Audio.Dac),
+            "The DACs (DACS) did not survive the round trip.");
         Require(actual.Audio with { Chips = expected.Audio.Chips,
                 SelectedRegisters = expected.Audio.SelectedRegisters,
-                Pan = expected.Audio.Pan } == expected.Audio,
+                Pan = expected.Audio.Pan,
+                Psgs = expected.Audio.Psgs,
+                Dac = expected.Audio.Dac } == expected.Audio,
             "An audio field did not survive the round trip.");
         Require(actual.Audio.SelectedRegisters.AsSpan().SequenceEqual(expected.Audio.SelectedRegisters)
                 && actual.Audio.Pan.AsSpan().SequenceEqual(expected.Audio.Pan),
@@ -1601,8 +1788,8 @@ public static class ZxNextVerificationRunner
     /// </remarks>
     private static void VerifyRestoreAroundNmi()
     {
-        // Requested, not yet taken: the request lives in the register file and is picked up at
-        // the next instruction boundary.
+        // Requested, not yet taken: latched, DivMMC's button pressed, and picked up at the next
+        // instruction boundary.
         RequireRestoreContinues(
             "with an NMI requested but not yet taken",
             CreateBoundaryWorkload,
@@ -1610,19 +1797,21 @@ public static class ZxNextVerificationRunner
             {
                 SettleBoundaryWorkload(machine);
                 StepInstructions(machine, 32);
+                ArmDivMmcNmi(machine);
                 machine.Registers.Write(0x02, 0x04);
             },
             static machine => StepInstructions(machine, 2_000),
             static (machine, snapshot) =>
             {
-                Require(snapshot.Registers.PendingDivMmcNmi,
-                    "The probe does not actually hold a pending DivMMC NMI.");
-                Require(!machine.DivMmc.NmiActive,
+                Require(snapshot.Registers.Extended is { NmiSource: ZxNextNmiSource.DivMmc, NmiPhase: ZxNextNmiPhase.Idle }
+                        && snapshot.Registers.PendingDivMmcNmi,
+                    "The probe does not actually hold a DivMMC NMI waiting for the CPU.");
+                Require(machine.DivMmc.NmiActive && !machine.DivMmc.AutomapHeld,
                     "The NMI was taken before the capture, so this probe is the wrong one.");
             },
             comparePicture: false);
 
-        // Taken: inside the service window, with DivMMC's automap held.
+        // Taken: inside the service window, with DivMMC paged in by its $0066 fetch.
         RequireRestoreContinues(
             "inside an NMI service window",
             CreateBoundaryWorkload,
@@ -1630,8 +1819,9 @@ public static class ZxNextVerificationRunner
             {
                 SettleBoundaryWorkload(machine);
                 StepInstructions(machine, 32);
+                ArmDivMmcNmi(machine);
                 machine.Registers.Write(0x02, 0x04);
-                StepInstructions(machine, 1);
+                StepInstructions(machine, 2);
 
                 // The CPU has vectored to $0066, which with DivMMC's window paged in is its ROM
                 // - blank in a foundation machine, so the CPU would walk forward through it and
@@ -1642,9 +1832,9 @@ public static class ZxNextVerificationRunner
             static machine => StepInstructions(machine, 2_000),
             static (machine, snapshot) =>
             {
-                Require(machine.DivMmc.NmiActive && machine.DivMmc.AutomapHeld,
+                Require(machine.DivMmc.AutomapHeld && machine.Registers.Nmi.Phase == ZxNextNmiPhase.Hold,
                     "The probe meant to be inside an NMI is not in one.");
-                Require(snapshot.DivMmc.NmiActive && snapshot.DivMmc.AutomapHeld,
+                Require(snapshot.DivMmc.AutomapHeld && snapshot.Registers.Extended?.NmiPhase == ZxNextNmiPhase.Hold,
                     "The capture did not record being inside an NMI.");
             },
             comparePicture: false);
@@ -1658,14 +1848,16 @@ public static class ZxNextVerificationRunner
             {
                 SettleBoundaryWorkload(machine);
                 StepInstructions(machine, 32);
+                ArmDivMmcNmi(machine);
                 machine.Registers.Write(0x02, 0x04);
-                StepInstructions(machine, 1);
+                StepInstructions(machine, 2);
                 machine.Cpu.PC = ReturnFromNmiAddress;
             },
             static machine =>
             {
                 StepInstructions(machine, 1);
-                Require(!machine.DivMmc.NmiActive && !machine.DivMmc.AutomapHeld,
+                Require(!machine.DivMmc.NmiActive && !machine.DivMmc.AutomapHeld
+                        && machine.Registers.Nmi.Source == ZxNextNmiSource.None,
                     "RETN did not end the NMI service window.");
                 StepInstructions(machine, 1_999);
             },
@@ -1702,7 +1894,7 @@ public static class ZxNextVerificationRunner
 
                 byte[] sequence =
                 [
-                    0x7D, 0x00, 0x91, 0x07, 0x00,   // WR0: A to B from $9100, eight bytes
+                    0x7D, 0x00, 0x91, 0x08, 0x00,   // WR0: A to B from $9100, eight bytes
                     0x14, 0x10,                     // WR1/WR2: memory, incrementing
                     0x8D, 0x00, 0xA1,               // WR4: to $A100
                     0xCF,                           // load
@@ -1920,16 +2112,22 @@ public static class ZxNextVerificationRunner
 
     private static void VerifyPinnedSourceBaseline()
     {
-        Require(ZxNextReferenceBaseline.FpgaRepositoryCommit.Length == 40,
-            "The FPGA source baseline is not a full Git commit ID.");
-        Require(ZxNextReferenceBaseline.SystemRepositoryCommit.Length == 40,
-            "The System/Next source baseline is not a full Git commit ID.");
-        Require(ZxNextReferenceBaseline.CoreVersion == "3.02.03",
+        Require(ZxNextReferenceBaseline.VhdlReferenceCommit.Length == 40,
+            "The VHDL reference is not a full Git commit ID.");
+        Require(ZxNextReferenceBaseline.CoreVersion == "3.03.03"
+                && ZxNextReferenceBaseline.SystemDistributionVersion == "26.11a"
+                && ZxNextReferenceBaseline.VhdlReferenceVersion == "3.02.03",
             "The executable baseline no longer matches the accepted source ADR.");
+        byte majorMinor = ZxNextReferenceBaseline.CoreVersionMajorMinor;
+        string reported = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{majorMinor >> 4}.{majorMinor & 0x0F:D2}.{ZxNextReferenceBaseline.CoreVersionSubMinor:D2}");
+        Require(reported == ZxNextReferenceBaseline.CoreVersion,
+            $"NextRegs 0x01/0x0E would report {reported}, not {ZxNextReferenceBaseline.CoreVersion}.");
         Require(ZxNextReferenceBaseline.MachineId == 0x08,
             "The foundation must identify as an emulator, not a physical PCB.");
-        Require(ZxNextReferenceBaseline.InitialRamBytes == 1024 * 1024,
-            "The initial supported RAM configuration is no longer 1 MiB.");
+        Require(ZxNextReferenceBaseline.InitialRamBytes == 2 * 1024 * 1024,
+            "The supported RAM configuration is no longer the fully expanded 2 MiB.");
     }
 
     private static void VerifyMachineDescriptor()
@@ -1983,8 +2181,8 @@ public static class ZxNextVerificationRunner
     {
         ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
         Require(machine.Registers.Read(0x00) == 0x08, "NextReg 0x00 did not expose emulator identity.");
-        Require(machine.Registers.Read(0x01) == 0x32 && machine.Registers.Read(0x0E) == 0x03,
-            "NextReg core version fields do not encode 3.02.03.");
+        Require(machine.Registers.Read(0x01) == 0x33 && machine.Registers.Read(0x0E) == 0x03,
+            "NextReg core version fields do not encode 3.03.03.");
         Require(machine.Registers.Read(0x03) == 0x33 && machine.MemoryBus.ConfigurationMode
                 && machine.MemoryBus.BootRomEnabled,
             "NextReg 0x03 or the initial boot/config state did not reset to native +3 defaults.");
@@ -2000,8 +2198,8 @@ public static class ZxNextVerificationRunner
         Require(machine.Registers.Read(0x7F) == 0x39,
             "NextReg 0x7F did not preserve user storage.");
         machine.Reset(ZxNextResetKind.Soft);
-        Require(machine.Registers.Read(0x7F) == 0xFF,
-            "A soft reset did not restore NextReg 0x7F to 0xFF.");
+        Require(machine.Registers.Read(0x7F) == 0x39,
+            "A soft reset changed NextReg 0x7F, which zxnext.vhd sets only at power on.");
 
         byte[] expectedMmu = [0xFF, 0xFF, 10, 11, 4, 5, 0, 1];
         for (int slot = 0; slot < expectedMmu.Length; slot++)
@@ -2039,22 +2237,33 @@ public static class ZxNextVerificationRunner
         Require(timing.FrameNumber == 1 && timing.FrameMasterTick == 0,
             "The +3/50 Hz frame did not complete after exactly 567264 master ticks.");
 
+        // NextReg $03's timing and $05's 50/60 Hz take effect at the next frame sync, and $05
+        // reads the bit in effect (zxnext.vhd eff_nr_03_machine_timing, eff_nr_05_5060).
         ZxNextMachine sixtyHertz = ZxNextMachineFactory.CreateFoundationMachine();
         int fiftyHertzGeneration = sixtyHertz.UlaTiming.ProfileGeneration;
         sixtyHertz.Registers.Write(0x03, 0x91);
-        sixtyHertz.Registers.Write(0x05, 0x45);
+        sixtyHertz.Registers.Write(0x05, 0x44);
         sixtyHertz.StepInstruction();
+        Require(sixtyHertz.UlaTiming.ProfileGeneration == fiftyHertzGeneration
+                && sixtyHertz.UlaTiming.MasterTicksPerFrame == 567_264
+                && (sixtyHertz.Registers.Read(0x05) & 0x05) == 0x01,
+            "A NextReg $03/$05 timing change took effect before the frame sync, or $05 read the written bit.");
+        RunToNextFrame(sixtyHertz);
         Require(sixtyHertz.Registers.SixtyHertzMode
+                && (sixtyHertz.Registers.Read(0x05) & 0x05) == 0x04
+                && sixtyHertz.UlaTiming.FrameNumber == 1
+                && sixtyHertz.UlaTiming.FrameMasterTick < 1_000
                 && sixtyHertz.UlaTiming.PixelsPerLine == 448
                 && sixtyHertz.UlaTiming.LinesPerFrame == 264
                 && sixtyHertz.UlaTiming.MasterTicksPerFrame == 473_088
                 && sixtyHertz.UlaTiming.ProfileGeneration != fiftyHertzGeneration,
-            "NextReg $05 did not select the 48K/60 Hz frame profile.");
+            "NextReg $05 did not select the 48K/60 Hz frame profile at the frame sync.");
 
         ZxNextMachine pentagon = ZxNextMachineFactory.CreateFoundationMachine();
         pentagon.Registers.Write(0x05, 0x45);
         pentagon.Registers.Write(0x03, 0xC4);
         pentagon.StepInstruction();
+        RunToNextFrame(pentagon);
         Require(!pentagon.Registers.SixtyHertzMode
                 && (pentagon.Registers.Read(0x05) & 0x04) == 0
                 && pentagon.UlaTiming.PixelsPerLine == 448
@@ -2165,20 +2374,30 @@ public static class ZxNextVerificationRunner
             "Reset did not clear the line-interrupt comparator and scheduler state.");
     }
 
+    /// <summary>
+    /// A NextReg $02 DivMMC NMI with the stackless response on: the return address goes to
+    /// NextRegs $C2/$C3 instead of the stack, DivMMC pages in through its delayed $0066 entry
+    /// point (NextReg $BB bit 0, on at reset), and RETN returns through $C2/$C3 and lets
+    /// DivMMC go.
+    /// </summary>
     private static void VerifyDivMmcStacklessNmi()
     {
         ZxNextMachine machine = CreateProgram(
             0xED, 0x91, 0xC0, 0x08, // NEXTREG $C0,$08: stackless NMI
             0xED, 0x91, 0x02, 0x04, // NEXTREG $02,$04: DivMMC NMI
             0x00);
+        machine.Registers.Write(0x06, 0xB0); // the DRIVE button's NMI enabled
+        machine.Registers.Write(0x0A, 0x11); // automap on
+        machine.Registers.Write(0xB8, 0x00); // without the RST entry points, $0000 included
         var divMmcRom = new byte[ZxNextPhysicalMemory.PageSize];
+        divMmcRom[0x0066] = 0x76; // HALT, which only an instant entry point would execute
         byte[] handler =
         [
             0xED, 0x91, 0xC2, 0x34, // NEXTREG $C2,$34
             0xED, 0x91, 0xC3, 0x12, // NEXTREG $C3,$12
             0xED, 0x45              // RETN
         ];
-        handler.CopyTo(divMmcRom, 0x0066);
+        handler.CopyTo(divMmcRom, 0x0067);
         machine.MemoryBus.LoadDivMmcRom(divMmcRom);
         machine.Cpu.SP = 0x8000;
         machine.MemoryBus.WriteCpu(0x7FFE, 0xA5);
@@ -2191,12 +2410,21 @@ public static class ZxNextVerificationRunner
         Require(machine.Cpu.PC == 0x0066
                 && machine.Cpu.SP == 0x7FFE
                 && machine.DivMmc.NmiActive
-                && machine.DivMmc.IsMapped
+                && !machine.DivMmc.IsMapped
+                && machine.Registers.Nmi.Phase == ZxNextNmiPhase.Fetch
                 && machine.Registers.Read(0xC2) == 0x08
                 && machine.Registers.Read(0xC3) == 0x00
                 && machine.MemoryBus.ReadPhysicalRam(11, 0x1FFE) == 0xA5
                 && machine.MemoryBus.ReadPhysicalRam(11, 0x1FFF) == 0x5A,
-            "The software DivMMC NMI did not enter $0066 without overwriting the stack.");
+            "The software DivMMC NMI did not reach $0066, its button latched and DivMMC not yet paged, without overwriting the stack.");
+
+        machine.StepInstruction();
+        Require(machine.Cpu.PC == 0x0067
+                && !machine.Cpu.IsHalted
+                && machine.DivMmc.IsMapped
+                && !machine.DivMmc.NmiActive
+                && machine.Registers.Nmi.Phase == ZxNextNmiPhase.Hold,
+            "DivMMC did not page in after the $0066 fetch through its delayed NMI entry point.");
 
         machine.StepInstruction();
         machine.StepInstruction();
@@ -2205,6 +2433,7 @@ public static class ZxNextVerificationRunner
                 && machine.Cpu.SP == 0x8000
                 && !machine.DivMmc.NmiActive
                 && !machine.DivMmc.IsMapped
+                && machine.Registers.Nmi.Source == ZxNextNmiSource.None
                 && machine.Registers.Read(0xC2) == 0x34
                 && machine.Registers.Read(0xC3) == 0x12,
             $"Stackless RETN did not use the hardware return registers or release DivMMC " +
@@ -2233,6 +2462,7 @@ public static class ZxNextVerificationRunner
         ];
         handler.CopyTo(multifaceRom, 0x0066);
         machine.MemoryBus.LoadMultifaceRom(multifaceRom);
+        machine.Registers.Write(0x06, 0xA8); // the M1 button's NMI enabled
         machine.Cpu.SP = 0x8000;
         machine.MemoryBus.WriteCpu(0x7FFE, 0xC3);
         machine.MemoryBus.WriteCpu(0x7FFF, 0x3C);
@@ -2257,7 +2487,7 @@ public static class ZxNextVerificationRunner
         Require(machine.Registers.Read(0x82) == 0xFF
                 && machine.Registers.Read(0x83) == 0xFF
                 && machine.Registers.Read(0x84) == 0xFF
-                && machine.Registers.Read(0x85) == 0xFF,
+                && machine.Registers.Read(0x85) == 0x8F,
             "Internal port-decode enables did not start in the pinned all-enabled state.");
 
         machine.Paging.WritePort1Ffd(0x04);
@@ -2295,7 +2525,8 @@ public static class ZxNextVerificationRunner
         arbitration.Paging.WritePort1Ffd(0x04);
         arbitration.MemoryBus.LoadMultifaceRom(new byte[ZxNextPhysicalMemory.PageSize]);
         arbitration.Registers.Write(0x0A, 0x11);
-        Require(arbitration.Multiface.BeginNmi(),
+        arbitration.Multiface.PressButton();
+        Require(arbitration.Multiface.NmiActive,
             "Multiface/DivMMC arbitration setup could not assert Multiface NMI.");
         _ = arbitration.MemoryBus.FetchOpcode(0x0066);
         Require(arbitration.Multiface.IsMapped,
@@ -2376,11 +2607,12 @@ public static class ZxNextVerificationRunner
             ((ulong)profile.FirstDisplayLine * (ulong)profile.PixelsPerLine
                 + (ulong)(profile.ContentionCounterStartHorizontal + 3))
             * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel);
+        // +3 timing decides a T-state after the cycle starts (the simulated core, F3-4).
         ulong waitCycleStart = waitSampleTick
-            - (2UL * ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate);
+            - (ulong)ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate;
         ulong gapCycleStart = waitSampleTick
             - (2UL * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel);
-        gapCycleStart -= 2UL * ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate;
+        gapCycleStart -= (ulong)ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate;
 
         Require(profile.IsPlus3
                 && profile.ContentionCounterStartHorizontal == 125
@@ -2434,7 +2666,7 @@ public static class ZxNextVerificationRunner
                 && disabled.Contention.GetMemoryDelayAtMasterTick(waitCycleStart, 10) == 0,
             "NextReg $08 bit 6 did not disable legacy contention.");
         disabled.Registers.Write(0x08, 0x10);
-        disabled.Registers.Write(0x07, 0x01);
+        SetCpuSpeedNow(disabled, ZxNextCpuSpeed.Mhz7);
         Require(!disabled.Contention.Enabled,
             "Legacy contention remained enabled above 3.5 MHz.");
         disabled.Registers.Write(0x07, 0x00);
@@ -2572,6 +2804,237 @@ public static class ZxNextVerificationRunner
             "Pentagon timing incorrectly exposed the synthetic legacy floating bus.");
     }
 
+    /// <summary>
+    /// The Kempston mouse as the pinned core presents it: $FBDF X, $FFDF Y, $FADF wheel and
+    /// buttons, decoded on A11-A8 and the low byte only, with the buttons active low.
+    /// </summary>
+    /// <remarks>
+    /// The button polarity is the core's, not ports.txt's: <c>zxnext.vhd</c> drives $FADF
+    /// with <c>not</c> of each button, so a released mouse reads $0F.
+    /// </remarks>
+    private static void VerifyKempstonMouse()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextPortBus ports = machine.PortBus;
+        Require(ports.ReadUncontended(0xFBDF) == 0x00
+                && ports.ReadUncontended(0xFFDF) == 0x00
+                && ports.ReadUncontended(0xFADF) == 0x0F,
+            "A mouse at rest did not read X=0, Y=0 and $0F (no wheel, bit 3 set, buttons released).");
+
+        // Movement: right counts X up, and up counts Y up.
+        machine.Mouse.MoveHost(10, -5);
+        Require(ports.ReadUncontended(0xFBDF) == 10 && ports.ReadUncontended(0xFFDF) == 5,
+            "Moving right 10 and up 5 did not read X=10, Y=5.");
+        machine.Mouse.MoveHost(-20, 9);
+        Require(ports.ReadUncontended(0xFBDF) == 246 && ports.ReadUncontended(0xFFDF) == 252,
+            "The counters did not wrap through zero at 8 bits.");
+
+        // A15-A12 are not decoded; A11-A8 other than $A/$B/$F are not the mouse.
+        Require(ports.ReadUncontended(0x0BDF) == 246 && ports.ReadUncontended(0x5FDF) == 252
+                && ports.ReadUncontended(0x3ADF) == 0x0F,
+            "The mouse ports were not decoded on A11-A8 and the low byte alone.");
+        Require(ports.ReadUncontended(0xFCDF) == 0xFF && ports.ReadUncontended(0xF9DF) == 0xFF,
+            "A $DF port outside the three mouse decodes answered as the mouse.");
+
+        // Fractions of a pixel accumulate rather than vanish.
+        machine.Mouse.MoveHost(0.5, 0);
+        Require(ports.ReadUncontended(0xFBDF) == 246, "Half a pixel moved the mouse.");
+        machine.Mouse.MoveHost(0.5, 0);
+        Require(ports.ReadUncontended(0xFBDF) == 247, "Two half pixels did not make one count.");
+
+        // Buttons, active low: bit 1 left, bit 0 right, bit 2 middle.
+        machine.Mouse.SetHostButton(ZxNextMouseButton.Left, pressed: true);
+        Require(ports.ReadUncontended(0xFADF) == 0x0D, "The left button did not clear bit 1 of $FADF.");
+        machine.Mouse.SetHostButton(ZxNextMouseButton.Right, pressed: true);
+        Require(ports.ReadUncontended(0xFADF) == 0x0C, "The right button did not clear bit 0 of $FADF.");
+        machine.Mouse.SetHostButton(ZxNextMouseButton.Middle, pressed: true);
+        Require(ports.ReadUncontended(0xFADF) == 0x08, "The middle button did not clear bit 2 of $FADF.");
+        machine.Mouse.ReleaseHost();
+        Require(ports.ReadUncontended(0xFADF) == 0x0F
+                && ports.ReadUncontended(0xFBDF) == 247,
+            "Releasing the host mouse did not release the buttons, or moved the counters.");
+
+        // NextReg $0A bit 3 swaps left and right as a packet is latched, and only then.
+        machine.Mouse.SetHostButton(ZxNextMouseButton.Left, pressed: true);
+        Require(ports.ReadUncontended(0xFADF) == 0x0D, "The left button was not latched unswapped.");
+        machine.Registers.Write(0x0A, 0x09);
+        Require(machine.Registers.Read(0x0A) == 0x09,
+            "NextReg $0A did not read back the button swap and DPI fields.");
+        Require(ports.ReadUncontended(0xFADF) == 0x0D,
+            "Setting the button swap changed a button byte that had already been latched.");
+        machine.Mouse.MoveHost(1, 0);
+        Require(ports.ReadUncontended(0xFADF) == 0x0E,
+            "With the swap set, the next packet did not report the left button as the right.");
+        machine.Mouse.ReleaseHost();
+        _ = ports.ReadUncontended(0xFADF);
+
+        // NextReg $0A bits 1:0 scale each packet: double, as sent, half, quarter. The
+        // halving is an arithmetic shift of the 8-bit delta, so a one-count move left still
+        // moves while a one-count move right does not - the core's own asymmetry.
+        var dpiCases = new (byte Dpi, int Move, int Expected)[]
+        {
+            (0x00, 10, 20), (0x01, 10, 10), (0x02, 10, 5), (0x03, 10, 2),
+            (0x02, 1, 0), (0x02, -1, -1), (0x03, -1, -1), (0x03, 3, 0),
+            (0x00, 200, 400), (0x01, 300, 300), (0x02, 300, 149), (0x03, -300, -76)
+        };
+        foreach ((byte dpi, int move, int expected) in dpiCases)
+        {
+            machine.Registers.Write(0x0A, dpi);
+            byte before = ports.ReadUncontended(0xFBDF);
+            machine.Mouse.MoveHost(move, 0);
+            byte after = ports.ReadUncontended(0xFBDF);
+            Require(after == (byte)(before + expected),
+                $"At DPI {dpi}, a host move of {move} added {(sbyte)(byte)(after - before)}, not {expected}.");
+        }
+
+        machine.Registers.Write(0x0A, 0x01);
+
+        // The wheel: notches away from the user count down, and $FADF shows the low nibble.
+        machine.Mouse.TurnHostWheel(1);
+        Require(ports.ReadUncontended(0xFADF) == 0xFF && machine.Mouse.Wheel == 0xFF,
+            "One notch up did not count the wheel down to $F.");
+        machine.Mouse.TurnHostWheel(-3);
+        Require(ports.ReadUncontended(0xFADF) == 0x2F, "Three notches down did not count the wheel up to 2.");
+        machine.Mouse.TurnHostWheel(-20);
+        Require(ports.ReadUncontended(0xFADF) == 0x6F && machine.Mouse.Wheel == 22,
+            "A fast wheel turn did not wrap the visible nibble.");
+
+        // NextReg $83 bit 5 disables the three ports, without disturbing the counters.
+        byte xBeforeDisable = ports.ReadUncontended(0xFBDF);
+        machine.Registers.Write(0x83, 0xDF);
+        // With the mouse off, $xxDF falls through to the Kempston-1 alias, which an idle
+        // joystick answers with zero.
+        Require(ports.ReadUncontended(0xFBDF) == 0x00 && ports.ReadUncontended(0xFFDF) == 0x00
+                && ports.ReadUncontended(0xFADF) == 0x00 && ports.ReadUncontended(0x001F) == 0x00,
+            "The mouse ports stayed decoded with NextReg $83 bit 5 clear, or $DF did not fall through to Kempston 1.");
+        machine.Registers.Write(0x83, 0xFF);
+        Require(ports.ReadUncontended(0xFBDF) == xBeforeDisable && ports.ReadUncontended(0xFADF) == 0x6F,
+            "Re-enabling the mouse ports did not show the counters as they were left.");
+
+        // The CPU's own IN reaches the device too, not just the bus entry point.
+        ZxNextMachine cpuMachine = ZxNextMachineFactory.CreateFoundationMachine();
+        cpuMachine.Mouse.MoveHost(33, -7);
+        cpuMachine.Mouse.SetHostButton(ZxNextMouseButton.Right, pressed: true);
+        byte[] program =
+        [
+            0x01, 0xDF, 0xFB,   // LD BC,$FBDF
+            0xED, 0x50,         // IN D,(C)
+            0x06, 0xFF,         // LD B,$FF
+            0xED, 0x58,         // IN E,(C)
+            0x06, 0xFA,         // LD B,$FA
+            0xED, 0x78,         // IN A,(C)
+            0x76                // HALT
+        ];
+        for (int index = 0; index < program.Length; index++)
+        {
+            cpuMachine.MemoryBus.WriteCpu((ushort)(0x8000 + index), program[index]);
+        }
+
+        cpuMachine.Cpu.PC = 0x8000;
+        for (int step = 0; step < 6; step++)
+        {
+            cpuMachine.StepInstruction();
+        }
+
+        Require(cpuMachine.Cpu.D == 33 && cpuMachine.Cpu.E == 7 && cpuMachine.Cpu.A == 0x0E,
+            $"IN from the mouse ports read D=${cpuMachine.Cpu.D:X2} E=${cpuMachine.Cpu.E:X2} A=${cpuMachine.Cpu.A:X2}, not $21/$07/$0E.");
+    }
+
+    /// <summary>
+    /// The mouse's counters are power-on state: soft and hard reset leave them, and
+    /// snapshots carry them, including through a file and from a file written before the
+    /// mouse existed.
+    /// </summary>
+    private static void VerifyKempstonMouseState()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        machine.Mouse.MoveHost(40, -12);
+        machine.Mouse.TurnHostWheel(-5);
+        machine.Mouse.SetHostButton(ZxNextMouseButton.Middle, pressed: true);
+        Require(machine.PortBus.ReadUncontended(0xFADF) == 0x5B,
+            "The mouse did not reach the state the reset checks start from.");
+
+        machine.Reset(ZxNextResetKind.Soft);
+        Require(machine.PortBus.ReadUncontended(0xFBDF) == 40
+                && machine.PortBus.ReadUncontended(0xFFDF) == 12
+                && machine.PortBus.ReadUncontended(0xFADF) == 0x5B,
+            "A soft reset cleared the mouse, which only power-on does.");
+        machine.Reset(ZxNextResetKind.Hard);
+        Require(machine.PortBus.ReadUncontended(0xFBDF) == 40
+                && machine.PortBus.ReadUncontended(0xFADF) == 0x5B,
+            "A hard reset cleared the mouse, which only power-on does.");
+        Require(machine.Registers.Read(0x0A) == 0x01,
+            "A hard reset did not put NextReg $0A back to its default DPI.");
+
+        // A snapshot carries the counters and the latched buttons, and a restore drops
+        // movement the host sent to the machine being replaced.
+        ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(machine);
+        Require(captured.Mouse == new ZxNextMouseState(40, 12, 5, 0x04),
+            $"The capture recorded {captured.Mouse}, not X=40 Y=12 wheel 5 and the middle button.");
+
+        ZxNextMachine restored = ZxNextMachineFactory.CreateFoundationMachine();
+        restored.Mouse.MoveHost(99, 99);
+        ZxNextMachineSnapshotService.Restore(restored, captured);
+        Require(restored.PortBus.ReadUncontended(0xFBDF) == 40
+                && restored.PortBus.ReadUncontended(0xFFDF) == 12
+                && restored.PortBus.ReadUncontended(0xFADF) == 0x5B,
+            "A restore did not put the mouse back, or let undelivered host movement through.");
+
+        using var file = new MemoryStream();
+        ZxNextSnapshotFile.Save(file, captured);
+        file.Position = 0;
+        ZxNextMachineSnapshot reloaded = ZxNextSnapshotFile.Load(file);
+        Require(reloaded.Mouse == captured.Mouse && reloaded.UnknownChunks.Count == 0,
+            "The mouse did not survive a file round trip as a chunk this build knows.");
+
+        // A version-1 file written before the mouse chunk existed: same body without MOUS.
+        byte[] bytes = file.ToArray();
+        byte[] body = new byte[BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(8, 4))];
+        using (var inflate = new System.IO.Compression.DeflateStream(
+            new MemoryStream(bytes, 12, bytes.Length - 12),
+            System.IO.Compression.CompressionMode.Decompress))
+        {
+            inflate.ReadExactly(body);
+        }
+
+        using var older = new MemoryStream();
+        older.Write(bytes, 0, 6);
+        older.Write([0, 0]);
+        older.Write(new byte[4]);
+        int offset = 0;
+        bool sawMouse = false;
+        while (offset < body.Length)
+        {
+            string id = Encoding.ASCII.GetString(body, offset, 4);
+            int length = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(offset + 4, 4));
+            if (id == "MOUS")
+            {
+                sawMouse = true;
+            }
+            else
+            {
+                older.Write(body, offset, 8 + length);
+            }
+
+            offset += 8 + length;
+        }
+
+        Require(sawMouse, "The saved file had no MOUS chunk to remove, so the older-file case proves nothing.");
+        byte[] olderBytes = older.ToArray();
+        BinaryPrimitives.WriteUInt32LittleEndian(olderBytes.AsSpan(8, 4), (uint)(olderBytes.Length - 12));
+        ZxNextMachineSnapshot fromOlder = ZxNextSnapshotFile.Load(new MemoryStream(olderBytes));
+        Require(fromOlder.Mouse == default && fromOlder.Cpu == captured.Cpu,
+            "A file without a mouse chunk did not load as a mouse at rest.");
+
+        ZxNextMachine resting = ZxNextMachineFactory.CreateFoundationMachine();
+        resting.Mouse.MoveHost(5, 5);
+        _ = resting.PortBus.ReadUncontended(0xFBDF);
+        ZxNextMachineSnapshotService.Restore(resting, fromOlder);
+        Require(resting.PortBus.ReadUncontended(0xFBDF) == 0
+                && resting.PortBus.ReadUncontended(0xFADF) == 0x0F,
+            "Restoring a file from before the mouse did not leave the mouse at rest.");
+    }
+
     private static void VerifyJoystickAndCursorInput()
     {
         ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
@@ -2593,9 +3056,21 @@ public static class ZxNextVerificationRunner
         machine.Joystick.SetButtonState(SpectrumJoystickButton.Fire, pressed: true);
         Require(machine.PortBus.ReadUncontended(0x001F) == 0x19
                 && machine.PortBus.ReadUncontended(0xAA1F) == 0x19
-                && machine.PortBus.ReadUncontended(0x00DF) == 0x19
                 && machine.PortBus.ReadUncontended(0x0037) == 0xFF,
-            "Host Kempston input did not reach the Next's $1F/$DF port decode.");
+            "Host Kempston input did not reach the Next's $1F port decode.");
+
+        // $DF aliases Kempston 1 only while the Kempston mouse is disabled (NextReg $83
+        // bit 5), which it is not after reset.
+        Require(machine.PortBus.ReadUncontended(0x00DF) == 0xFF,
+            "$DF answered as the Kempston joystick while the Kempston mouse was enabled.");
+        machine.Registers.Write(0x83, 0xDF);
+        Require(machine.PortBus.ReadUncontended(0x00DF) == 0x19,
+            "With the mouse disabled, $DF did not alias the Kempston-1 joystick.");
+        machine.Registers.Write(0x82, 0xBF);
+        Require(machine.PortBus.ReadUncontended(0x00DF) == 0xFF,
+            "The $DF alias stayed decoded with the $1F joystick port disabled.");
+        machine.Registers.Write(0x82, 0xFF);
+        machine.Registers.Write(0x83, 0xFF);
         machine.Joystick.ReleaseAll();
         Require(machine.PortBus.ReadUncontended(0x001F) == 0,
             "Host-wide joystick release did not clear the Kempston state.");
@@ -3196,7 +3671,8 @@ public static class ZxNextVerificationRunner
         machine.MemoryBus.WritePhysicalRam(10, 0x0000, 0x80);
         machine.MemoryBus.WritePhysicalRam(10, 0x1800, 0x41); // Bright-blue ink.
         WriteLayer2Byte(machine, 8, 0, 0x01);
-        int[] expectedOrdinaryPriority = [red, red, blue, red, blue, blue, blue, blue];
+        // Orders 6 and 7 blend every opaque Layer 2 pixel with the ULA, not just a promoted one.
+        int[] expectedOrdinaryPriority = [red, red, blue, red, blue, blue, magenta, darkMagenta];
         for (int priority = 0; priority < expectedOrdinaryPriority.Length; priority++)
         {
             machine.Registers.Write(0x15, (byte)(priority << 2));
@@ -3636,6 +4112,9 @@ public static class ZxNextVerificationRunner
         machine.Registers.Write(0x37, 0);
         machine.Registers.Write(0x38, 0x80);
         machine.Video.RenderFrame(11);
+        Require((machine.PortBus.ReadUncontended(ZxNextSpriteDevice.StatusAndSlotPort) & 0x01) == 0,
+            "The immediate diagnostic render set the guest-visible sprite collision flag.");
+        machine.Video.AdvanceMasterTicks(machine.UlaTiming.MasterTicksPerFrame);
         Require((machine.PortBus.ReadUncontended(ZxNextSpriteDevice.StatusAndSlotPort) & 0x01) != 0
                 && machine.PortBus.ReadUncontended(ZxNextSpriteDevice.StatusAndSlotPort) == 0,
             "Sprite collision status was not latched and cleared by a port $303B read.");
@@ -3839,7 +4318,7 @@ public static class ZxNextVerificationRunner
         WriteDmaCommand(overload,
         [
             0xC3,
-            0x7D, 0x00, 0xC1, 0x1F, 0x00,
+            0x7D, 0x00, 0xC1, 0x20, 0x00,
             0x14,
             0x10,
             0xAD, 0x00, 0x01,
@@ -3916,7 +4395,7 @@ public static class ZxNextVerificationRunner
             0xCB,       // WR6 reset port B timing
             0x7D,       // WR0: A->B, A address and length follow
             0x00, 0xC0, // port A source $C000
-            0xFF, 0x3F, // $4000 bytes (native DMA encodes length minus one)
+            0xFF, 0x3F, // $3FFF: on port $6B that moves $3FFF bytes, not $4000
             0x54, 0x01, // WR1: memory A, increment, three-cycle timing
             0x50, 0x01, // WR2: memory B, increment, three-cycle timing
             0xAD,       // WR4: continuous mode, B address follows
@@ -3930,9 +4409,11 @@ public static class ZxNextVerificationRunner
         WriteDmaCommand(machine, angryBloatersScreenTransfer);
         RunDmaToCompletion(machine);
 
+        // dma.vhd counts from 0 on port $6B and stops once the counter reaches the length,
+        // so the game's block leaves the last byte of the third as it was.
         for (int offset = 0; offset < 0x4000; offset++)
         {
-            byte expected = (byte)((offset * 37) ^ (offset >> 5) ^ 0xA5);
+            byte expected = offset < 0x3FFF ? (byte)((offset * 37) ^ (offset >> 5) ^ 0xA5) : (byte)0;
             byte actual = machine.MemoryBus.ReadPhysicalRam(
                 16 + (offset >> 13),
                 offset & (ZxNextPhysicalMemory.PageSize - 1));
@@ -3941,11 +4422,12 @@ public static class ZxNextVerificationRunner
                 $"expected ${expected:X2}, found ${actual:X2}.");
         }
 
-        Require(machine.Dma.LastTransferLength == 0x4000
-                && machine.Dma.ByteCounter == 0x4000
-                && machine.Dma.PortAAddressCounter == 0x0000
-                && machine.Dma.PortBAddressCounter == 0x4000
-                && machine.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) == 0x1B,
+        // The idle state clears "at least one byte", so a finished block reads $1A.
+        Require(machine.Dma.LastTransferLength == 0x3FFF
+                && machine.Dma.ByteCounter == 0x3FFF
+                && machine.Dma.PortAAddressCounter == 0xFFFF
+                && machine.Dma.PortBAddressCounter == 0x3FFF
+                && machine.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) == 0x1A,
             "The zxnDMA length, address counters or end-of-block status were incorrect.");
 
         // Fixed-source fills are a common clear-screen form of the same interface.
@@ -3961,11 +4443,14 @@ public static class ZxNextVerificationRunner
         ];
         WriteDmaCommand(machine, fixedSourceFill);
         RunDmaToCompletion(machine);
-        for (int offset = 0x0200; offset < 0x0210; offset++)
+        for (int offset = 0x0200; offset < 0x020F; offset++)
         {
             Require(machine.MemoryBus.ReadPhysicalRam(16, offset) == 0xE3,
                 "The zxnDMA fixed-source Layer 2 fill did not repeat its source byte.");
         }
+
+        Require(machine.MemoryBus.ReadPhysicalRam(16, 0x020F) != 0xE3,
+            "A fifteen-byte zxnDMA fill wrote a sixteenth byte.");
 
         // DMA I/O endpoints go through the ordinary decoded device ports.
         machine.MemoryBus.WritePhysicalRam(0, 0x0200, 0x01);
@@ -3975,7 +4460,7 @@ public static class ZxNextVerificationRunner
         byte[] memoryToIo =
         [
             0xC3,
-            0x7D, 0x00, 0xC2, 0x03, 0x00,
+            0x7D, 0x00, 0xC2, 0x04, 0x00,
             0x14,       // WR1: memory A, increment
             0x28,       // WR2: I/O B, fixed
             0xAD, 0xFE, 0x00,
@@ -3993,7 +4478,7 @@ public static class ZxNextVerificationRunner
         byte[] decrementingSource =
         [
             0xC3,
-            0x7D, 0x03, 0xC3, 0x03, 0x00,
+            0x7D, 0x03, 0xC3, 0x04, 0x00,
             0x04,       // WR1: memory A, decrement
             0x10,       // WR2: memory B, increment
             0xAD, 0x00, 0x03,
@@ -4030,7 +4515,7 @@ public static class ZxNextVerificationRunner
         byte[] timedTransfer =
         [
             0xC3,
-            0x7D, 0x00, 0xC1, 0x03, 0x00,
+            0x7D, 0x00, 0xC1, 0x04, 0x00,
             0x54, 0x00, // Port A: incrementing memory, four CPU clocks.
             0x50, 0x02, // Port B: incrementing memory, two CPU clocks.
             0xAD, 0x00, 0x01,
@@ -4048,8 +4533,14 @@ public static class ZxNextVerificationRunner
 
         ulong cpuCyclesBefore = machine.Cpu.Cyc;
         Require(machine.StepBusArbitration(),
-            "The arbiter did not grant the pending DMA source cycle.");
-        Require(machine.MasterTicks == 32
+            "The arbiter did not grant the pending DMA request.");
+        Require(machine.MasterTicks == 8
+                && machine.BusArbiter.Owner == ZxNextBusOwner.Dma
+                && machine.Dma.CurrentTransferLength == 0,
+            "The grant did not begin with dma.vhd's one-clock WAITING_ACK state.");
+        Require(machine.StepBusArbitration(),
+            "The arbiter did not advance the pending DMA source cycle.");
+        Require(machine.MasterTicks == 40
                 && machine.BusArbiter.Owner == ZxNextBusOwner.Dma
                 && machine.BusArbiter.CpuBusAcknowledged
                 && machine.Dma.CurrentTransferLength == 0
@@ -4058,34 +4549,54 @@ public static class ZxNextVerificationRunner
 
         Require(machine.StepBusArbitration(),
             "The arbiter did not advance the pending DMA destination cycle.");
-        Require(machine.MasterTicks == 48
+        Require(machine.MasterTicks == 56
                 && machine.Cpu.Cyc == cpuCyclesBefore
                 && machine.Dma.CurrentTransferLength == 1
                 && machine.Dma.ByteCounter == 1
                 && machine.MemoryBus.ReadPhysicalRam(16, 0x0100) == source[0],
             "The two-clock destination cycle did not commit at its 16-tick boundary.");
 
-        // The FPGA clocks DMA from i_CLK_CPU. A speed change therefore changes the
-        // clk28 duration of subsequent DMA states without advancing the stopped Z80.
+        // The DMA is clocked from i_CLK_CPU, but cpu_speed latches only while the DMA is off
+        // the bus (zxnext.vhd ~5809, dma_holds_bus = '0'). A $07 write during the transfer
+        // therefore waits: the rest runs at 3.5 MHz and the switch comes at the CPU's next
+        // idle edge.
         machine.Registers.Write(0x07, (byte)ZxNextCpuSpeed.Mhz28);
         RunDmaToCompletion(machine);
         for (int index = 0; index < source.Length; index++)
         {
             Require(machine.MemoryBus.ReadPhysicalRam(16, 0x0100 + index) == source[index],
-                $"Timed DMA diverged after the turbo switch at byte {index}.");
+                $"Timed DMA diverged after the $07 write at byte {index}.");
         }
 
-        Require(machine.MasterTicks == 66
-                && machine.BusArbiter.DmaOwnedMasterTicks == 66
+        // Three more bytes of 4 + 2 clocks at 3.5 MHz, then FINISH_DMA, IDLE and the CPU's
+        // two clocks to see BUSRQ high: 56 + (18 + 4) x 8.
+        Require(machine.MasterTicks == 232
+                && machine.BusArbiter.DmaOwnedMasterTicks == 232
                 && machine.BusArbiter.CpuOwnedMasterTicks == 0
                 && machine.BusArbiter.DmaGrantCount == 1
                 && machine.BusArbiter.Owner == ZxNextBusOwner.Cpu
                 && !machine.Dma.IsActive
-                && machine.Dma.LastTransferLength == source.Length,
-            "DMA ownership, turbo conversion or release timing was incorrect.");
+                && machine.Dma.LastTransferLength == source.Length
+                && machine.CpuSpeed == ZxNextCpuSpeed.Mhz3_5
+                && machine.Registers.Read(0x07) == 0x03,
+            "A $07 write while the DMA held the bus changed the speed before the DMA let go, "
+                + $"or the release timing was wrong (master {machine.MasterTicks}, $07 ${machine.Registers.Read(0x07):X2}).");
 
-        // StepInstruction must service BUSREQ without allowing the CPU to begin the
-        // next instruction. A following call may then resume normal CPU ownership.
+        // The CPU's next instruction latches 28 MHz on its first edge: that T-state is still on
+        // the 3.5 MHz clock (8), the clock pauses to the 28 MHz clock's next edge (1), and the
+        // NOP's other three T-states take a tick each.
+        machine.MemoryBus.WriteDirect(0x8000, 0x00); // NOP
+        machine.Cpu.PC = 0x8000;
+        machine.StepInstruction();
+        machine.SynchronizeTime();
+        Require(machine.MasterTicks == 244 && machine.CpuSpeed == ZxNextCpuSpeed.Mhz28
+                && machine.Registers.Read(0x07) == 0x33,
+            $"The $07 write held over the DMA transfer did not latch on the next instruction's first edge and hand over (master {machine.MasterTicks}).");
+
+        // A fresh request is not granted at once: BUSRQ goes low a clock after the DMA
+        // decodes the enable, and the CPU registers it and grants only at the end of a later
+        // machine cycle. Here the next instruction's opcode fetch runs first.
+        machine.Cpu.PC = 0x8000;
         WriteDmaCommand(machine,
         [
             0xC3,
@@ -4095,23 +4606,28 @@ public static class ZxNextVerificationRunner
             0xAD, 0x10, 0x01,
             0x82, 0xCF, 0xB3, 0x87
         ]);
-        ushort programCounterBefore = machine.Cpu.PC;
         cpuCyclesBefore = machine.Cpu.Cyc;
         machine.StepInstruction();
-        Require(machine.Cpu.PC == programCounterBefore
-                && machine.Cpu.Cyc == cpuCyclesBefore
+        Require(machine.Cpu.PC == 0x8001
+                && machine.Cpu.Cyc == cpuCyclesBefore + 4
+                && machine.BusArbiter.CpuTstatesAtLastDmaGrant == cpuCyclesBefore + 4
                 && !machine.Dma.IsActive
                 && machine.MemoryBus.ReadPhysicalRam(16, 0x0110) == source[0],
-            "The CPU executed while BUSREQ owned the bus or the granted transfer did not finish.");
+            "A fresh BUSREQ was not granted at the end of the next machine cycle, or the "
+                + $"transfer did not finish (PC ${machine.Cpu.PC:X4}, {machine.Cpu.Cyc - cpuCyclesBefore} T, "
+                + $"grant at {(long)machine.BusArbiter.CpuTstatesAtLastDmaGrant - (long)cpuCyclesBefore} T, "
+                + $"active {machine.Dma.IsActive}, byte ${machine.MemoryBus.ReadPhysicalRam(16, 0x0110):X2}).");
 
         machine.StepInstruction();
         Require(machine.Cpu.Cyc > cpuCyclesBefore
                 && machine.BusArbiter.CpuOwnedMasterTicks > 0,
             "The CPU did not resume after DMA released BUSREQ.");
 
-        // Exercise the actual CPU programming path. OTIR has a five-T-state repeat
-        // interval after its I/O machine cycle; BUSREQ must be granted before that
-        // interval rather than after the complete instruction returns.
+        // Exercise the actual CPU programming path. The enable is written in OTIR's I/O
+        // machine cycle (T12-T16); BUSRQ goes low too late for that cycle's end, so the grant
+        // comes at the end of the next one, OTIR's five-T-state repeat interval (T21). The
+        // DMA then holds the bus for WAITING_ACK, a two-clock read, a two-clock write and the
+        // four clocks that give it back.
         ZxNextMachine guest = ZxNextMachineFactory.CreateFoundationMachine();
         guest.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x03);
         guest.MemoryBus.WritePhysicalRam(0, 0x0100, 0x5A);
@@ -4134,12 +4650,13 @@ public static class ZxNextVerificationRunner
         guest.StepInstruction();
         Require(guest.Cpu.Cyc == 21
                 && guest.Cpu.PC == 0xC300
-                && guest.BusArbiter.CpuTstatesAtLastDmaGrant == 16
+                && guest.BusArbiter.CpuTstatesAtLastDmaGrant == 21
                 && guest.BusArbiter.CpuOwnedMasterTicks == 168
-                && guest.BusArbiter.DmaOwnedMasterTicks == 32
-                && guest.MasterTicks == 200
+                && guest.BusArbiter.DmaOwnedMasterTicks == (1 + 2 + 2 + 4) * 8
+                && guest.MasterTicks == 168 + ((1 + 2 + 2 + 4) * 8)
                 && guest.MemoryBus.ReadPhysicalRam(16, 0x0100) == 0x5A,
-            "Guest OTIR did not yield at its completed I/O machine cycle before the repeat interval.");
+            "Guest OTIR's enable was not granted at the end of its repeat interval, or the "
+                + "hand-off did not cost WAITING_ACK and the four release clocks.");
 
         // Reset must cancel a partially read byte and restore CPU ownership.
         WriteDmaCommand(machine,
@@ -4151,7 +4668,7 @@ public static class ZxNextVerificationRunner
             0xAD, 0x20, 0x01,
             0x82, 0xCF, 0xB3, 0x87
         ]);
-        Require(machine.StepBusArbitration(),
+        Require(machine.StepBusArbitration() && machine.StepBusArbitration(),
             "The reset vector could not place DMA between source and destination cycles.");
         machine.Reset(ZxNextResetKind.Soft);
         Require(!machine.Dma.IsActive
@@ -4178,7 +4695,7 @@ public static class ZxNextVerificationRunner
         }
 
         machine.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x03);
-        machine.Registers.Write(0x07, (byte)ZxNextCpuSpeed.Mhz28);
+        SetCpuSpeedNow(machine, ZxNextCpuSpeed.Mhz28);
         machine.Video.Reset();
         ZxNextUlaTimingProfile profile = machine.UlaTiming.Profile;
         ulong firstLayer2PixelTick = checked(
@@ -4189,14 +4706,14 @@ public static class ZxNextVerificationRunner
         // With four-clock read and write cycles at 28 MHz, the first byte commits
         // exactly as its pixel begins. Later bytes take eight clk28 ticks apiece while
         // adjacent Layer 2 pixels begin four ticks apart, so the beam outruns the copy.
-        ulong leadTick = firstLayer2PixelTick - 8;
+        ulong leadTick = firstLayer2PixelTick - 9;
         machine.Video.AdvanceMasterTicks(leadTick);
         machine.Clock.AdvanceMasterTicks(leadTick);
         machine.UlaTiming.Advance();
         WriteDmaCommand(machine,
         [
             0xC3,
-            0x7D, 0x00, 0xC2, 0x03, 0x00,
+            0x7D, 0x00, 0xC2, 0x04, 0x00,
             0x54, 0x00,
             0x50, 0x00,
             0xAD, 0x00, 0x00,
@@ -4204,8 +4721,9 @@ public static class ZxNextVerificationRunner
         ]);
         RunDmaToCompletion(machine);
 
-        Require(machine.MasterTicks == firstLayer2PixelTick + 24,
-            "The four-byte raster DMA did not occupy thirty-two clk28 ticks.");
+        Require(machine.MasterTicks == firstLayer2PixelTick + 28,
+            "The four-byte raster DMA did not occupy WAITING_ACK, thirty-two clk28 ticks of "
+                + "transfer and the four release ticks.");
         machine.Video.AdvanceMasterTicks(
             profile.MasterTicksPerFrame - machine.MasterTicks);
         int firstPixel = (ZxNextVideoRenderer.UlaTop * ZxNextVideoRenderer.FrameWidth)
@@ -4219,6 +4737,820 @@ public static class ZxNextVerificationRunner
             + $"${machine.Video.FrameBuffer[firstPixel + 1]:X8}, "
             + $"${machine.Video.FrameBuffer[firstPixel + 2]:X8}, "
             + $"${machine.Video.FrameBuffer[firstPixel + 3]:X8}).");
+    }
+
+    /// <summary>
+    /// The zxnDMA rules read in the pinned <c>dma.vhd</c> (and stated by the 26.11a guide,
+    /// part 2): the length, the enable, the status byte, WR4 and the two resets.
+    /// </summary>
+    private static void VerifyZxnDmaRegisterRules()
+    {
+        // Port $6B counts from 0 and stops when the counter reaches the length: N bytes.
+        // Port $0B loads -1 first: N + 1. A length of 0 moves one byte on both.
+        foreach ((byte port, ushort length, int expected) in new (byte, ushort, int)[]
+        {
+            (ZxNextDmaDevice.ZxnControlPort, 4, 4),
+            (ZxNextDmaDevice.Z80ControlPort, 4, 5),
+            (ZxNextDmaDevice.ZxnControlPort, 0, 1),
+            (ZxNextDmaDevice.Z80ControlPort, 0, 1)
+        })
+        {
+            ZxNextMachine machine = CreateDmaCopyMachine(out ushort source, out ushort destination);
+            WriteDmaCommandOn(machine, port,
+            [
+                0xC3,
+                0x7D, (byte)source, (byte)(source >> 8), (byte)length, (byte)(length >> 8),
+                0x14, 0x10,
+                0xAD, (byte)destination, (byte)(destination >> 8),
+                0xCF, 0x87
+            ]);
+            RunDmaToCompletion(machine);
+            int moved = CountCopiedBytes(machine, source, destination);
+            Require(moved == expected && machine.Dma.LastTransferLength == expected,
+                $"A length of {length} on port ${port:X2} moved {moved} bytes, not {expected}.");
+        }
+
+        // Enable without a load still starts: after a finished block the counter is
+        // already at the length and is only tested after a byte, so one more moves.
+        ZxNextMachine again = CreateDmaCopyMachine(out ushort againSource, out ushort againDestination);
+        WriteDmaCommand(again,
+        [
+            0xC3,
+            0x7D, (byte)againSource, (byte)(againSource >> 8), 0x02, 0x00,
+            0x14, 0x10,
+            0xAD, (byte)againDestination, (byte)(againDestination >> 8),
+            0xCF
+        ]);
+        Require(again.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) == 0x3A,
+            "A loaded, idle DMA did not report $3A.");
+        WriteDmaCommand(again, [0x87]);
+        RunDmaToCompletion(again);
+        WriteDmaCommand(again, [0xBF]);
+        Require(again.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) == 0x1A,
+            "A finished block did not report end of block with its at-least-one bit clear ($1A).");
+        WriteDmaCommand(again, [0x87]);
+        RunDmaToCompletion(again);
+        Require(CountCopiedBytes(again, againSource, againDestination) == 3
+                && again.Dma.ByteCounter == 3,
+            "Enabling a finished block without $CF did not move exactly one more byte.");
+        WriteDmaCommand(again, [0x8B, 0xBF]);
+        Require(again.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) == 0x3A,
+            "$8B did not reinitialise the status byte.");
+
+        // WR4 stores its mode; bit 4 with no address byte hangs the decoder until a reset.
+        ZxNextMachine wr4 = CreateDmaCopyMachine(out ushort hungSource, out ushort hungDestination);
+        WriteDmaCommand(wr4, [0xCD, 0x00, 0x00]);
+        Require(wr4.Dma.TransferMode == 0x02, "WR4 $CD did not select burst mode.");
+        WriteDmaCommand(wr4, [0xA1]);
+        Require(wr4.Dma.TransferMode == 0x01, "WR4 $A1 did not select continuous mode.");
+        WriteDmaCommand(wr4,
+        [
+            0x91,
+            0x7D, (byte)hungSource, (byte)(hungSource >> 8), 0x04, 0x00,
+            0x14, 0x10, 0xAD, (byte)hungDestination, (byte)(hungDestination >> 8),
+            0xC3, 0xCF, 0x87
+        ]);
+        Require(wr4.Dma.RegisterDecoderHung && !wr4.Dma.IsActive && wr4.Dma.BlockLength == 0,
+            "WR4 $91 did not leave the register decoder deaf to every later write.");
+        wr4.Reset(ZxNextResetKind.Soft);
+        wr4.MemoryBus.SetMmuPage(6, 0x20);
+        wr4.MemoryBus.SetMmuPage(7, 0x21);
+        WriteDmaCommand(wr4,
+        [
+            0x7D, (byte)hungSource, (byte)(hungSource >> 8), 0x04, 0x00,
+            0x14, 0x10, 0xAD, (byte)hungDestination, (byte)(hungDestination >> 8),
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(wr4);
+        Require(!wr4.Dma.RegisterDecoderHung && CountCopiedBytes(wr4, hungSource, hungDestination) == 4,
+            "A reset did not free the hung DMA register decoder.");
+
+        // $C3 and the machine reset keep the start addresses, length and modes; both put
+        // the timings back to three cycles; only the machine reset restores the read mask.
+        ZxNextMachine kept = ZxNextMachineFactory.CreateFoundationMachine();
+        WriteDmaCommand(kept,
+        [
+            0x7D, 0x34, 0x12, 0x10, 0x00,
+            0x54, 0x02, 0x50, 0x00,
+            0xAD, 0x78, 0x56,
+            0xB2,
+            0xBB, 0x7E
+        ]);
+        Require(kept.Dma.AutoRestart, "WR5 $B2 did not set auto restart.");
+        WriteDmaCommand(kept, [0xC3, 0xCF, 0xA7]);
+        Require(ReadDmaBytes(kept, 6).SequenceEqual(new byte[] { 0x00, 0x00, 0x34, 0x12, 0x78, 0x56 })
+                && kept.Dma.BlockLength == 0x10
+                && !kept.Dma.AutoRestart
+                && kept.Dma.CpuClockCyclesUntilBusEvent == 3,
+            "$C3 did not keep the addresses, length and read mask while resetting timing and WR5.");
+        kept.Reset(ZxNextResetKind.Soft);
+        WriteDmaCommand(kept, [0xCF, 0xBB, 0x18]);
+        Require(ReadDmaBytes(kept, 2).SequenceEqual(new byte[] { 0x34, 0x12 })
+                && kept.Dma.BlockLength == 0x10,
+            "A machine reset cleared the DMA's start addresses or block length.");
+        kept.Reset(ZxNextResetKind.Soft);
+        WriteDmaCommand(kept, [0xA7]);
+        Require(kept.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) == 0x3A
+                && kept.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) == 0x00,
+            "A machine reset did not restore the $7F read mask.");
+    }
+
+    /// <summary>
+    /// The zxnDDMA (core 3.03), from the 26.11a guide's part 2: its commands only on port
+    /// <c>$6B</c>, physical addresses with the 64K carry and the issue 4 bit-21 wrap, the
+    /// SRAM behind the video block RAM, rectangles, the transparent colour, fill, Layer 2
+    /// X,Y positions and what <c>$C3</c> clears.
+    /// </summary>
+    private static void VerifyZxnDdma()
+    {
+        // On port $0B a zxnDDMA command byte is an ignored WR6 and its follow byte is taken
+        // as an ordinary register write: $09 is a WR0 whose Port A low byte follows.
+        ZxNextMachine legacy = ZxNextMachineFactory.CreateFoundationMachine();
+        WriteDmaCommandOn(legacy, ZxNextDmaDevice.Z80ControlPort, [0xD7, 0x09, 0x34]);
+        Require((legacy.Dma.PortAStartAddress & 0xFF) == 0x34 && legacy.Dma.DimensionalFlags == 0,
+            "Port $0B decoded a zxnDDMA command instead of ignoring it.");
+        WriteDmaCommand(legacy, [0xDF, 0x07]);
+        Require(legacy.Dma.DimensionalFlags == 0x07 && (legacy.Dma.PortAStartAddress & 0xFF) == 0x34,
+            "Port $6B did not take $DF and its flag byte.");
+
+        // Physical addresses: 22 bits, SRAM only, carrying across 64K.
+        ZxNextMachine physical = ZxNextMachineFactory.CreateFoundationMachine();
+        for (int index = 0; index < 4; index++)
+        {
+            physical.MemoryBus.WritePhysicalSram(0x0AFFFE + index, (byte)(0xA0 + index));
+        }
+
+        WriteDmaCommand(physical,
+        [
+            0xC3,
+            0xDF, 0x01,
+            0xD7, 0x0A,
+            0xDB, 0x2C, // bit 21 set: wraps to $0C on the 2 MB board
+            0x7D, 0xFE, 0xFF, 0x04, 0x00,
+            0x14, 0x10,
+            0xAD, 0xFF, 0xFF,
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(physical);
+        Require(physical.MemoryBus.ReadPhysicalSram(0x0CFFFF) == 0xA0
+                && physical.MemoryBus.ReadPhysicalSram(0x0D0000) == 0xA1
+                && physical.MemoryBus.ReadPhysicalSram(0x0D0001) == 0xA2
+                && physical.MemoryBus.ReadPhysicalSram(0x0D0002) == 0xA3,
+            "A physical transfer did not carry across 64K or wrap bit 21 on the issue 4 board.");
+
+        // Bank 5 (page $0A) reaches the SRAM behind the block RAM, never the screen; page
+        // $0F, the second half of bank 7, is ordinary SRAM.
+        byte screenByte = physical.MemoryBus.ReadPhysicalRam(10, 0);
+        physical.MemoryBus.WritePhysicalRam(0, 0x0100, 0x5B);
+        physical.MemoryBus.WritePhysicalRam(0, 0x0101, 0x5C);
+        WriteDmaCommand(physical,
+        [
+            0xC3,
+            0xDF, 0x01,
+            0xD7, 0x04, 0xDB, 0x05,
+            0x7D, 0x00, 0x01, 0x01, 0x00, 0x14, 0x10, 0xAD, 0x00, 0x40,
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(physical);
+        WriteDmaCommand(physical,
+        [
+            0xC3,
+            0xDF, 0x01,
+            0xD7, 0x04, 0xDB, 0x05,
+            0x7D, 0x01, 0x01, 0x01, 0x00, 0x14, 0x10, 0xAD, 0x00, 0xE0,
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(physical);
+        Require(physical.MemoryBus.ReadPhysicalRam(10, 0) == screenByte
+                && physical.MemoryBus.ReadPhysicalSram(0x054000) == 0x5B
+                && physical.MemoryBus.ReadPhysicalRam(15, 0) == 0x5C,
+            "Physical DMA reached the bank 5 block RAM, or missed page $0F's SRAM.");
+
+        // A rectangle through MMU addresses: 4 bytes x 3 rows, source stride 16,
+        // destination stride 32. The block length is not used.
+        ZxNextMachine rectangle = ZxNextMachineFactory.CreateFoundationMachine();
+        rectangle.MemoryBus.SetMmuPage(6, 0x20);
+        rectangle.MemoryBus.SetMmuPage(7, 0x21);
+        for (int index = 0; index < 64; index++)
+        {
+            rectangle.MemoryBus.WriteDirect((ushort)(0xC000 + index), (byte)(0x40 + index));
+        }
+
+        WriteDmaCommand(rectangle,
+        [
+            0xC3,
+            0xDF, 0x02,
+            0xE3, 0x04, 0x00, 0xE7, 0x03, 0x00,
+            0xEB, 0x10, 0x00, 0xEF, 0x20, 0x00,
+            0x7D, 0x00, 0xC0, 0x01, 0x00, 0x14, 0x10, 0xAD, 0x00, 0xE0,
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(rectangle);
+        for (int row = 0; row < 4; row++)
+        {
+            for (int column = 0; column < 6; column++)
+            {
+                byte actual = rectangle.MemoryBus.ReadDirect((ushort)(0xE000 + (row * 32) + column));
+                byte expected = row < 3 && column < 4 ? (byte)(0x40 + (row * 16) + column) : (byte)0;
+                Require(actual == expected,
+                    $"The 4x3 rectangle diverged at row {row}, column {column}: " +
+                    $"expected ${expected:X2}, found ${actual:X2}.");
+            }
+        }
+
+        Require(rectangle.Dma.LastTransferLength == 12 && rectangle.Dma.ByteCounter == 12,
+            "A 4x3 rectangle did not count twelve bytes.");
+
+        // Transparent: a byte equal to $F3's colour is not written, but takes its cycle.
+        ZxNextMachine transparent = ZxNextMachineFactory.CreateFoundationMachine();
+        transparent.MemoryBus.SetMmuPage(6, 0x20);
+        transparent.MemoryBus.SetMmuPage(7, 0x21);
+        byte[] shape = [0x11, 0xE3, 0x33, 0xE3];
+        for (int index = 0; index < shape.Length; index++)
+        {
+            transparent.MemoryBus.WriteDirect((ushort)(0xC000 + index), shape[index]);
+            transparent.MemoryBus.WriteDirect((ushort)(0xE000 + index), 0x99);
+        }
+
+        ulong ticksBefore = transparent.BusArbiter.DmaOwnedMasterTicks;
+        WriteDmaCommand(transparent,
+        [
+            0xC3,
+            0xDF, 0x04, 0xF3, 0xE3,
+            0x7D, 0x00, 0xC0, 0x04, 0x00, 0x14, 0x10, 0xAD, 0x00, 0xE0,
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(transparent);
+        Require(transparent.MemoryBus.ReadDirect(0xE000) == 0x11
+                && transparent.MemoryBus.ReadDirect(0xE001) == 0x99
+                && transparent.MemoryBus.ReadDirect(0xE002) == 0x33
+                && transparent.MemoryBus.ReadDirect(0xE003) == 0x99
+                && transparent.BusArbiter.DmaOwnedMasterTicks - ticksBefore == (1 + (4 * 6) + 4) * 8,
+            "The transparent colour was written, or its write cycle was skipped.");
+
+        // Fill: no read at all, so a byte takes only its three-cycle write.
+        ticksBefore = transparent.BusArbiter.DmaOwnedMasterTicks;
+        WriteDmaCommand(transparent,
+        [
+            0xC3,
+            0xDF, 0x08, 0xF7, 0x5A,
+            0x7D, 0x00, 0xC0, 0x04, 0x00, 0x14, 0x10, 0xAD, 0x00, 0xE0,
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(transparent);
+        Require(transparent.MemoryBus.ReadDirect(0xE000) == 0x5A
+                && transparent.MemoryBus.ReadDirect(0xE003) == 0x5A
+                && transparent.MemoryBus.ReadDirect(0xE004) != 0x5A
+                && transparent.BusArbiter.DmaOwnedMasterTicks - ticksBefore == (1 + (4 * 3) + 4) * 8,
+            "Fill read its source or wrote the wrong bytes.");
+
+        // $C3 clears the flags: the same programme without $DF now copies via the MMU.
+        WriteDmaCommand(transparent,
+        [
+            0xC3,
+            0x7D, 0x00, 0xC0, 0x04, 0x00, 0x14, 0x10, 0xAD, 0x00, 0xE0,
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(transparent);
+        Require(transparent.Dma.DimensionalFlags == 0 && transparent.MemoryBus.ReadDirect(0xE001) == 0xE3,
+            "$C3 left a zxnDDMA mode flag on.");
+
+        // Layer 2 X,Y: 256x192 is row by row, the 320 and 640 modes column by column with
+        // a 9-bit X; the hidden screen takes NextReg $13's bank.
+        ZxNextMachine layer2 = ZxNextMachineFactory.CreateFoundationMachine();
+        layer2.MemoryBus.WritePhysicalRam(0, 0x0100, 0x77);
+        layer2.Registers.Write(0x12, 9);
+        layer2.Registers.Write(0x13, 12);
+        foreach ((byte control, byte flags, int x, byte y, int expected) in new (byte, byte, int, byte, int)[]
+        {
+            (0x00, 0x11, 5, 3, 0x40000 + (9 * 0x4000) + (3 * 256) + 5),
+            (0x10, 0x11, 0x105, 7, 0x40000 + (9 * 0x4000) + (0x105 * 256) + 7),
+            (0x00, 0x31, 5, 3, 0x40000 + (12 * 0x4000) + (3 * 256) + 5)
+        })
+        {
+            layer2.Registers.Write(0x70, control);
+            WriteDmaCommand(layer2,
+            [
+                0xC3,
+                0xD7, 0x04,
+                0x7D, 0x00, 0x01, 0x01, 0x00, 0x14, 0x10, 0xA1,
+                0xDF, flags, (byte)x, (byte)(x >> 8), y,
+                0xCF, 0x87
+            ]);
+            RunDmaToCompletion(layer2);
+            Require(layer2.MemoryBus.ReadPhysicalSram(expected) == 0x77,
+                $"Layer 2 X,Y with $70=${control:X2}, flags ${flags:X2} did not write ${expected:X6}.");
+        }
+
+        // The SRAM behind the video block RAM travels in snapshot files.
+        ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(physical);
+        using var file = new MemoryStream();
+        ZxNextSnapshotFile.Save(file, captured);
+        file.Position = 0;
+        ZxNextMachine reloaded = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextMachineSnapshotService.Restore(reloaded, ZxNextSnapshotFile.Load(file));
+        Require(reloaded.MemoryBus.ReadPhysicalSram(0x054000) == 0x5B
+                && reloaded.MemoryBus.ReadPhysicalRam(10, 0) == screenByte,
+            "The SRAM behind bank 5's block RAM did not survive a snapshot file.");
+    }
+
+    /// <summary>
+    /// The prescaler, burst mode and auto restart, against <c>dma.vhd</c>: the timer is zeroed
+    /// at a byte's first read clock and gains one per 28 MHz tick, the DMA waits after the
+    /// write until timer / 32 reaches the prescaler, then WAITING_ACK (or FINISH_DMA). So a
+    /// byte starts every ceil(32P / ticks-per-clock) + 3 clocks - 403 T at 3.5 MHz and 3203 T
+    /// at 28 MHz for P = 100 (the figures Klive IDE measured on its simulation of the core) -
+    /// and the last byte's wait ends at FINISH_DMA, one clock sooner.
+    /// </summary>
+    private static void VerifyDmaPrescalerAndBurst()
+    {
+        // Continuous mode keeps the bus through every wait.
+        foreach ((ZxNextCpuSpeed speed, ulong expectedTicks) in new (ZxNextCpuSpeed, ulong)[]
+        {
+            (ZxNextCpuSpeed.Mhz3_5, (1 + (19UL * 403) + 402 + 4) * 8),
+            (ZxNextCpuSpeed.Mhz28, 1 + (19UL * 3203) + 3202 + 4)
+        })
+        {
+            ZxNextMachine paced = CreateDmaCopyMachine(out ushort source, out ushort destination);
+            SetCpuSpeedNow(paced, speed);
+            ulong before = paced.BusArbiter.DmaOwnedMasterTicks;
+            WriteDmaCommand(paced, PacedCopy(source, destination, 20, mode: 0xAD, prescaler: 100, restart: false));
+            RunDmaToCompletion(paced);
+            ulong ticks = paced.BusArbiter.DmaOwnedMasterTicks - before;
+            Require(ticks == expectedTicks && CountCopiedBytes(paced, source, destination) == 20,
+                $"Twenty bytes at prescaler 100 and {speed} took {ticks} master ticks, not {expectedTicks}.");
+        }
+
+        // Burst mode gives the bus back while it waits, so the CPU runs between bytes; it
+        // keeps to the same pace. Continuous mode, and burst mode without a prescaler, keep
+        // the bus for the whole block.
+        foreach ((byte mode, byte prescaler, bool cpuRuns) in new (byte, byte, bool)[]
+        {
+            (0xCD, 100, true),
+            (0xAD, 100, false),
+            (0xCD, 0, false)
+        })
+        {
+            ZxNextMachine machine = CreateDmaCopyMachine(out ushort source, out ushort destination);
+            LoadPassCounter(machine);
+            WriteDmaCommand(machine, PacedCopy(source, destination, 16, mode, prescaler, restart: false));
+            ulong start = machine.MasterTicks;
+            ulong dmaTicksBefore = machine.BusArbiter.DmaOwnedMasterTicks;
+            ulong finished = 0;
+            // The CPU halts once the last byte lands; the DMA still sits out that byte's
+            // prescaler wait before it finishes.
+            for (int step = 0; step < 100_000 && (!machine.Cpu.IsHalted || machine.Dma.IsActive); step++)
+            {
+                machine.StepInstruction();
+                if (finished == 0 && !machine.Dma.IsActive)
+                {
+                    finished = machine.MasterTicks;
+                }
+            }
+
+            int passes = machine.Cpu.HL;
+            Require(machine.Cpu.IsHalted && CountCopiedBytes(machine, source, destination) == 16,
+                $"The {(mode == 0xCD ? "burst" : "continuous")} transfer at prescaler {prescaler} did not finish.");
+            Require(cpuRuns ? passes > 100 : passes == 1,
+                $"WR4 ${mode:X2} at prescaler {prescaler}: the CPU made {passes} passes during the block.");
+            if (cpuRuns)
+            {
+                // Sixteen bytes, each a request answered at the CPU's next machine-cycle end.
+                ulong tstates = (finished - start) / 8;
+                Require(tstates >= (15 * 403) + 402 && tstates <= 16 * 420,
+                    $"Sixteen burst bytes at prescaler 100 took {tstates} T-states.");
+
+                // Each byte holds the CPU for WAITING_ACK, the 3 + 3 clock transfer, the first
+                // waiting clock and the CPU's two clocks to see BUSRQ go high: ten clocks.
+                ulong held = machine.BusArbiter.DmaOwnedMasterTicks - dmaTicksBefore;
+                Require(held == 16 * 10 * 8,
+                    $"Burst mode held the bus {held / 8} clocks for sixteen bytes, not 160.");
+            }
+        }
+
+        // Auto restart: the block repeats from its start addresses, picking up a changed
+        // source, and keeps reporting the end of block.
+        ZxNextMachine looping = CreateDmaCopyMachine(out ushort loopSource, out ushort loopDestination);
+        LoadSpinLoop(looping);
+        WriteDmaCommand(looping, PacedCopy(loopSource, loopDestination, 4, mode: 0xCD, prescaler: 50, restart: true));
+        looping.RunFrame();
+        Require(looping.Dma.IsActive && CountCopiedBytes(looping, loopSource, loopDestination) == 4
+                && looping.MemoryBus.ReadDirect((ushort)(loopDestination + 4)) == 0,
+            "An auto-restarting block did not copy its four bytes.");
+        for (int index = 0; index < 4; index++)
+        {
+            looping.MemoryBus.WriteDirect((ushort)(loopSource + index), (byte)(0x50 + index));
+        }
+
+        looping.RunFrame();
+        WriteDmaCommand(looping, [0xBF]);
+        Require(looping.MemoryBus.ReadDirect(loopDestination) == 0x50
+                && looping.MemoryBus.ReadDirect((ushort)(loopDestination + 3)) == 0x53
+                && (looping.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort) & 0x20) == 0,
+            "Auto restart did not repeat the block from its start, or cleared the end of block.");
+
+        // A burst snapshot taken mid-wait carries on identically.
+        ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(looping);
+        using (var file = new MemoryStream())
+        {
+            ZxNextSnapshotFile.Save(file, captured);
+            file.Position = 0;
+            ZxNextMachine resumed = ZxNextMachineFactory.CreateFoundationMachine();
+            ZxNextMachineSnapshotService.Restore(resumed, ZxNextSnapshotFile.Load(file));
+            for (int frame = 0; frame < 3; frame++)
+            {
+                looping.RunFrame();
+                resumed.RunFrame();
+            }
+
+            Require(resumed.Dma.CaptureState() == looping.Dma.CaptureState()
+                    && resumed.Cpu.Cyc == looping.Cpu.Cyc
+                    && resumed.BusArbiter.DmaOwnedMasterTicks == looping.BusArbiter.DmaOwnedMasterTicks,
+                "A machine restored in a burst-mode wait did not carry on as the original did.");
+        }
+
+        // $83 stops a burst transfer where it is; $87 carries on from there.
+        ZxNextMachine stopped = CreateDmaCopyMachine(out ushort stopSource, out ushort stopDestination);
+        LoadSpinLoop(stopped);
+        WriteDmaCommand(stopped, PacedCopy(stopSource, stopDestination, 64, mode: 0xCD, prescaler: 100, restart: false));
+        stopped.RunForTstates(8000);
+        WriteDmaCommand(stopped, [0x83]);
+        int atStop = CountCopiedBytes(stopped, stopSource, stopDestination);
+        stopped.RunForTstates(8000);
+        Require(atStop > 5 && atStop < 40
+                && CountCopiedBytes(stopped, stopSource, stopDestination) == atStop,
+            $"$83 did not stop the burst transfer where it was ({atStop} bytes).");
+        WriteDmaCommand(stopped, [0x87]);
+        stopped.RunForTstates(40_000);
+        Require(CountCopiedBytes(stopped, stopSource, stopDestination) == 64
+                && stopped.MemoryBus.ReadDirect((ushort)(stopDestination + 64)) == 0
+                && stopped.Dma.ByteCounter == 64,
+            "$87 did not carry the stopped transfer on to the end of its block, once.");
+
+        // Auto restart without burst pacing locks the CPU out for good. The frames still
+        // complete and the CPU gets no time.
+        ZxNextMachine locked = CreateDmaCopyMachine(out ushort lockSource, out ushort lockDestination);
+        LoadSpinLoop(locked);
+        WriteDmaCommand(locked, PacedCopy(lockSource, lockDestination, 4, mode: 0xAD, prescaler: 0, restart: true));
+        locked.RunFrame();
+        ulong lockedCycles = locked.Cpu.Cyc;
+        ulong lockedFrame = locked.UlaTiming.FrameNumber;
+        locked.RunFrame();
+        locked.RunForTstates(1000);
+        Require(locked.Dma.IsActive && locked.Dma.HoldsBusIndefinitely
+                && locked.Cpu.Cyc == lockedCycles
+                && locked.UlaTiming.FrameNumber > lockedFrame,
+            "A DMA that never lets go of the bus stopped the frames or gave the CPU time.");
+    }
+
+    /// <summary>
+    /// A DMA access to the SPI data port <c>$EB</c> waits for the SPI master's byte
+    /// (<c>dma_wait_n = z80_wait_n and spi_wait_n</c>). Traced through <c>spi_master.vhd</c>
+    /// and <c>dma.vhd</c>'s falling-edge registers, a three- or four-clock cycle ends 18 clocks
+    /// after it began; a two-clock cycle is over before the wait reaches it; and with the SPI
+    /// port disabled (internal port enable bit 11, NextReg <c>$83</c> bit 3) nothing waits.
+    /// </summary>
+    private static void VerifyDmaSpiWait()
+    {
+        foreach ((string name, byte[] ports, byte? nextReg83, ulong clocks) in new (string, byte[], byte?, ulong)[]
+        {
+            // Each case moves two bytes: the grant's WAITING_ACK clock, two reads and two
+            // writes, then the four clocks that give the bus back.
+            ("memory to $EB, three-clock write", [0x14, 0x28], null, 1 + (2 * (3 + 18)) + 4),
+            ("memory to $EB, two-clock write", [0x14, 0x68, 0x02], null, 1 + (2 * (3 + 2)) + 4),
+            ("memory to $EB with the SPI port off", [0x14, 0x28], 0xF7, 1 + (2 * (3 + 3)) + 4),
+        })
+        {
+            ZxNextMachine machine = CreateDmaCopyMachine(out ushort source, out _);
+            if (nextReg83 is { } value)
+            {
+                machine.Registers.Write(0x83, value);
+            }
+
+            ulong before = machine.BusArbiter.DmaOwnedMasterTicks;
+            WriteDmaCommand(machine,
+            [
+                0xC3,
+                0x7D, (byte)source, (byte)(source >> 8), 0x02, 0x00,
+                .. ports,
+                0xAD, ZxNextPortBus.SpiDataPort, 0x00,
+                0xCF, 0x87
+            ]);
+            RunDmaToCompletion(machine);
+            ulong ticks = machine.BusArbiter.DmaOwnedMasterTicks - before;
+            Require(ticks == clocks * 8,
+                $"DMA {name}: {ticks / 8} clocks, not {clocks}.");
+        }
+
+        // Reading from $EB waits the same way.
+        ZxNextMachine reader = CreateDmaCopyMachine(out _, out ushort destination);
+        ulong readerBefore = reader.BusArbiter.DmaOwnedMasterTicks;
+        WriteDmaCommand(reader,
+        [
+            0xC3,
+            0x7D, ZxNextPortBus.SpiDataPort, 0x00, 0x02, 0x00,
+            0x2C,       // WR1: I/O, fixed
+            0x10,       // WR2: memory, increment
+            0xAD, (byte)destination, (byte)(destination >> 8),
+            0xCF, 0x87
+        ]);
+        RunDmaToCompletion(reader);
+        ulong readerTicks = reader.BusArbiter.DmaOwnedMasterTicks - readerBefore;
+        Require(readerTicks == (1 + (2 * (18 + 3)) + 4) * 8UL,
+            $"DMA reads from $EB took {readerTicks / 8} clocks, not 47.");
+    }
+
+    /// <summary>
+    /// The System/Next 26.11a zxnDDMA guide's <c>zxnddma_compare.asm</c>, assembled by the
+    /// user (<c>sjasmplus --sym=zxnddma_compare.sym zxnddma_compare.asm</c>), against the
+    /// times its header gives as measured on an issue 5 board at 28 MHz.
+    /// </summary>
+    /// <remarks>
+    /// The program draws 32 16x16 balls five ways, each timed from video line 0 to the line
+    /// NextRegs <c>$1E/$1F</c> read at its end, and prints (lines x 64 + 50) / 100 tenths of a
+    /// millisecond. So each printed figure allows a range of line counts, and a run must land
+    /// in every one. The results are read from the program's <c>times</c> table and
+    /// <c>have_zxnddma</c> flag, found in the symbol file beside the NEX. The program is not
+    /// distributed with ZedExEss, so this runs only when its path is given.
+    /// </remarks>
+    private static void VerifyZxnDdmaCompareTimings(string nexPath, StreamWriter writer)
+    {
+        string symbolPath = Path.ChangeExtension(nexPath, ".sym");
+        Require(File.Exists(nexPath) && File.Exists(symbolPath),
+            $"Expected {nexPath} and the symbol file {symbolPath} beside it.");
+        Dictionary<string, ushort> symbols = File.ReadAllLines(symbolPath)
+            .Select(line => line.Split(": EQU "))
+            .Where(parts => parts.Length == 2)
+            .ToDictionary(
+                parts => parts[0].Trim(),
+                parts => Convert.ToUInt16(parts[1].Trim(), 16));
+        if (!symbols.TryGetValue("times", out ushort times)
+            || !symbols.TryGetValue("have_zxnddma", out ushort haveZxnDdma))
+        {
+            throw new InvalidOperationException("The symbol file has no times or have_zxnddma label.");
+        }
+
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextNexLoader.Load(machine, File.ReadAllBytes(nexPath));
+        ushort ReadTime(int way) => (ushort)(machine.MemoryBus.ReadDirect((ushort)(times + (way * 2)))
+            | (machine.MemoryBus.ReadDirect((ushort)(times + (way * 2) + 1)) << 8));
+        int frames = 0;
+        while (frames < 200 && ReadTime(4) == 0)
+        {
+            machine.RunFrame(presentFrame: false);
+            frames++;
+        }
+
+        (string Name, int TenthsOfMs)[] board =
+        [
+            ("1 CPU, LDIR", 72),
+            ("2 CPU, skip $E3", 156),
+            ("3 zxnDMA, per column", 82),
+            ("4 zxnDDMA, opaque", 21),
+            ("5 zxnDDMA, transparent", 21)
+        ];
+        Require(machine.MemoryBus.ReadDirect(haveZxnDdma) == 1,
+            "The program did not find the zxnDDMA.");
+        var results = new List<string>();
+        for (int way = 0; way < board.Length; way++)
+        {
+            int lines = ReadTime(way);
+            int tenths = ((lines * 64) + 50) / 100;
+            results.Add($"{board[way].Name} {lines} lines = {tenths / 10}.{tenths % 10} ms");
+            Require(tenths == board[way].TenthsOfMs,
+                $"Way {board[way].Name} took {lines} video lines, which the program prints as "
+                    + $"{tenths / 10}.{tenths % 10} ms; the board printed "
+                    + $"{board[way].TenthsOfMs / 10}.{board[way].TenthsOfMs % 10} ms.");
+        }
+
+        writer.WriteLine($"  zxnddma_compare milestone (after {frames} frames): {string.Join("; ", results)}");
+    }
+
+    /// <summary>
+    /// Port decode as zxnext.vhd does it, rule by rule: $7FFD's timing-dependent A14, the
+    /// Soundrive mode 2 conflict on $F1/$F9, the AY's A2/A0 decode with $BFFD readable only
+    /// in +3 timing and $BFF5's information, the $FF port enable, the one ULA interrupt
+    /// disable flip-flop shared by $FF, $22 and $C4, $FE bit 6 on an issue 2 keyboard,
+    /// undecoded ports reading $FF, and I/O contention following the same decodes.
+    /// </summary>
+    private static void VerifyPortDecodeRules()
+    {
+        // The machine timing takes effect for the decode when time next advances, as the
+        // CPU's I/O cycles always make it; here nothing runs in between, so it is applied.
+        static void SetMachineTiming(ZxNextMachine machine, byte value)
+        {
+            machine.Registers.Write(0x03, value);
+            machine.UlaTiming.SynchronizeProfile();
+        }
+
+        // $7FFD: A15 = 0, A1:0 = 01; A14 only in +3 timing.
+        foreach ((byte timing, ushort port, bool pages) in new (byte, ushort, bool)[]
+        {
+            (0xA1, 0x3FFD, true),  // 128K timing
+            (0x91, 0x0FFD, true),  // 48K timing
+            (0xB3, 0x3FFD, false), // +3 timing
+            (0xB3, 0x7FFD, true)
+        })
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            SetMachineTiming(machine, timing);
+            machine.PortBus.WriteUncontended(port, 0x05);
+            Require((machine.Paging.Port7Ffd == 0x05) == pages,
+                $"A write to ${port:X4} with NextReg $03=${timing:X2} {(pages ? "did not page" : "paged")}.");
+        }
+
+        // With $1FFD disabled, a $1FFD write is a $7FFD write outside +3 timing.
+        ZxNextMachine noPlus3Port = ZxNextMachineFactory.CreateFoundationMachine();
+        SetMachineTiming(noPlus3Port, 0xA1);
+        noPlus3Port.Registers.Write(0x82, 0xF7);
+        noPlus3Port.PortBus.WriteUncontended(0x1FFD, 0x03);
+        Require(noPlus3Port.Paging.Port7Ffd == 0x03 && noPlus3Port.Paging.Port1Ffd == 0,
+            "A $1FFD write with $1FFD disabled did not page as $7FFD in 128K timing.");
+
+        // Soundrive mode 2 (port enable bit 18, NextReg $84 bit 2) keeps $F1 off the paging ports.
+        ZxNextMachine soundrive = ZxNextMachineFactory.CreateFoundationMachine();
+        SetMachineTiming(soundrive, 0xA1);
+        soundrive.PortBus.WriteUncontended(0x7FF1, 0x04);
+        Require(soundrive.Paging.Port7Ffd == 0,
+            "A $7FF1 write paged while Soundrive mode 2 held $F1.");
+        soundrive.Registers.Write(0x84, 0xFB);
+        soundrive.PortBus.WriteUncontended(0x7FF1, 0x04);
+        Require(soundrive.Paging.Port7Ffd == 0x04,
+            "A $7FF1 write did not page with Soundrive mode 2 off.");
+
+        // The AY: $FFFD and $BFFD need A2 = 1 and A1:0 = 01.
+        ZxNextMachine ay = ZxNextMachineFactory.CreateFoundationMachine();
+        SetMachineTiming(ay, 0xA1);
+        ZxNextPortBus ports = ay.PortBus;
+        ports.WriteUncontended(0xFFFD, 0x07);
+        ports.WriteUncontended(0xBFFD, 0x2A);
+        ports.WriteUncontended(0xFFFC, 0x02); // A0 = 0: the ULA, not the AY
+        ports.WriteUncontended(0xFFF9, 0x03); // A2 = 0: nothing
+        ports.WriteUncontended(0xBFF9, 0x15); // A2 = 0: nothing
+        Require(ports.ReadUncontended(0xFFFD) == 0x2A && ay.Audio.ReadInformation() == ports.ReadUncontended(0xBFF5),
+            "An address without A0 or A2 reached the AY, or $BFF5 did not read the information.");
+        Require(ports.ReadUncontended(0xBFFD) == 0xFF && ports.ReadUncontended(0xDFFD) == 0x2A,
+            "$BFFD read the AY outside +3 timing, or $DFFD did not read it.");
+        SetMachineTiming(ay, 0xB3);
+        Require(ports.ReadUncontended(0xBFFD) == 0x2A,
+            "$BFFD did not read the AY in +3 timing.");
+        Require(ports.ReadUncontended(0x0003) == 0xFF,
+            "An undecoded port did not read $FF.");
+
+        // Port $FF needs its enable (NextReg $82 bit 0) to write and to read the Timex register.
+        ZxNextMachine timex = ZxNextMachineFactory.CreateFoundationMachine();
+        SetMachineTiming(timex, 0x91);
+        timex.Registers.Write(0x08, 0x14); // $FF reads the Timex register
+        timex.PortBus.WriteUncontended(0x00FF, 0x06);
+        Require(timex.Registers.TimexPort == 0x06 && timex.PortBus.ReadUncontended(0x00FF) == 0x06,
+            "Port $FF did not write and read the Timex register.");
+        timex.Registers.Write(0x82, 0xFE);
+        timex.PortBus.WriteUncontended(0x00FF, 0x01);
+        Require(timex.Registers.TimexPort == 0x06 && timex.PortBus.ReadUncontended(0x00FF) != 0x06,
+            "Port $FF reached the Timex register with its port enable off.");
+
+        // One interrupt-disable flip-flop: port $FF bit 6, NextReg $22 bit 2, NOT $C4 bit 0.
+        ZxNextMachine flipFlop = ZxNextMachineFactory.CreateFoundationMachine();
+        flipFlop.Registers.Write(0x22, 0x04);
+        Require(!flipFlop.Registers.UlaInterruptEnabled
+                && (flipFlop.Registers.TimexPort & 0x40) != 0
+                && (flipFlop.Registers.Read(0xC4) & 0x01) == 0,
+            "NextReg $22 bit 2 did not set the shared interrupt disable.");
+        flipFlop.PortBus.WriteUncontended(0x00FF, 0x00);
+        Require(flipFlop.Registers.UlaInterruptEnabled
+                && (flipFlop.Registers.Read(0x22) & 0x04) == 0
+                && (flipFlop.Registers.Read(0xC4) & 0x01) != 0,
+            "A port $FF write did not clear the interrupt disable that $22 had set.");
+        flipFlop.Registers.Write(0xC4, 0x80);
+        Require(!flipFlop.Registers.UlaInterruptEnabled
+                && (flipFlop.Registers.TimexPort & 0x40) != 0
+                && (flipFlop.Registers.Read(0x22) & 0x04) != 0,
+            "NextReg $C4 bit 0 did not write the shared interrupt disable.");
+
+        // $FE bit 6: EAR out, or MIC on an issue 2 keyboard (the relaxed EAR input).
+        ZxNextMachine issue2 = ZxNextMachineFactory.CreateFoundationMachine();
+        issue2.PortBus.WriteUncontended(0x00FE, 0x08);
+        Require((issue2.PortBus.ReadUncontended(0xFFFE) & 0x40) == 0,
+            "$FE bit 6 followed MIC without the issue 2 keyboard.");
+        issue2.Registers.Write(0x08, 0x11);
+        Require((issue2.PortBus.ReadUncontended(0xFFFE) & 0x40) != 0,
+            "$FE bit 6 did not follow MIC on an issue 2 keyboard.");
+        issue2.PortBus.WriteUncontended(0x00FE, 0x00);
+        Require((issue2.PortBus.ReadUncontended(0xFFFE) & 0x40) == 0,
+            "$FE bit 6 stayed set with MIC and EAR out both clear.");
+
+        // Contention follows the same decodes: $3FFD is $7FFD in 128K timing, not in +3, and
+        // the ULA+ ports are contended only while enabled (NextReg $85 bit 0).
+        ZxNextMachine contended = ZxNextMachineFactory.CreateFoundationMachine();
+        SetMachineTiming(contended, 0xA1);
+        bool at128 = contended.Contention.IsPortContended(0x3FFD);
+        bool ulaPlus = contended.Contention.IsPortContended(0xBF3B);
+        contended.Registers.Write(0x85, 0x8E);
+        bool ulaPlusOff = contended.Contention.IsPortContended(0xBF3B);
+        SetMachineTiming(contended, 0xB3);
+        Require(at128 && ulaPlus && !ulaPlusOff && !contended.Contention.IsPortContended(0x3FFD),
+            "Port contention did not follow the $7FFD and ULA+ decodes.");
+    }
+
+    /// <summary>A copy with WR2's prescaler, the given WR4 mode and optionally WR5's restart.</summary>
+    private static byte[] PacedCopy(
+        ushort source,
+        ushort destination,
+        ushort length,
+        byte mode,
+        byte prescaler,
+        bool restart)
+    {
+        return
+        [
+            0xC3,
+            0x7D, (byte)source, (byte)(source >> 8), (byte)length, (byte)(length >> 8),
+            0x14,
+            0x50, 0x21, prescaler, // WR2: memory, increment; timing 3 cycles, prescaler follows
+            mode, (byte)destination, (byte)(destination >> 8),
+            restart ? (byte)0xB2 : (byte)0x82,
+            0xCF, 0x87
+        ];
+    }
+
+    /// <summary>
+    /// $8000: counts passes in HL until the block's last destination byte ($E00F) arrives,
+    /// then halts. Each pass is 35 T-states.
+    /// </summary>
+    private static void LoadPassCounter(ZxNextMachine machine)
+    {
+        byte[] program =
+        [
+            0xF3,             // DI
+            0x21, 0x00, 0x00, // LD HL,0
+            0x23,             // INC HL
+            0x3A, 0x0F, 0xE0, // LD A,($E00F)
+            0xB7,             // OR A
+            0x28, 0xF9,       // JR Z,-7
+            0x76              // HALT
+        ];
+        for (int index = 0; index < program.Length; index++)
+        {
+            machine.MemoryBus.WriteDirect((ushort)(0x8000 + index), program[index]);
+        }
+
+        machine.Cpu.PC = 0x8000;
+    }
+
+    private static void LoadSpinLoop(ZxNextMachine machine)
+    {
+        machine.MemoryBus.WriteDirect(0x8000, 0xF3); // DI
+        machine.MemoryBus.WriteDirect(0x8001, 0x18); // JR $
+        machine.MemoryBus.WriteDirect(0x8002, 0xFE);
+        machine.Cpu.PC = 0x8000;
+    }
+
+    /// <summary>A machine with 64 numbered bytes at $C000 and an empty page at $E000.</summary>
+    private static ZxNextMachine CreateDmaCopyMachine(out ushort source, out ushort destination)
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        machine.MemoryBus.SetMmuPage(6, 0x20);
+        machine.MemoryBus.SetMmuPage(7, 0x21);
+        source = 0xC000;
+        destination = 0xE000;
+        for (int index = 0; index < 64; index++)
+        {
+            machine.MemoryBus.WriteDirect((ushort)(source + index), (byte)(index + 1));
+        }
+
+        return machine;
+    }
+
+    private static int CountCopiedBytes(ZxNextMachine machine, ushort source, ushort destination)
+    {
+        int count = 0;
+        while (count < 64
+            && machine.MemoryBus.ReadDirect((ushort)(destination + count))
+                == machine.MemoryBus.ReadDirect((ushort)(source + count)))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private static byte[] ReadDmaBytes(ZxNextMachine machine, int count)
+    {
+        var bytes = new byte[count];
+        for (int index = 0; index < count; index++)
+        {
+            bytes[index] = machine.PortBus.ReadUncontended(ZxNextDmaDevice.ZxnControlPort);
+        }
+
+        return bytes;
+    }
+
+    private static void WriteDmaCommandOn(ZxNextMachine machine, byte port, ReadOnlySpan<byte> command)
+    {
+        foreach (byte value in command)
+        {
+            machine.PortBus.WriteUncontended(port, value);
+        }
     }
 
     private static void WriteDmaCommand(ZxNextMachine machine, ReadOnlySpan<byte> command)
@@ -4464,12 +5796,36 @@ public static class ZxNextVerificationRunner
         borderMachine.PortBus.WriteUncontended(0x00FE, 0x01);
         borderMachine.Video.AdvanceMasterTicks(profile.MasterTicksPerFrame - splitTick);
 
+        // zxula.vhd loads the border colour with the shift register, every 8 pixels on the
+        // display's cell grid, so the new colour starts at the next group: logical pixel 16.
+        const int nextGroupLogicalPixel = 16;
         int[] borderFrame = borderMachine.Video.FrameBuffer;
         Require(borderFrame[0] == darkRed
-                && borderFrame[(splitLogicalPixel * 2) - 1] == darkRed
-                && borderFrame[splitLogicalPixel * 2] == darkBlue
+                && borderFrame[(nextGroupLogicalPixel * 2) - 1] == darkRed
+                && borderFrame[nextGroupLogicalPixel * 2] == darkBlue
                 && borderFrame[^1] == darkBlue,
-            "A mid-line FE write did not split the border at its cycle-accounted raster coordinate.");
+            "A mid-line FE write did not take effect at the next 8-pixel group of the border.");
+
+        // Pentagon timing reloads the border colour on every clock: the split is at the pixel.
+        ZxNextMachine pentagonBorder = ZxNextMachineFactory.CreateFoundationMachine();
+        pentagonBorder.Registers.Write(0x03, 0xC3);
+        pentagonBorder.UlaTiming.SynchronizeProfile();
+        pentagonBorder.PortBus.WriteUncontended(0x00FE, 0x02);
+        pentagonBorder.Video.Reset();
+        profile = pentagonBorder.UlaTiming.Profile;
+        visibleStartTick = checked(
+            ((ulong)profile.VisibleFirstLine * (ulong)profile.PixelsPerLine
+                + (ulong)profile.VisibleStartHorizontal)
+            * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel);
+        splitTick = visibleStartTick
+            + (splitLogicalPixel * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel);
+        pentagonBorder.Video.AdvanceMasterTicks(splitTick);
+        pentagonBorder.PortBus.WriteUncontended(0x00FE, 0x01);
+        pentagonBorder.Video.AdvanceMasterTicks(profile.MasterTicksPerFrame - splitTick);
+        borderFrame = pentagonBorder.Video.FrameBuffer;
+        Require(borderFrame[(splitLogicalPixel * 2) - 1] == darkRed
+                && borderFrame[splitLogicalPixel * 2] == darkBlue,
+            "In Pentagon timing a mid-line FE write did not split the border at its pixel.");
     }
 
     private static void VerifyCpuDisplayWriteTiming()
@@ -4548,7 +5904,7 @@ public static class ZxNextVerificationRunner
         {
             ZxNextMachine turbo = ZxNextMachineFactory.CreateFoundationMachine();
             turbo.Registers.Write(0x08, 0x50);
-            turbo.Registers.Write(0x07, (byte)speed);
+            SetCpuSpeedNow(turbo, speed);
             turbo.MemoryBus.WritePhysicalRam(10, 0x1800, 0x33);
             turbo.Video.Reset();
             turbo.MemoryBus.WriteCpu(0x5800, 0x44);
@@ -4559,6 +5915,15 @@ public static class ZxNextVerificationRunner
         }
     }
 
+    /// <summary>
+    /// The Next's audio, from <c>audio_mixer.vhd</c>, <c>turbosound.vhd</c> and <c>ym2149.vhd</c>.
+    /// </summary>
+    /// <remarks>
+    /// Every level here was worked out by hand from those files, not read from the device:
+    /// EAR is 512 and MIC 128 per side; a chip's ABC output is A+B left and C+B right; a
+    /// YM channel at fixed volume v reads the 32-entry table at v*2+1; the host's mono
+    /// sample is (left + right) * 2.
+    /// </remarks>
     private static void VerifyNextAudio()
     {
         ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
@@ -4568,25 +5933,38 @@ public static class ZxNextVerificationRunner
                 && machine.PortBus.ReadUncontended(0xBFF5) == 0xC0,
             "Next audio reset registers or AY-0 selection are incorrect.");
 
+        // EAR: 512 a side, so (512 + 512) * 2.
         machine.PortBus.WriteUncontended(0x00FE, 0x10);
-        short[] beeper = new short[256];
-        Require(machine.ReadSamples(beeper, 0, beeper.Length) == beeper.Length
-                && beeper.Max() >= 6000,
-            "The Next $FE EAR bit did not produce a useful sparse-mix host level.");
+        short[] beeper = ReadNextAudio(machine, 256);
+        Require(beeper.All(static sample => sample == 2048),
+            "The Next $FE EAR bit did not give audio_mixer.vhd's 512 a side.");
+
+        // MIC: 128 a side, cancelled by an issue 2 keyboard (beep_mic_final).
+        machine.PortBus.WriteUncontended(0x00FE, 0x08);
+        Require(ReadNextAudioAfterWrite(machine, 128).All(static sample => sample == 512),
+            "The Next $FE MIC bit did not give audio_mixer.vhd's 128 a side.");
+        machine.Registers.Write(0x08, 0x91);
+        Require(ReadNextAudioAfterWrite(machine, 128).All(static sample => sample == 0),
+            "An issue 2 keyboard ($08 bit 0) did not cancel the MIC bit's audio.");
+        machine.PortBus.WriteUncontended(0x00FE, 0x18);
+        Require(ReadNextAudioAfterWrite(machine, 128).All(static sample => sample == 2048),
+            "An issue 2 keyboard changed the EAR bit's audio.");
+        machine.Registers.Write(0x08, 0x90);
+
         machine.PortBus.WriteUncontended(0x00FE, 0x00);
-        short[] silence = new short[128];
-        machine.ReadSamples(silence, 0, silence.Length);
+        short[] silence = ReadNextAudioAfterWrite(machine, 128);
         Require(silence.All(static sample => sample == 0),
             "Clearing the Next $FE audio bits did not restore silence.");
 
         machine.Registers.Write(0x06, 0xE0);
         machine.PortBus.WriteUncontended(0x00FE, 0x10);
-        machine.ReadSamples(silence, 0, silence.Length);
-        Require(silence.All(static sample => sample == 0),
+        Require(ReadNextAudioAfterWrite(machine, 128).All(static sample => sample == 0),
             "NextReg $06 speaker-exclusive mode did not divert the beeper from host audio.");
         machine.Registers.Write(0x06, 0xA0);
         machine.PortBus.WriteUncontended(0x00FE, 0x00);
 
+        // A tone on A alone: YM level 31 is 255, left only, so 0 or 510. Period 32 toggles
+        // every 32 steps of 8 clock enables at 1.75 MHz.
         WriteAyRegister(machine, 0, 0x20);
         WriteAyRegister(machine, 1, 0x00);
         WriteAyRegister(machine, 7, 0x3E);
@@ -4595,10 +5973,25 @@ public static class ZxNextVerificationRunner
         Require(machine.PortBus.ReadUncontended(0xFFFD) == 0x0F
                 && machine.PortBus.ReadUncontended(0xBFFD) == 0x0F,
             "AY-0 register readback failed on $FFFD/$BFFD.");
-        short[] tone = new short[1024];
-        machine.ReadSamples(tone, 0, tone.Length);
-        Require(tone.Min() == 0 && tone.Max() >= 4000 && tone.Distinct().Count() > 1,
-            "The fixed-clock AY tone generator did not preserve a useful single-channel level.");
+        short[] tone = ReadNextAudio(machine, 1024);
+        int toggles = 0;
+        for (int index = 1; index < tone.Length; index++)
+        {
+            toggles += tone[index] != tone[index - 1] ? 1 : 0;
+        }
+
+        double expectedToggles = tone.Length * (double)ZxNextPsg.ClockHz / (8 * 32 * machine.Audio.SampleRate);
+        Require(tone.All(static sample => sample is 0 or 510) && tone.Contains((short)510),
+            "A full-volume YM tone on channel A was not 0 or 510 (255 on the left).");
+        Require(Math.Abs(toggles - expectedToggles) <= 2,
+            $"A period-32 tone toggled {toggles} times in {tone.Length} samples, not about {expectedToggles:0}: ym2149.vhd counts every 8 enables.");
+
+        VerifyNextPsgNoise(machine.Audio.SampleRate);
+
+        VerifyNextPsgRegisters();
+        VerifyNextPsgLevelsAndEnvelopes();
+        VerifyNextPsgStereo();
+        VerifyNextPsgResets();
 
         machine.Registers.Write(0x08, 0x12);
         machine.PortBus.WriteUncontended(0xFFFD, 0xFE); // AY 1, both output sides.
@@ -4620,6 +6013,8 @@ public static class ZxNextVerificationRunner
         Require(machine.PortBus.ReadUncontended(0xBFFD) == 0,
             "Holding the PSGs in reset did not clear their registers.");
 
+        // Everything at once: three chips with every channel at 15 (A+B and C+B a side, 510
+        // each), plus EAR and MIC (640 a side): 2170 a side, 8680 mono. No limiter.
         ZxNextMachine denseMix = ZxNextMachineFactory.CreateFoundationMachine();
         denseMix.Registers.Write(0x08, 0x12);
         foreach (byte chipSelect in new byte[] { 0xFF, 0xFE, 0xFD })
@@ -4632,10 +6027,8 @@ public static class ZxNextVerificationRunner
         }
 
         denseMix.PortBus.WriteUncontended(0x00FE, 0x18);
-        short[] limitedMix = new short[128];
-        denseMix.ReadSamples(limitedMix, 0, limitedMix.Length);
-        Require(limitedMix.Max() is >= 28000 and < short.MaxValue,
-            "The dense three-PSG/beeper mix did not use limiter headroom without hard clipping.");
+        Require(ReadNextAudio(denseMix, 128).All(static sample => sample == 8680),
+            "The dense three-PSG/beeper mix was not audio_mixer.vhd's sum (2170 a side).");
 
         ulong minimumDelta = ulong.MaxValue;
         ulong maximumDelta = 0;
@@ -4653,28 +6046,424 @@ public static class ZxNextVerificationRunner
         Require(maximumDelta - minimumDelta <= 32,
             "Audio duration changed with CPU turbo instead of remaining on the 28 MHz clock.");
 
-        var renderedPhase = new AY38912(ZxNextAudioDevice.AyClockHz, 44_100);
-        var silentPhase = new AY38912(ZxNextAudioDevice.AyClockHz, 44_100);
-        foreach (AY38912 chip in new[] { renderedPhase, silentPhase })
+        var renderedPhase = new ZxNextPsg(44_100);
+        var silentPhase = new ZxNextPsg(44_100);
+        foreach (ZxNextPsg chip in new[] { renderedPhase, silentPhase })
         {
             chip.WriteRegister(0, 0x31);
             chip.WriteRegister(1, 0x02);
             chip.WriteRegister(6, 0x07);
             chip.WriteRegister(7, 0x36);
             chip.WriteRegister(8, 0x0F);
+            chip.WriteRegister(9, 0x10);
             chip.WriteRegister(11, 0x13);
             chip.WriteRegister(13, 0x0A);
         }
 
-        short[] discardedPhase = new short[997];
-        renderedPhase.RenderSamples(discardedPhase.Length, discardedPhase, 0);
-        silentPhase.AdvanceSamples(discardedPhase.Length);
-        short[] renderedContinuation = new short[257];
-        short[] silentContinuation = new short[257];
-        renderedPhase.RenderSamples(renderedContinuation.Length, renderedContinuation, 0);
-        silentPhase.RenderSamples(silentContinuation.Length, silentContinuation, 0);
-        Require(renderedContinuation.SequenceEqual(silentContinuation),
-            "Silent PSG advancement did not preserve tone/noise/envelope continuation phase.");
+        for (int sample = 0; sample < 997; sample++)
+        {
+            renderedPhase.RenderSample(out _, out _, out _);
+            silentPhase.AdvanceSample();
+        }
+
+        for (int sample = 0; sample < 257; sample++)
+        {
+            renderedPhase.RenderSample(out byte renderedA, out byte renderedB, out byte renderedC);
+            silentPhase.RenderSample(out byte silentA, out byte silentB, out byte silentC);
+            Require(renderedA == silentA && renderedB == silentB && renderedC == silentC,
+                "Silent PSG advancement did not preserve tone/noise/envelope continuation phase.");
+        }
+    }
+
+    /// <summary>
+    /// The samples after a level written between pulls. The last pull ran part way into the
+    /// sample the write falls in, so that one is the mean across the write and is skipped.
+    /// </summary>
+    private static short[] ReadNextAudioAfterWrite(ZxNextMachine machine, int count) =>
+        ReadNextAudio(machine, count + 1)[1..];
+
+    private static short[] ReadNextAudio(ZxNextMachine machine, int count)
+    {
+        var samples = new short[count];
+        Require(machine.ReadSamples(samples, 0, count) == count,
+            "The Next did not produce the audio samples asked for.");
+        return samples;
+    }
+
+    /// <summary>
+    /// ym2149.vhd's noise: <c>poly17 &lt;= (p0 xor p2 xor zero) &amp; p(16 downto 1)</c>, shifted
+    /// every 16 clock enables at period 0 or 1 and every period * 16 above that.
+    /// </summary>
+    private static void VerifyNextPsgNoise(int sampleRate)
+    {
+        // The register's output bit (bit 0) before and after each shift, from power-on at 0.
+        static int[] ReferenceNoise(int shifts)
+        {
+            var bits = new int[shifts + 1];
+            int poly = 0;
+            for (int shift = 1; shift <= shifts; shift++)
+            {
+                int feedback = (poly & 1) ^ ((poly >> 2) & 1) ^ (poly == 0 ? 1 : 0);
+                poly = (feedback << 16) | (poly >> 1);
+                bits[shift] = poly & 1;
+            }
+
+            return bits;
+        }
+
+        static int Transitions(IReadOnlyList<int> values)
+        {
+            int transitions = 0;
+            for (int index = 1; index < values.Count; index++)
+            {
+                transitions += values[index] != values[index - 1] ? 1 : 0;
+            }
+
+            return transitions;
+        }
+
+        // At 109,375 samples a second each sample is exactly 16 enables, one shift: the PSG's
+        // output is the reference sequence itself, give or take where the first shift falls.
+        var psg = new ZxNextPsg(ZxNextPsg.ClockHz / 16);
+        psg.WriteRegister(6, 0);
+        psg.WriteRegister(7, 0x37);
+        psg.WriteRegister(8, 0x0F);
+        var produced = new int[400];
+        for (int sample = 0; sample < produced.Length; sample++)
+        {
+            psg.RenderSample(out byte a, out byte b, out byte c);
+            Require(b == 0 && c == 0 && a is 0 or 0xFF,
+                "Noise on channel A alone was not 0 or 255 on A.");
+            produced[sample] = a == 0 ? 0 : 1;
+        }
+
+        int[] reference = ReferenceNoise(produced.Length + 4);
+        bool aligned = false;
+        for (int offset = 0; offset <= 2 && !aligned; offset++)
+        {
+            aligned = produced.AsSpan().SequenceEqual(reference.AsSpan(offset, produced.Length));
+        }
+
+        Require(aligned,
+            "The PSG noise was not ym2149.vhd's 17-bit sequence (taps 0 and 2, a 1 shifted in from zero).");
+
+        // On the machine at period 31: one shift every 31 * 16 enables, about 12.5 samples,
+        // so every change of the output bit is heard.
+        ZxNextMachine noisy = ZxNextMachineFactory.CreateFoundationMachine();
+        WriteAyRegister(noisy, 6, 31);
+        WriteAyRegister(noisy, 7, 0x37);
+        WriteAyRegister(noisy, 8, 0x0F);
+        short[] noise = ReadNextAudio(noisy, 2048);
+        int shifts = (int)(noise.Length * (long)ZxNextPsg.ClockHz / (16L * 31 * sampleRate));
+        Require(noise.All(static sample => sample is 0 or 510),
+            "Noise on channel A alone was not 0 or 510.");
+        int heard = Transitions(noise.Select(static sample => sample == 0 ? 0 : 1).ToArray());
+        int expected = Transitions(ReferenceNoise(shifts));
+        Require(Math.Abs(heard - expected) <= 1,
+            $"Period-31 noise changed {heard} times in {noise.Length} samples, not the {expected} of {shifts} shifts.");
+    }
+
+    /// <summary>ym2149.vhd's register store and read-back.</summary>
+    private static void VerifyNextPsgRegisters()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        byte ReadPsg(byte register)
+        {
+            machine.PortBus.WriteUncontended(0xFFFD, register);
+            return machine.PortBus.ReadUncontended(0xFFFD);
+        }
+
+        machine.PortBus.WriteUncontended(0xFFFD, 7);
+        Require(machine.PortBus.ReadUncontended(0xFFFD) == 0xFF,
+            "R7 did not read $FF after reset (ym2149.vhd resets it so, every port an output).");
+
+        // All eight bits are stored; the YM reads them back, the AY masks the unused ones.
+        byte[] written = [0x31, 0xFF, 0x42, 0xFF, 0x53, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x64, 0x75, 0xFF];
+        for (byte register = 0; register < written.Length; register++)
+        {
+            WriteAyRegister(machine, register, written[register]);
+        }
+
+        for (byte register = 0; register < written.Length; register++)
+        {
+            Require(ReadPsg(register) == written[register],
+                $"The YM did not read back all eight bits of R{register}.");
+        }
+
+        byte[] ayMasks = [0xFF, 0x0F, 0xFF, 0x0F, 0xFF, 0x0F, 0x1F, 0xFF, 0x1F, 0x1F, 0x1F, 0xFF, 0xFF, 0x0F];
+        machine.Registers.Write(0x06, 0xA1);
+        for (byte register = 0; register < written.Length; register++)
+        {
+            Require(ReadPsg(register) == (written[register] & ayMasks[register]),
+                $"The AY did not mask R{register} as ym2149.vhd does.");
+        }
+
+        machine.Registers.Write(0x06, 0xA0);
+        Require(ReadPsg(1) == 0xFF,
+            "Switching to the AY and back lost the stored bits of R1.");
+
+        // Registers 16-31: selected (five bits), writes ignored, $FF on a YM, aliases on an AY.
+        machine.PortBus.WriteUncontended(0xFFFD, 0x15);
+        Require(machine.PortBus.ReadUncontended(0xBFF5) == 0xD5,
+            "$BFF5 did not show a five-bit register select.");
+        machine.PortBus.WriteUncontended(0xFFFD, 0x10);
+        machine.PortBus.WriteUncontended(0xBFFD, 0x99);
+        Require(machine.PortBus.ReadUncontended(0xFFFD) == 0xFF,
+            "A YM's register 16 did not read $FF (R0 holds $31).");
+        Require(ReadPsg(0) == 0x31,
+            "A write to register 16 reached R0.");
+        machine.Registers.Write(0x06, 0xA1);
+        Require(ReadPsg(0x11) == 0x0F && ReadPsg(0x10) == 0x31,
+            "An AY's registers 16-31 did not alias 0-15.");
+        machine.Registers.Write(0x06, 0xA0);
+
+        // R14 and R15 read the inputs ($FF, tied high) while their port is an input.
+        WriteAyRegister(machine, 14, 0x12);
+        WriteAyRegister(machine, 15, 0x34);
+        WriteAyRegister(machine, 7, 0x3F);
+        Require(ReadPsg(14) == 0xFF && ReadPsg(15) == 0xFF,
+            "R14/R15 did not read $FF while their ports were inputs.");
+        WriteAyRegister(machine, 7, 0xC0);
+        Require(ReadPsg(14) == 0x12 && ReadPsg(15) == 0x34,
+            "R14/R15 did not read their registers while their ports were outputs.");
+        WriteAyRegister(machine, 7, 0x7F);
+        Require(ReadPsg(14) == 0x12 && ReadPsg(15) == 0xFF,
+            "R7 bit 6 alone did not make R14 an output and leave R15 an input.");
+        WriteAyRegister(machine, 7, 0xBF);
+        Require(ReadPsg(14) == 0xFF && ReadPsg(15) == 0x34,
+            "R7 bit 7 alone did not make R15 an output and leave R14 an input.");
+
+        // A register select with bits 7:5 set is not a select, whatever its low bits.
+        machine.PortBus.WriteUncontended(0xFFFD, 3);
+        foreach (byte notSelect in new byte[] { 0x25, 0x45, 0x65, 0x85, 0xE5 })
+        {
+            machine.PortBus.WriteUncontended(0xFFFD, notSelect);
+            Require(machine.PortBus.ReadUncontended(0xBFF5) == 0xC3,
+                $"A $FFFD write of {notSelect:X2} (bits 7:5 set) changed the selected register.");
+        }
+    }
+
+    /// <summary>The YM and AY volume tables and the 32-step envelope.</summary>
+    private static void VerifyNextPsgLevelsAndEnvelopes()
+    {
+        byte[] ymTable =
+        [
+            0x00, 0x01, 0x01, 0x02, 0x02, 0x03, 0x03, 0x04, 0x06, 0x07, 0x09, 0x0A, 0x0C, 0x0E, 0x11, 0x13,
+            0x17, 0x1B, 0x20, 0x25, 0x2C, 0x35, 0x3E, 0x47, 0x54, 0x66, 0x77, 0x88, 0xA1, 0xC0, 0xE0, 0xFF
+        ];
+        byte[] ayTable =
+        [
+            0x00, 0x03, 0x04, 0x06, 0x0A, 0x0F, 0x15, 0x22, 0x28, 0x41, 0x5B, 0x72, 0x90, 0xB5, 0xD7, 0xFF
+        ];
+
+        // Fixed volume v is level v*2+1: the YM reads all 32 entries, the AY the top four bits.
+        foreach (bool ayMode in new[] { false, true })
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            if (ayMode)
+            {
+                machine.Registers.Write(0x06, 0xA1);
+            }
+
+            WriteAyRegister(machine, 7, 0x3F);
+            for (int volume = 0; volume < 16; volume++)
+            {
+                int level = volume == 0 ? 0 : (volume * 2) + 1;
+                WriteAyRegister(machine, 8, (byte)volume);
+                int expected = (ayMode ? ayTable[level >> 1] : ymTable[level]) * 2;
+                Require(ReadNextAudio(machine, 16).All(sample => sample == expected),
+                    $"The {(ayMode ? "AY" : "YM")} at fixed volume {volume} was not table entry {level}.");
+            }
+        }
+
+        // A slow envelope (64 steps a level, about 13 samples) on channel A alone.
+        short[] Envelope(byte shape, bool ayMode, int count)
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            if (ayMode)
+            {
+                machine.Registers.Write(0x06, 0xA1);
+            }
+
+            WriteAyRegister(machine, 7, 0x3F);
+            WriteAyRegister(machine, 8, 0x10);
+            WriteAyRegister(machine, 11, 0x40);
+            WriteAyRegister(machine, 12, 0x00);
+            WriteAyRegister(machine, 13, shape);
+            return ReadNextAudio(machine, count);
+        }
+
+        static HashSet<int> Levels(short[] samples) => samples.Select(static sample => sample / 2).ToHashSet();
+
+        // An R13 write loads 31 falling (attack clear) or 0 rising and steps at the next clock
+        // enable with the period counter restarted, so the first level heard for a whole
+        // period is 30 or 1.
+        Require(Envelope(0x00, ayMode: false, 12).All(sample => sample == ymTable[30] * 2)
+                && Envelope(0x04, ayMode: false, 12).All(sample => sample == ymTable[1] * 2),
+            "An R13 write did not start the envelope at level 30 (falling) or 1 (rising).");
+
+        foreach (byte shape in new byte[] { 0x08, 0x0C })
+        {
+            Require(Levels(Envelope(shape, ayMode: false, 2048)).SetEquals(ymTable.Select(static value => (int)value)),
+                $"The YM envelope shape {shape:X2} did not step through all 32 table levels.");
+            Require(Levels(Envelope(shape, ayMode: true, 2048)).SetEquals(ayTable.Select(static value => (int)value)),
+                $"The AY envelope shape {shape:X2} did not step through the 16-entry table.");
+        }
+
+        // The repeating shapes: sawtooths jump between the ends, triangles do not.
+        static int LargestStep(short[] samples)
+        {
+            int largest = 0;
+            for (int index = 1; index < samples.Length; index++)
+            {
+                largest = Math.Max(largest, Math.Abs(samples[index] - samples[index - 1]));
+            }
+
+            return largest;
+        }
+
+        Require(LargestStep(Envelope(0x0C, ayMode: false, 2048)) == 510
+                && LargestStep(Envelope(0x08, ayMode: false, 2048)) == 510,
+            "A sawtooth envelope did not wrap from one end to the other.");
+        Require(LargestStep(Envelope(0x0E, ayMode: false, 2048)) <= 64
+                && LargestStep(Envelope(0x0A, ayMode: false, 2048)) <= 64
+                && Levels(Envelope(0x0E, ayMode: false, 2048)).SetEquals(ymTable.Select(static value => (int)value)),
+            "A triangle envelope jumped instead of turning round.");
+
+        // The one-shot shapes end at the level the shape table gives, after one 32-step ramp.
+        (byte Shape, int End)[] holds =
+        [
+            (0x00, 0), (0x04, 0), (0x09, 0), (0x0B, 510), (0x0D, 510), (0x0F, 0)
+        ];
+        foreach ((byte shape, int end) in holds)
+        {
+            short[] samples = Envelope(shape, ayMode: false, 1024);
+            Require(samples.AsSpan(600).ToArray().All(sample => sample == end)
+                    && Levels(samples.AsSpan(0, 420).ToArray()).Count >= 24,
+                $"The envelope shape {shape:X2} did not ramp once and hold at {end / 2}.");
+        }
+    }
+
+    /// <summary>turbosound.vhd's per-chip stereo, mono and panning.</summary>
+    private static void VerifyNextPsgStereo()
+    {
+        // A=15 (255), B=12 (level 25, 102), C=8 (level 17, 27) on AY 0 with TurboSound on.
+        int Mix(byte nextReg08, byte nextReg09, byte chipSelect)
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            machine.Registers.Write(0x08, nextReg08);
+            machine.Registers.Write(0x09, nextReg09);
+            machine.PortBus.WriteUncontended(0xFFFD, chipSelect);
+            WriteAyRegister(machine, 7, 0x3F);
+            WriteAyRegister(machine, 8, 0x0F);
+            WriteAyRegister(machine, 9, 0x0C);
+            WriteAyRegister(machine, 10, 0x08);
+            short[] samples = ReadNextAudio(machine, 16);
+            Require(samples.All(sample => sample == samples[0]),
+                "Fixed PSG volumes did not give a steady level.");
+            return samples[0];
+        }
+
+        Require(Mix(0x12, 0x00, 0xFF) == (357 + 129) * 2,
+            "ABC stereo was not A+B left and C+B right.");
+        Require(Mix(0x32, 0x00, 0xFF) == (282 + 129) * 2,
+            "ACB stereo ($08 bit 5) was not A+C left and C+B right.");
+        Require(Mix(0x12, 0x20, 0xFF) == (384 + 384) * 2,
+            "Mono ($09 bit 5 for AY 0) was not A+B+C on both sides.");
+        Require(Mix(0x12, 0x40, 0xFF) == (357 + 129) * 2,
+            "$09 bit 6 (AY 1's mono) changed AY 0.");
+        Require(Mix(0x12, 0x00, 0xDF) == 357 * 2
+                && Mix(0x12, 0x00, 0xBF) == 129 * 2
+                && Mix(0x12, 0x00, 0x9F) == 0,
+            "The pan bits (6 left, 5 right) did not keep and drop each side.");
+
+        // With TurboSound off only the selected chip is heard.
+        ZxNextMachine turbo = ZxNextMachineFactory.CreateFoundationMachine();
+        turbo.Registers.Write(0x08, 0x12);
+        turbo.PortBus.WriteUncontended(0xFFFD, 0xFE);
+        WriteAyRegister(turbo, 7, 0x3F);
+        WriteAyRegister(turbo, 8, 0x0F);
+        turbo.PortBus.WriteUncontended(0xFFFD, 0xFF);
+        WriteAyRegister(turbo, 7, 0x3F);
+        WriteAyRegister(turbo, 8, 0x08);
+        Require(ReadNextAudio(turbo, 16).All(static sample => sample == (255 + 27) * 2),
+            "TurboSound did not sum the chips.");
+        turbo.Registers.Write(0x08, 0x10);
+        Require(ReadNextAudio(turbo, 16).All(static sample => sample == 27 * 2),
+            "With TurboSound off, a chip other than the selected one was heard.");
+        turbo.PortBus.WriteUncontended(0xFFFD, 0xFE);
+        Require(turbo.Audio.ActiveChip == 0,
+            "A chip select took effect with TurboSound off.");
+    }
+
+    /// <summary>Resets: PSG mode 11, a soft reset and a hard one.</summary>
+    private static void VerifyNextPsgResets()
+    {
+        // Mode 11 holds turbosound.vhd and the PSGs in reset: AY 0, pans 11, register 0.
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        machine.Registers.Write(0x08, 0x12);
+        machine.PortBus.WriteUncontended(0xFFFD, 0x9F); // AY 0, neither side.
+        machine.PortBus.WriteUncontended(0xFFFD, 0xBD); // AY 2, right only.
+        WriteAyRegister(machine, 8, 0x0F);
+        machine.Registers.Write(0x06, 0xA3);
+        Require(machine.Audio.ActiveChip == 0 && machine.PortBus.ReadUncontended(0xBFF5) == 0xC0,
+            "PSG mode 11 did not reset the chip and register selection.");
+        machine.PortBus.WriteUncontended(0xFFFD, 0xFD);
+        machine.PortBus.WriteUncontended(0xFFFD, 0x08);
+        machine.PortBus.WriteUncontended(0xBFFD, 0x0F);
+        Require(machine.Audio.ActiveChip == 0 && machine.PortBus.ReadUncontended(0xBFF5) == 0xC0,
+            "A $FFFD write took effect while PSG mode 11 held reset.");
+        Require(ReadNextAudio(machine, 32).All(static sample => sample == 0),
+            "A PSG was heard while mode 11 held reset.");
+        machine.Registers.Write(0x06, 0xA0);
+        WriteAyRegister(machine, 7, 0x3F);
+        Require(machine.PortBus.ReadUncontended(0xBFFD) == 0x3F,
+            "The PSGs did not take writes after leaving mode 11.");
+        machine.PortBus.WriteUncontended(0xFFFD, 8);
+        Require(machine.PortBus.ReadUncontended(0xFFFD) == 0,
+            "A write made while mode 11 held reset reached a register.");
+        WriteAyRegister(machine, 8, 0x0F);
+        Require(ReadNextAudio(machine, 16).All(static sample => sample == 510),
+            "Mode 11 did not reset AY 0's pan to both sides.");
+
+        // A reset clears the registers and leaves the generators running; the FPGA loading
+        // (our hard reset) restarts them.
+        ZxNextMachine soft = ZxNextMachineFactory.CreateFoundationMachine();
+        WriteAyRegister(soft, 0, 0x37);
+        WriteAyRegister(soft, 6, 0x01);
+        WriteAyRegister(soft, 7, 0x36);
+        WriteAyRegister(soft, 11, 0x05);
+        WriteAyRegister(soft, 13, 0x0E);
+        ReadNextAudio(soft, 333);
+        ZxNextPsgState before = soft.Audio.GetChip(0).CaptureState();
+        Require(before.Poly17 != 0 && before.ToneCount[0] != 0,
+            "The PSG generators had not moved for the reset check.");
+        soft.Reset(ZxNextResetKind.Soft);
+        ZxNextPsgState afterSoft = soft.Audio.GetChip(0).CaptureState();
+        Require(afterSoft.Poly17 == before.Poly17
+                && afterSoft.ToneCount.AsSpan().SequenceEqual(before.ToneCount)
+                && afterSoft.EnvelopeVolume == before.EnvelopeVolume
+                && afterSoft.Registers[7] == 0xFF
+                && afterSoft.Registers.Where((value, index) => index != 7).All(static value => value == 0),
+            "A soft reset did not clear the PSG registers (R7 $FF) and leave the generators running.");
+        soft.Reset(ZxNextResetKind.Hard);
+        ZxNextPsgState afterHard = soft.Audio.GetChip(0).CaptureState();
+        Require(afterHard.Poly17 == 0 && afterHard.ToneCount.All(static count => count == 0)
+                && afterHard.EnvelopeVolume == 0,
+            "A hard reset did not restart the PSG generators.");
+
+        // A state from before the PSGX chunk restores the registers and restarts the generators.
+        ZxNextMachine source = ZxNextMachineFactory.CreateFoundationMachine();
+        WriteAyRegister(source, 0, 0x37);
+        WriteAyRegister(source, 8, 0x0C);
+        ReadNextAudio(source, 100);
+        ZxNextAudioState captured = source.Audio.CaptureState();
+        ZxNextMachine legacy = ZxNextMachineFactory.CreateFoundationMachine();
+        legacy.Audio.RestoreState(captured with { Psgs = null });
+        ZxNextPsgState restored = legacy.Audio.GetChip(0).CaptureState();
+        Require(restored.Registers[0] == 0x37 && restored.Registers[8] == 0x0C
+                && restored.ToneCount.All(static count => count == 0),
+            "A state without PSG generators did not restore the registers alone.");
     }
 
     private static void WriteAyRegister(ZxNextMachine machine, byte register, byte value)
@@ -4682,6 +6471,511 @@ public static class ZxNextVerificationRunner
         machine.PortBus.WriteUncontended(0xFFFD, register);
         machine.PortBus.WriteUncontended(0xBFFD, value);
     }
+
+    /// <summary>
+    /// soundrive.vhd's four DACs, zxnext.vhd's port decode and NextReg $84 enables, the $2C-$2E
+    /// mirrors and audio_mixer.vhd's sum. Every expectation is worked out from the VHDL.
+    /// </summary>
+    private static void VerifyNextDacs()
+    {
+        VerifyNextDacHoldAndEnable();
+        VerifyNextDacPortDecode();
+        VerifyNextDacMirrors();
+        VerifyNextDacMix();
+        VerifyNextDacAveraging();
+        VerifyNextDacWriters();
+        VerifyNextDacCopperTiming(batched: false);
+        VerifyNextDacCopperTiming(batched: true);
+        VerifyNextDacResetsAndSnapshots();
+    }
+
+    private const int DacA = 0x01, DacB = 0x02, DacC = 0x04, DacD = 0x08;
+
+    private static string DescribeDacs(ZxNextMachine machine) =>
+        $"A=${machine.Audio.GetDacChannel(0):X2} B=${machine.Audio.GetDacChannel(1):X2} "
+        + $"C=${machine.Audio.GetDacChannel(2):X2} D=${machine.Audio.GetDacChannel(3):X2}";
+
+    private static bool DacsAre(ZxNextMachine machine, byte a, byte b, byte c, byte d) =>
+        machine.Audio.GetDacChannel(0) == a && machine.Audio.GetDacChannel(1) == b
+        && machine.Audio.GetDacChannel(2) == c && machine.Audio.GetDacChannel(3) == d;
+
+    private static bool DacsAtRest(ZxNextMachine machine) => DacsAre(machine, 0x80, 0x80, 0x80, 0x80);
+
+    /// <summary>NextReg $08 with bit 3 (the DACs) and bit 4 (the speaker, as after reset).</summary>
+    private static void EnableDacs(ZxNextMachine machine) => machine.Registers.Write(0x08, 0x18);
+
+    /// <summary>
+    /// The host level for steady DACs and beeper: audio_mixer.vhd's sides, (L + R) x 2 at the
+    /// HDMI level, less the DACs' resting level ($80 + $80 shifted left two, 1024 a side).
+    /// </summary>
+    private static int ExpectedDacHostLevel(int a, int b, int c, int d, int beeperPerSide = 0, int psgLeft = 0, int psgRight = 0)
+    {
+        int left = beeperPerSide + psgLeft + ((a + b) << 2);
+        int right = beeperPerSide + psgRight + ((c + d) << 2);
+        return ((left + right) * 2) - (2 * 1024 * 2);
+    }
+
+    private static void VerifyNextDacHoldAndEnable()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        Require(DacsAtRest(machine) && !machine.Audio.DacEnabled && (machine.Registers.Read(0x08) & 0x08) == 0,
+            $"The DACs did not come up at $80 and disabled ($08 bit 3 clear): {DescribeDacs(machine)}.");
+
+        // soundrive.vhd's reset is "reset or not nr_08_dac_en": no port or mirror moves it.
+        machine.PortBus.WriteUncontended(0x00DF, 0x11);
+        machine.PortBus.WriteUncontended(0x00B3, 0x22);
+        machine.Registers.Write(0x2C, 0x33);
+        machine.Registers.Write(0x2D, 0x44);
+        machine.Registers.Write(0x2E, 0x55);
+        Require(DacsAtRest(machine),
+            $"A DAC write landed while $08 bit 3 held soundrive.vhd in reset: {DescribeDacs(machine)}.");
+        Require(ReadNextAudio(machine, 64).All(static sample => sample == 0),
+            "DACs held at $80 were heard: the resting level is not taken out of the host stream.");
+
+        EnableDacs(machine);
+        Require(machine.Audio.DacEnabled && (machine.Registers.Read(0x08) & 0x08) != 0 && DacsAtRest(machine),
+            $"Setting $08 bit 3 did not enable the DACs at $80: {DescribeDacs(machine)}.");
+        Require(ReadNextAudio(machine, 64).All(static sample => sample == 0),
+            "Enabled DACs at rest were heard.");
+        machine.PortBus.WriteUncontended(0x00DF, 0x11);
+        Require(DacsAre(machine, 0x11, 0x80, 0x80, 0x11),
+            $"With $08 bit 3 set, $DF did not write A and D: {DescribeDacs(machine)}.");
+
+        machine.Registers.Write(0x08, 0x10);
+        Require(DacsAtRest(machine) && ReadNextAudio(machine, 32).All(static sample => sample == 0),
+            $"Clearing $08 bit 3 did not hold the DACs at $80 again: {DescribeDacs(machine)}.");
+        EnableDacs(machine);
+        Require(DacsAtRest(machine),
+            $"The DACs came back with their old values when $08 bit 3 was set again: {DescribeDacs(machine)}.");
+    }
+
+    private static void VerifyNextDacPortDecode()
+    {
+        byte[] lows = [0x1F, 0xF1, 0x3F, 0x0F, 0xF3, 0x4F, 0xF9, 0x5F, 0xFB, 0xDF, 0xB3];
+        const int a = DacA, b = DacB, c = DacC, d = DacD;
+
+        // The zxnext.vhd decode, case by case: which channels each low byte writes with
+        // NextReg $84 as given (bit 1 Soundrive 1, 2 Soundrive 2, 3 Profi Covox, 4 Covox,
+        // 5 Pentagon $FB, 6 GS Covox $B3, 7 Specdrum $DF; bit 0, the AY, kept on).
+        (byte Enables, string Name, int[] Expected)[] cases =
+        [
+            (0xFF, "every DAC port enabled", [a, a, a, b, b, c, c, d, d, a | d, b | c]),
+            (0xFD, "Soundrive 1 off", [0, a, a, b, b, c, c, d, d, a | d, b | c]),
+            (0xFB, "Soundrive 2 off", [a, 0, a, b, 0, c, 0, d, a | d, a | d, b | c]),
+            (0xF7, "Profi Covox off", [a, a, 0, b, b, c, c, d, d, a | d, b | c]),
+            (0xEF, "Covox off", [a, a, a, b, b, c, c, d, d, a | d, b | c]),
+            (0xDF, "Pentagon $FB off", [a, a, a, b, b, c, c, d, d, a | d, b | c]),
+            (0xBF, "GS Covox off", [a, a, a, b, b, c, c, d, d, a | d, 0]),
+            (0x7F, "Specdrum off", [a, a, a, b, b, c, c, d, d, 0, b | c]),
+            (0xED, "Soundrive 1 and Covox off", [0, a, a, 0, b, 0, c, d, d, a | d, b | c]),
+            (0xF5, "Soundrive 1 and Profi Covox off", [0, a, 0, b, b, c, c, 0, d, a | d, b | c]),
+            (0xDB, "Soundrive 2 and Pentagon off", [a, 0, a, b, 0, c, 0, d, 0, a | d, b | c]),
+            (0x01, "every DAC port off", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        ];
+
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        EnableDacs(machine);
+        int Probe(ushort port)
+        {
+            machine.Registers.Write(0x08, 0x10);
+            EnableDacs(machine);
+            machine.PortBus.WriteUncontended(port, 0x5A);
+            int channels = 0;
+            for (int channel = 0; channel < 4; channel++)
+            {
+                byte value = machine.Audio.GetDacChannel(channel);
+                Require(value is 0x5A or 0x80,
+                    $"A write to ${port:X4} left DAC {(char)('A' + channel)} at ${value:X2}.");
+                channels |= value == 0x5A ? 1 << channel : 0;
+            }
+
+            return channels;
+        }
+
+        foreach ((byte enables, string name, int[] expected) in cases)
+        {
+            machine.Registers.Write(0x84, enables);
+            for (int index = 0; index < lows.Length; index++)
+            {
+                // The DAC ports decode A7-A0 only.
+                foreach (byte high in new byte[] { 0x00, 0xA5 })
+                {
+                    ushort port = (ushort)((high << 8) | lows[index]);
+                    int channels = Probe(port);
+                    Require(channels == expected[index],
+                        $"With {name} ($84=${enables:X2}), a write to ${port:X4} reached DAC mask {channels} instead of {expected[index]}.");
+                }
+            }
+        }
+
+        // No other low byte reaches a DAC, whatever the enables.
+        machine.Registers.Write(0x84, 0xFF);
+        for (int low = 0; low < 256; low++)
+        {
+            if (Array.IndexOf(lows, (byte)low) >= 0)
+            {
+                continue;
+            }
+
+            Require(Probe((ushort)(0x0000 | low)) == 0,
+                $"A write to port ${low:X2} reached a DAC.");
+        }
+
+        // The Soundrive 2 conflict: $7FF1 is DAC A and not $7FFD while mode 2 holds $F1.
+        ZxNextMachine paging = ZxNextMachineFactory.CreateFoundationMachine();
+        EnableDacs(paging);
+        byte before7Ffd = paging.Paging.Port7Ffd;
+        paging.PortBus.WriteUncontended(0x7FF1, 0x07);
+        Require(paging.Audio.GetDacChannel(0) == 0x07 && paging.Paging.Port7Ffd == before7Ffd,
+            "With Soundrive mode 2 on, $7FF1 did not write DAC A alone (port_fd_conflict_wr).");
+
+        // Reads: the DAC ports answer nothing, so a DAC port read is $FF.
+        ZxNextMachine reads = ZxNextMachineFactory.CreateFoundationMachine();
+        EnableDacs(reads);
+        foreach (byte low in new byte[] { 0x0F, 0x4F, 0x5F, 0xF3, 0xF9, 0xFB, 0xB3 })
+        {
+            Require(reads.PortBus.ReadUncontended((ushort)(0x0100 | low)) == 0xFF,
+                $"A read of DAC port ${low:X2} did not float to $FF: the DAC ports are write only.");
+        }
+    }
+
+    private static void VerifyNextDacMirrors()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        EnableDacs(machine);
+        machine.Registers.Write(0x2C, 0x12);
+        Require(DacsAre(machine, 0x80, 0x12, 0x80, 0x80),
+            $"NextReg $2C did not write DAC B alone: {DescribeDacs(machine)}.");
+        machine.Registers.Write(0x2D, 0x34);
+        Require(DacsAre(machine, 0x34, 0x12, 0x80, 0x34),
+            $"NextReg $2D did not write DACs A and D: {DescribeDacs(machine)}.");
+        machine.Registers.Write(0x2E, 0x56);
+        Require(DacsAre(machine, 0x34, 0x12, 0x56, 0x34),
+            $"NextReg $2E did not write DAC C alone: {DescribeDacs(machine)}.");
+
+        // Their reads are the Pi's I2S input, idle at $200: $80, then the latched low bits, 0.
+        Require(machine.Registers.Read(0x2C) == 0x80 && machine.Registers.Read(0x2D) == 0x00
+                && machine.Registers.Read(0x2E) == 0x80,
+            "Reading $2C-$2E did not give the idle I2S input ($80, $00, $80).");
+    }
+
+    private static void VerifyNextDacMix()
+    {
+        int Steady(Action<ZxNextMachine> setUp, int count = 32)
+        {
+            ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+            EnableDacs(machine);
+            setUp(machine);
+            short[] samples = ReadNextAudio(machine, count);
+            Require(samples.All(sample => sample == samples[0]),
+                "Steady DACs did not give a steady level.");
+            return samples[0];
+        }
+
+        // Soundrive 1's ports write one channel each: $1F A, $0F B, $4F C, $5F D.
+        void Write(ZxNextMachine machine, byte a, byte b, byte c, byte d)
+        {
+            machine.PortBus.WriteUncontended(0x001F, a);
+            machine.PortBus.WriteUncontended(0x000F, b);
+            machine.PortBus.WriteUncontended(0x004F, c);
+            machine.PortBus.WriteUncontended(0x005F, d);
+        }
+
+        Require(Steady(m => Write(m, 0xFF, 0xFF, 0x80, 0x80)) == ExpectedDacHostLevel(0xFF, 0xFF, 0x80, 0x80)
+                && ExpectedDacHostLevel(0xFF, 0xFF, 0x80, 0x80) == 2032,
+            "A and B at $FF were not (A + B) x 4 on the left alone (2032).");
+        Require(Steady(m => Write(m, 0x80, 0x80, 0xFF, 0xFF)) == 2032,
+            "C and D at $FF were not (C + D) x 4 on the right alone (2032).");
+        Require(Steady(m => Write(m, 0x00, 0x00, 0x00, 0x00)) == -4096,
+            "All four DACs at 0 were not 1024 below rest on each side (-4096).");
+        Require(Steady(m => Write(m, 0x12, 0x34, 0x56, 0x78)) == ExpectedDacHostLevel(0x12, 0x34, 0x56, 0x78)
+                && ExpectedDacHostLevel(0x12, 0x34, 0x56, 0x78) == -1888,
+            "DACs $12/$34/$56/$78 were not audio_mixer.vhd's sums (-1888).");
+
+        // The DACs add to the beeper and the PSGs, side by side.
+        Require(Steady(m =>
+                {
+                    Write(m, 0xFF, 0xFF, 0xFF, 0xFF);
+                    m.PortBus.WriteUncontended(0x00FE, 0x18);
+                }) == ExpectedDacHostLevel(0xFF, 0xFF, 0xFF, 0xFF, beeperPerSide: 640),
+            "The DACs did not add to EAR and MIC.");
+        Require(Steady(m =>
+                {
+                    Write(m, 0x00, 0x80, 0x80, 0x80);
+                    WriteAyRegister(m, 7, 0x3F);
+                    WriteAyRegister(m, 8, 0x0F);
+                }) == ExpectedDacHostLevel(0x00, 0x80, 0x80, 0x80, psgLeft: 255),
+            "The DACs did not add to a PSG channel on its side.");
+
+        // Everything at full: three chips (1530 a side), EAR and MIC, the DACs: no clipping.
+        int full = Steady(m =>
+        {
+            m.Registers.Write(0x08, 0x1A);
+            foreach (byte chipSelect in new byte[] { 0xFF, 0xFE, 0xFD })
+            {
+                m.PortBus.WriteUncontended(0xFFFD, chipSelect);
+                WriteAyRegister(m, 7, 0x3F);
+                WriteAyRegister(m, 8, 0x0F);
+                WriteAyRegister(m, 9, 0x0F);
+                WriteAyRegister(m, 10, 0x0F);
+            }
+
+            Write(m, 0xFF, 0xFF, 0xFF, 0xFF);
+            m.PortBus.WriteUncontended(0x00FE, 0x18);
+        });
+        Require(full == ExpectedDacHostLevel(0xFF, 0xFF, 0xFF, 0xFF, 640, 1530, 1530) && full == 12744,
+            $"The full mix was {full}, not audio_mixer.vhd's sum (4210 a side, 12744).");
+    }
+
+    /// <summary>
+    /// A DAC level moves only on a write, so each sample is the tick-weighted mean of the
+    /// levels during it, as the beeper's is.
+    /// </summary>
+    private static void VerifyNextDacAveraging()
+    {
+        // 1000 master ticks a sample.
+        var audio = new ZxNextAudioDevice(ZxNextReferenceBaseline.MasterClockHz / 1000);
+        audio.Configure(0xA0, 0x18, 0x00);
+        audio.BeginCapture();
+        audio.AdvanceMasterTicks(1000);
+        audio.AdvanceMasterTicks(250);
+        audio.WriteDacPort(DacA, 0xFF);   // left (255 - 128) x 4 = 508 for 750 ticks
+        audio.AdvanceMasterTicks(750);
+        audio.AdvanceMasterTicks(400);
+        audio.WriteDacPort(DacA | DacB | DacC | DacD, 0x00);   // -1024 a side for 600 ticks
+        audio.AdvanceMasterTicks(600);
+        audio.AdvanceMasterTicks(1000);
+        short[] samples = new short[8];
+        int count = audio.DrainSamples(samples, 0, samples.Length);
+
+        // Sample 1: left 508 x 750 / 1000 = 381, right 0. Sample 2: left (508 x 400 - 1024 x
+        // 600) / 1000 = -411 and right -1024 x 600 / 1000 = -614, each truncated to zero.
+        short[] expected = [0, 762, -2050, -4096];
+        Require(count == 4 && samples.AsSpan(0, 4).SequenceEqual(expected),
+            $"Mid-sample DAC writes gave {string.Join(", ", samples.Take(count))}, not the tick-weighted means {string.Join(", ", expected)}.");
+    }
+
+    /// <summary>The CPU's OUT, the DMA and the Copper all write the DACs.</summary>
+    private static void VerifyNextDacWriters()
+    {
+        // LD A,$C3; OUT ($DF),A; LD A,$3C; LD BC,$12B3; OUT (C),A; JR $
+        ZxNextMachine cpu = CreateProgramAt(0x8000, 0x3E, 0xC3, 0xD3, 0xDF, 0x3E, 0x3C, 0x01, 0xB3, 0x12, 0xED, 0x79, 0x18, 0xFE);
+        EnableDacs(cpu);
+        for (int step = 0; step < 5; step++)
+        {
+            cpu.StepInstruction();
+        }
+
+        Require(DacsAre(cpu, 0xC3, 0x3C, 0x3C, 0xC3),
+            $"The CPU's OUT ($DF),A and OUT ($12B3),A did not reach the DACs: {DescribeDacs(cpu)}.");
+
+        // A DMA memory-to-I/O transfer to $DF, the usual way to play a sample.
+        ZxNextMachine dma = ZxNextMachineFactory.CreateFoundationMachine();
+        EnableDacs(dma);
+        dma.MemoryBus.WritePhysicalRam(0, 0x0200, 0x10);
+        dma.MemoryBus.WritePhysicalRam(0, 0x0201, 0x20);
+        dma.MemoryBus.WritePhysicalRam(0, 0x0202, 0x30);
+        dma.MemoryBus.WritePhysicalRam(0, 0x0203, 0x40);
+        byte[] memoryToDac =
+        [
+            0xC3,
+            0x7D, 0x00, 0xC2, 0x04, 0x00,
+            0x14,       // WR1: memory A, increment
+            0x28,       // WR2: I/O B, fixed
+            0xAD, 0xDF, 0x00,
+            0x82, 0xCF, 0xB3, 0x87
+        ];
+        WriteDmaCommand(dma, memoryToDac);
+        RunDmaToCompletion(dma);
+        Require(DacsAre(dma, 0x40, 0x80, 0x80, 0x40),
+            $"A zxnDMA transfer to $DF did not leave its last byte in DACs A and D: {DescribeDacs(dma)}.");
+    }
+
+    /// <summary>
+    /// A Copper MOVE to $2D is heard from the tick it lands: the area under the host samples is
+    /// the level times the time between the two writes, to within the tick a boundary is
+    /// rounded to and the truncation of the two samples the edges fall in.
+    /// </summary>
+    private static void VerifyNextDacCopperTiming(bool batched)
+    {
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine machine = CreateCopperMachine(log, batched);
+        EnableDacs(machine);
+        UploadCopper(machine, CopperWait(60), CopperMove(0x2D, 0xFF), CopperWait(160, 20), CopperMove(0x2D, 0x80), CopperHalt);
+        short[] warm = new short[1];
+        machine.ReadSamples(warm, 0, 1);
+        StartCopperAtFrame(machine, 0x40);
+        int perFrame = machine.SampleRate / 50 + 1;
+        short[] samples = ReadNextAudio(machine, perFrame * 3);
+        List<(ulong Tick, byte Register, byte Value)> writes = log.Where(entry => entry.Register == 0x2D).ToList();
+        Require(writes.Count == 2 && writes[0].Value == 0xFF && writes[1].Value == 0x80,
+            $"The Copper's two $2D writes were not logged ({(batched ? "batched" : "unbatched")}): {DescribeCopperLog(log, 0)}.");
+
+        // $2D at $FF puts A and D at $FF: (255 + 128 - 256) x 4 = 508 a side, 2032 mono.
+        const int level = 2032;
+        Require(samples.All(static sample => sample is >= 0 and <= level),
+            "A sample fell outside rest and the written level while the Copper drove $2D.");
+        double samplePeriod = ZxNextReferenceBaseline.MasterClockHz / (double)machine.SampleRate;
+        double heard = samples.Sum(static sample => (double)sample) * samplePeriod;
+        double expected = level * (double)(writes[1].Tick - writes[0].Tick);
+        double tolerance = 2.0 * level * 8;
+        Require(Math.Abs(heard - expected) <= tolerance,
+            $"The DAC level was heard for {heard / level:0} ticks, not the {expected / level:0} between the Copper's writes ({(batched ? "batched" : "unbatched")}).");
+        int full = samples.Count(static sample => sample == level);
+        Require(full >= (int)((writes[1].Tick - writes[0].Tick) / samplePeriod) - 2,
+            "The DAC level was not steady between the Copper's writes.");
+    }
+
+    /// <summary>
+    /// The stereo host stream: each side at the HDMI level (shifted left two), left then right,
+    /// less the DACs' resting level; the mono stream from the same machine is their mean.
+    /// </summary>
+    private static void VerifyNextStereoOutput()
+    {
+        (int Left, int Right) Frame(Action<ZxNextMachine> setUp)
+        {
+            ZxNextMachine stereo = ZxNextMachineFactory.CreateFoundationMachine();
+            stereo.StereoAudio = true;
+            Require(stereo.Channels == 2 && ((IAudioSource)stereo).Channels == 2 && stereo.Audio.OutputChannels == 2,
+                "Asking for stereo did not make the Next a two-channel source.");
+            EnableDacs(stereo);
+            setUp(stereo);
+            short[] samples = new short[64];
+            Require(stereo.ReadSamples(samples, 0, samples.Length) == samples.Length,
+                "The Next did not produce the stereo samples asked for.");
+            for (int index = 2; index < samples.Length; index += 2)
+            {
+                Require(samples[index] == samples[0] && samples[index + 1] == samples[1],
+                    "Steady levels did not give steady stereo frames.");
+            }
+
+            ZxNextMachine mono = ZxNextMachineFactory.CreateFoundationMachine();
+            EnableDacs(mono);
+            setUp(mono);
+            int mean = (samples[0] + samples[1]) / 2;
+            Require(ReadNextAudio(mono, 16).All(sample => sample == mean),
+                $"The mono stream was not the mean of the stereo sides ({samples[0]}, {samples[1]}).");
+            return (samples[0], samples[1]);
+        }
+
+        Require(Frame(m => m.PortBus.WriteUncontended(0x00FE, 0x10)) == (2048, 2048),
+            "EAR was not 512 x 4 on both sides.");
+        Require(Frame(m => { m.PortBus.WriteUncontended(0x001F, 0xFF); m.PortBus.WriteUncontended(0x000F, 0xFF); }) == (4064, 0),
+            "DACs A and B at $FF were not (A + B - 256) x 4 x 4 on the left alone.");
+        Require(Frame(m => { m.PortBus.WriteUncontended(0x004F, 0x00); m.PortBus.WriteUncontended(0x005F, 0x00); }) == (0, -4096),
+            "DACs C and D at 0 were not on the right alone.");
+
+        // Atic Atac Next's music: $0F (B) left and $4F (C) right.
+        Require(Frame(m => { m.PortBus.WriteUncontended(0x000F, 0xC0); m.PortBus.WriteUncontended(0x004F, 0x40); }) == (1024, -1024),
+            "$0F and $4F did not reach the left and right sides apart.");
+
+        // turbosound.vhd's ABC: A left, C right, B on both; the pan bits per side.
+        Require(Frame(m => { WriteAyRegister(m, 7, 0x3F); WriteAyRegister(m, 8, 0x0F); }) == (1020, 0),
+            "PSG channel A was not on the left alone.");
+        Require(Frame(m => { WriteAyRegister(m, 7, 0x3F); WriteAyRegister(m, 10, 0x0F); }) == (0, 1020),
+            "PSG channel C was not on the right alone.");
+        Require(Frame(m => { WriteAyRegister(m, 7, 0x3F); WriteAyRegister(m, 9, 0x0F); }) == (1020, 1020),
+            "PSG channel B was not on both sides.");
+        Require(Frame(m =>
+                {
+                    m.Registers.Write(0x08, 0x1A);
+                    m.PortBus.WriteUncontended(0xFFFD, 0xDF);
+                    WriteAyRegister(m, 7, 0x3F);
+                    WriteAyRegister(m, 9, 0x0F);
+                }) == (1020, 0),
+            "A chip panned left (bit 6 alone) was heard on the right.");
+
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        machine.StereoAudio = true;
+        bool rejected = false;
+        try
+        {
+            machine.ReadSamples(new short[3], 0, 3);
+        }
+        catch (ArgumentException)
+        {
+            rejected = true;
+        }
+
+        Require(rejected, "A stereo read of part of a frame was accepted.");
+        short[] frames = new short[4];
+        machine.ReadSamples(frames, 0, frames.Length);
+        machine.RunFrame();
+        Require(machine.Audio.PendingSampleCount > 0 && machine.Audio.PendingSampleCount % 2 == 0,
+            "The stereo queue did not hold whole frames.");
+        machine.StereoAudio = false;
+        Require(machine.Audio.PendingSampleCount == 0 && machine.Channels == 1,
+            "Going back to mono did not drop the samples queued in stereo.");
+        rejected = false;
+        try
+        {
+            machine.Audio.SetOutputChannels(3);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            rejected = true;
+        }
+
+        Require(rejected, "Three host channels were accepted.");
+    }
+
+    private static void VerifyNextDacResetsAndSnapshots()
+    {
+        // A reset puts soundrive.vhd back to $80; $08 bit 3 survives a soft reset (only bit 6
+        // is on the reset) and the FPGA loading clears it.
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        EnableDacs(machine);
+        machine.Registers.Write(0x2D, 0x01);
+        machine.Registers.Write(0x2C, 0x02);
+        machine.Registers.Write(0x2E, 0x03);
+        machine.Reset(ZxNextResetKind.Soft);
+        Require(DacsAtRest(machine) && machine.Audio.DacEnabled,
+            $"A soft reset did not return the DACs to $80 with $08 bit 3 kept: {DescribeDacs(machine)}.");
+        machine.Registers.Write(0x2D, 0x01);
+        machine.Reset(ZxNextResetKind.Hard);
+        Require(DacsAtRest(machine) && !machine.Audio.DacEnabled,
+            $"A hard reset did not return the DACs to $80, disabled: {DescribeDacs(machine)}.");
+
+        // A capture mid-sample, through a file, carries on exactly as the original.
+        ZxNextMachine original = CreateProgramAt(0x8000, 0x18, 0xFE);
+        EnableDacs(original);
+        original.PortBus.WriteUncontended(0x00B3, 0x9C);
+        original.PortBus.WriteUncontended(0x00DF, 0x21);
+        ReadNextAudio(original, 50);
+        for (int step = 0; step < 7; step++)
+        {
+            original.StepInstruction();
+        }
+
+        original.PortBus.WriteUncontended(0x00DF, 0xE7);
+        for (int step = 0; step < 5; step++)
+        {
+            original.StepInstruction();
+        }
+
+        short[] pending = new short[original.Audio.PendingSampleCount];
+        original.Audio.DrainSamples(pending, 0, pending.Length);
+        ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(original);
+        Require(captured.Audio.Dac is { } dacState
+                && dacState.Channels.AsSpan().SequenceEqual(new byte[] { 0xE7, 0x9C, 0x9C, 0xE7 })
+                && dacState.LeftLevelSum != 0,
+            "The capture did not hold the DACs and a part-accumulated sample.");
+        ZxNextMachine restored = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextMachineSnapshotService.Restore(restored, RoundTripThroughFile(captured));
+        Require(DacsAre(restored, 0xE7, 0x9C, 0x9C, 0xE7) && restored.Audio.DacEnabled,
+            $"The DACs did not come back from the file: {DescribeDacs(restored)}.");
+        short[] originalNext = ReadNextAudio(original, 40);
+        short[] restoredNext = ReadNextAudio(restored, 40);
+        Require(originalNext.AsSpan().SequenceEqual(restoredNext),
+            "After the restore the DACs' samples differed from the original's.");
+
+        // A state from before the DACS chunk restores them at $80.
+        ZxNextMachine legacy = ZxNextMachineFactory.CreateFoundationMachine();
+        legacy.Audio.RestoreState(captured.Audio with { Dac = null });
+        Require(DacsAtRest(legacy),
+            $"A state without DACs did not restore them at $80: {DescribeDacs(legacy)}.");
+    }
+
 
     private static void VerifyDesktopFrameRunnerSeam()
     {
@@ -5101,7 +7395,25 @@ public static class ZxNextVerificationRunner
             VerifyScene(priority, promoted: false, ula: true, layer2: false, tilemap: true);
         }
 
-        static void VerifyScene(byte priority, bool promoted, bool ula, bool layer2, bool tilemap)
+        foreach (byte priority in new byte[] { 3, 4, 5, 6, 7 })
+        {
+            foreach (byte ulaControl in new byte[] { 0x20, 0x40, 0x60, 0x01, 0x80, 0xE1 })
+            {
+                VerifyScene(priority, promoted: true, ula: true, layer2: true, tilemap: true, ulaControl);
+            }
+        }
+
+        VerifyScene(0, promoted: false, ula: true, layer2: true, tilemap: true, textMode: true);
+        VerifyScene(4, promoted: false, ula: true, layer2: true, tilemap: true, textMode: true);
+
+        static void VerifyScene(
+            byte priority,
+            bool promoted,
+            bool ula,
+            bool layer2,
+            bool tilemap,
+            byte ulaControl = 0,
+            bool textMode = false)
         {
             ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
             // ULA: ink 7 on paper 3 left, ink 0 on transparent paper right.
@@ -5123,9 +7435,9 @@ public static class ZxNextVerificationRunner
             machine.Registers.Write(0x40, 0x17);
             machine.Registers.Write(0x41, 0xE3);
             machine.Registers.Write(0x4A, 0x1C);
-            if (!ula)
+            if (!ula || ulaControl != 0)
             {
-                machine.Registers.Write(0x68, 0x80);
+                machine.Registers.Write(0x68, (byte)(ulaControl | (ula ? 0 : 0x80)));
             }
 
             // Layer 2, 256x192 in bank 8: a diagonal of transparent pixels through index 1,
@@ -5167,12 +7479,13 @@ public static class ZxNextVerificationRunner
                 }
 
                 machine.Registers.Write(0x6E, 0x1B); // map at $5B00: ($5B00 - $4000) / 256
-                machine.Registers.Write(0x6B, 0x80);
+                machine.Registers.Write(0x6B, textMode ? (byte)0x88 : (byte)0x80);
             }
 
             WriteSolidSpritePattern8(machine, 0, 0x02);
             WriteSpriteAttributes(machine, 0, 100, 60, 0, 0x80, 0);
             WriteSpriteAttributes(machine, 1, 200, 100, 0, 0x80, 0);
+            WriteSpriteAttributes(machine, 2, 4, 4, 0, 0x80, 0); // over the border
             machine.Registers.Write(0x15, (byte)(0x03 | (priority << 2)));
 
             machine.Video.RenderFrame(0);
@@ -5181,7 +7494,7 @@ public static class ZxNextVerificationRunner
             machine.Video.AdvanceMasterTicks(machine.UlaTiming.MasterTicksPerFrame * 2);
             int[] live = machine.Video.FrameBuffer;
             int first = live.AsSpan().CommonPrefixLength(reference);
-            string scene = $"priority {priority}{(promoted ? ", promoted" : "")}, ULA {(ula ? "on" : "off")}, Layer 2 {(layer2 ? "on" : "off")}, tilemap {(tilemap ? "on" : "off")}";
+            string scene = $"priority {priority}{(promoted ? ", promoted" : "")}, ULA {(ula ? "on" : "off")}, Layer 2 {(layer2 ? "on" : "off")}, tilemap {(tilemap ? (textMode ? "text" : "on") : "off")}, $68=${ulaControl:X2}";
             Require(first == live.Length,
                 $"The live general mixer diverged from the reference ({scene}) at output ({first % ZxNextVideoRenderer.FrameWidth}, {first / ZxNextVideoRenderer.FrameWidth}): "
                 + $"live {live[Math.Min(first, live.Length - 1)]:X8}, reference {reference[Math.Min(first, reference.Length - 1)]:X8}.");
@@ -5193,7 +7506,7 @@ public static class ZxNextVerificationRunner
         ZxNextMachine peripheral = CreateProgram(0xED, 0x91, 0x02, 0x80);
         peripheral.StepInstruction();
         Require(peripheral.ResetSequence == 0
-                && peripheral.Registers.Read(0x02) == 0x82
+                && peripheral.Registers.Read(0x02) == 0x80
                 && peripheral.Registers.PeripheralResetAsserted,
             "NextReg $02 bit 7 did not latch peripheral reset independently of CPU reset.");
 
@@ -5202,7 +7515,7 @@ public static class ZxNextVerificationRunner
         soft.StepInstruction();
         Require(soft.ResetSequence == 1 && soft.LastResetKind == ZxNextResetKind.Soft
                 && soft.Registers.LastResetKind == ZxNextResetKind.Soft
-                && soft.Registers.Read(0x02) == 0x01
+                && soft.Registers.Read(0x02) == 0x02
                 && soft.Cpu.PC == 0 && soft.Cpu.Cyc == 0
                 && !soft.MemoryBus.ConfigurationMode && !soft.MemoryBus.BootRomEnabled
                 && soft.MemoryBus.ReadPhysicalRam(42, 7) == 0xA5,
@@ -5212,36 +7525,123 @@ public static class ZxNextVerificationRunner
         hard.Registers.Write(0x02, 0x80);
         hard.StepInstruction();
         Require(hard.ResetSequence == 1 && hard.LastResetKind == ZxNextResetKind.Hard
-                && hard.Registers.Read(0x02) == 0x02
+                && hard.Registers.Read(0x02) == 0x00
                 && hard.Cpu.PC == 0 && hard.Cpu.Cyc == 0
                 && hard.MemoryBus.ConfigurationMode && hard.MemoryBus.BootRomEnabled
                 && !hard.Registers.PeripheralResetAsserted,
             "Hard reset did not take precedence or restore hard-reset-only state.");
     }
 
+    /// <summary>
+    /// State files saved while the Next was a 1 MiB machine have to keep loading.
+    /// </summary>
+    /// <remarks>
+    /// The snapshot is cut down to the 96 pages a 1 MiB machine has, restored into a 2 MiB
+    /// machine whose upper pages hold junk, and then has to agree with an untouched
+    /// continuation of the original - which only holds if the low pages came back and the
+    /// upper ones were cleared rather than left as they were.
+    /// </remarks>
+    private static void VerifyOneMiBSnapshotRestores()
+    {
+        ZxNextMachine original = ZxNextMachineFactory.CreateFoundationMachine();
+        for (int page = 0; page < 96; page++)
+        {
+            original.MemoryBus.WritePhysicalRam(page, page * 7 % ZxNextPhysicalMemory.PageSize, (byte)(page ^ 0x5A));
+        }
+
+        for (int frame = 0; frame < 3; frame++)
+        {
+            original.RunFrame(presentFrame: false);
+        }
+
+        ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(original);
+        Require(captured.PhysicalRam.Length == 1792 * 1024,
+            $"A capture carried {captured.PhysicalRam.Length} bytes of RAM, not the 2 MiB machine's 1792 KiB.");
+        ZxNextMachineSnapshot fromOneMiB = captured with { PhysicalRam = captured.PhysicalRam[..(768 * 1024)] };
+
+        ZxNextMachine restored = ZxNextMachineFactory.CreateFoundationMachine();
+        for (int page = 96; page < 224; page++)
+        {
+            restored.MemoryBus.WritePhysicalRam(page, 0, 0xEE);
+        }
+
+        ZxNextMachineSnapshotService.Restore(restored, fromOneMiB);
+        Require(restored.MemoryBus.ReadPhysicalRam(40, 40 * 7 % ZxNextPhysicalMemory.PageSize) == (40 ^ 0x5A),
+            "The low pages of a 1 MiB snapshot did not come back.");
+        Require(Enumerable.Range(96, 128).All(page => restored.MemoryBus.ReadPhysicalRam(page, 0) == 0),
+            "The pages a 1 MiB machine lacks kept the destination's junk instead of being cleared.");
+
+        for (int frame = 0; frame < 3; frame++)
+        {
+            original.RunFrame(presentFrame: false);
+            restored.RunFrame(presentFrame: false);
+        }
+
+        Require(original.Cpu.PC == restored.Cpu.PC
+                && original.MemoryBus.PhysicalMemory.CopyAll().AsSpan(0, 768 * 1024)
+                    .SequenceEqual(restored.MemoryBus.PhysicalMemory.CopyAll().AsSpan(0, 768 * 1024))
+                && original.Video.FrameBuffer.AsSpan().SequenceEqual(restored.Video.FrameBuffer),
+            "A machine restored from a 1 MiB snapshot did not carry on like the original.");
+    }
+
     private static void VerifyPhysicalRam()
     {
         ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
         ZxNextPhysicalMemory physical = machine.MemoryBus.PhysicalMemory;
-        Require(physical.ConfiguredMemoryBytes == 1024 * 1024,
-            "The base Next configuration is not 1 MiB.");
-        Require(physical.InstalledRamBytes == 768 * 1024 && physical.InstalledRamPageCount == 96,
+        Require(physical.ConfiguredMemoryBytes == 2 * 1024 * 1024,
+            "The Next is not the fully expanded 2 MiB machine.");
+        Require(physical.InstalledRamBytes == 1792 * 1024 && physical.InstalledRamPageCount == 224,
             "The 256 KiB system reservation was not excluded from guest RAM.");
 
         Require(machine.MemoryBus.WritePhysicalRam(0, 0, 0x12)
-                && machine.MemoryBus.WritePhysicalRam(95, ZxNextPhysicalMemory.PageSize - 1, 0x34),
-            "The first or last installed physical page rejected a write.");
+                && machine.MemoryBus.WritePhysicalRam(95, ZxNextPhysicalMemory.PageSize - 1, 0x78)
+                && machine.MemoryBus.WritePhysicalRam(96, 0, 0x9A)
+                && machine.MemoryBus.WritePhysicalRam(223, ZxNextPhysicalMemory.PageSize - 1, 0x34),
+            "A physical page of the 2 MiB machine rejected a write.");
         Require(machine.MemoryBus.ReadPhysicalRam(0, 0) == 0x12
-                && machine.MemoryBus.ReadPhysicalRam(95, ZxNextPhysicalMemory.PageSize - 1) == 0x34,
-            "Direct physical RAM access did not preserve boundary writes.");
-        Require(!machine.MemoryBus.WritePhysicalRam(96, 0, 0x56)
-                && machine.MemoryBus.ReadPhysicalRam(96, 0) == 0xFF,
+                && machine.MemoryBus.ReadPhysicalRam(95, ZxNextPhysicalMemory.PageSize - 1) == 0x78
+                && machine.MemoryBus.ReadPhysicalRam(96, 0) == 0x9A
+                && machine.MemoryBus.ReadPhysicalRam(223, ZxNextPhysicalMemory.PageSize - 1) == 0x34,
+            "Direct physical RAM access did not preserve boundary writes, including across the old 1 MiB edge.");
+        Require(!machine.MemoryBus.WritePhysicalRam(224, 0, 0x56)
+                && machine.MemoryBus.ReadPhysicalRam(224, 0) == 0xFF,
             "The first uninstalled physical page did not behave as an open bus.");
 
-        byte[] copy = machine.MemoryBus.CopyPhysicalRamPage(95);
+        byte[] copy = machine.MemoryBus.CopyPhysicalRamPage(223);
         copy[^1] = 0;
-        Require(machine.MemoryBus.ReadPhysicalRam(95, ZxNextPhysicalMemory.PageSize - 1) == 0x34,
+        Require(machine.MemoryBus.ReadPhysicalRam(223, ZxNextPhysicalMemory.PageSize - 1) == 0x34,
             "A physical-page inspection leaked the mutable backing array.");
+
+        // The 1 MiB board is still a valid configuration of the type.
+        var oneMiB = new ZxNextPhysicalMemory(1024 * 1024);
+        Require(oneMiB.InstalledRamBytes == 768 * 1024 && oneMiB.InstalledRamPageCount == 96
+                && !oneMiB.IsPageInstalled(96),
+            "The 1 MiB configuration no longer has 96 pages.");
+
+        // A RAM image from a 1 MiB machine loads into the 2 MiB one and clears what it lacks;
+        // a larger one is refused without touching anything.
+        byte[] smallImage = new byte[768 * 1024];
+        smallImage[0] = 0x5A;
+        smallImage[^1] = 0xA5;
+        physical.LoadAll(smallImage);
+        Require(physical.Read(0, 0) == 0x5A
+                && physical.Read(95, ZxNextPhysicalMemory.PageSize - 1) == 0xA5
+                && physical.Read(96, 0) == 0x00
+                && physical.Read(223, ZxNextPhysicalMemory.PageSize - 1) == 0x00,
+            "A 1 MiB RAM image did not load into the low pages and clear the pages a 1 MiB machine lacks.");
+        physical.Write(150, 0, 0x77);
+        bool refused = false;
+        try
+        {
+            physical.LoadAll(new byte[(1792 * 1024) + ZxNextPhysicalMemory.PageSize]);
+        }
+        catch (ArgumentException)
+        {
+            refused = true;
+        }
+
+        Require(refused && physical.Read(150, 0) == 0x77 && physical.Read(0, 0) == 0x5A,
+            "A RAM image larger than the machine was not refused cleanly.");
     }
 
     private static void VerifySystemAssets()
@@ -5679,7 +8079,7 @@ public static class ZxNextVerificationRunner
         int lowMemoryTransitionCount = 0;
         int startupTraceInstructions = 0;
         while (startupTraceInstructions < 5_000_000
-            && !(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90))
+            && !(ZxNextRomLandmarks.IsAtKeyWait(machine)))
         {
             ushort previousPc = machine.Cpu.PC;
             ushort previousSp = machine.Cpu.SP;
@@ -5741,6 +8141,8 @@ public static class ZxNextVerificationRunner
             $"{lowMemoryTransitionCount}, common PCs [{commonPcs}]");
     }
 
+
+
     private static void DiagnoseSuppliedBrowserWarhawkNex(
         ZxNextSystemAssets assets,
         TextWriter writer)
@@ -5780,13 +8182,13 @@ public static class ZxNextVerificationRunner
         const int maximumStartupInstructions = 50_000_000;
         int startupInstructions = 0;
         while (startupInstructions < maximumStartupInstructions
-            && !(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90))
+            && !(ZxNextRomLandmarks.IsAtKeyWait(machine)))
         {
             machine.StepInstruction();
             startupInstructions++;
         }
 
-        if (!(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90)
+        if (!(ZxNextRomLandmarks.IsAtKeyWait(machine))
             || !PressGuestChord(machine, [SpectrumKey.Enter]))
         {
             writer.WriteLine(
@@ -5802,7 +8204,7 @@ public static class ZxNextVerificationRunner
             int commandInstructions = 0;
             while (commandInstructions < 3_000_000
                 && ReadGuestWord(machine, 0x5C45) != 120
-                && !(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90))
+                && !(ZxNextRomLandmarks.IsAtKeyWait(machine)))
             {
                 machine.StepInstruction();
                 commandInstructions++;
@@ -5810,8 +8212,7 @@ public static class ZxNextVerificationRunner
             }
 
             if (ReadGuestWord(machine, 0x5C45) != 120
-                && machine.Cpu.IsHalted
-                && machine.Cpu.PC is 0x0C8F or 0x0C90)
+                && ZxNextRomLandmarks.IsAtKeyWait(machine))
             {
                 _ = PressGuestChord(machine, [SpectrumKey.Enter]);
             }
@@ -5819,16 +8220,14 @@ public static class ZxNextVerificationRunner
 
         while (startupInstructions < maximumStartupInstructions
             && !(ReadGuestWord(machine, 0x5C45) == 120
-                && machine.Cpu.IsHalted
-                && machine.Cpu.PC is 0x0C8F or 0x0C90))
+                && ZxNextRomLandmarks.IsAtKeyWait(machine)))
         {
             machine.StepInstruction();
             startupInstructions++;
         }
 
         if (!(ReadGuestWord(machine, 0x5C45) == 120
-                && machine.Cpu.IsHalted
-                && machine.Cpu.PC is 0x0C8F or 0x0C90)
+                && ZxNextRomLandmarks.IsAtKeyWait(machine))
             || !PressGuestChord(machine, [SpectrumKey.Space]))
         {
             writer.WriteLine(
@@ -5960,8 +8359,7 @@ public static class ZxNextVerificationRunner
             {
                 ushort previousPc = machine.Cpu.PC;
                 machine.StepInstruction();
-                accepted = previousPc == 0x0C95
-                    && machine.Cpu.PC == 0x0C97
+                accepted = ZxNextRomLandmarks.LeftKeyWaitWithKey(previousPc, machine.Cpu.PC)
                     && machine.MemoryBus.CurrentRomBank == 0
                     && !machine.DivMmc.IsMapped;
             }
@@ -6177,7 +8575,7 @@ public static class ZxNextVerificationRunner
 
             Require(machine.ResetSequence == 1
                     && machine.LastResetKind == ZxNextResetKind.Soft
-                    && machine.Registers.Read(0x02) == 0x01
+                    && machine.Registers.Read(0x02) == 0x02
                     && machine.Cpu.PC == 0,
                 $"System/Next firmware did not request its final soft reset within " +
                 $"{maximumInstructions} instructions (PC=${machine.Cpu.PC:X4}, " +
@@ -6240,7 +8638,7 @@ public static class ZxNextVerificationRunner
                     currentHaltRun = 0;
                 }
 
-                bool atKeyWait = machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90;
+                bool atKeyWait = ZxNextRomLandmarks.IsAtKeyWait(machine);
                 if (atKeyWait && !previouslyAtKeyWait)
                 {
                     keyWaitEntries++;
@@ -6251,13 +8649,11 @@ public static class ZxNextVerificationRunner
 
             Require(keyWaitEntries == 3
                     && machine.UlaTiming.InterruptCount >= 3
-                    && machine.Cpu.IsHalted
-                    && machine.Cpu.PC is 0x0C8F or 0x0C90
+                    && ZxNextRomLandmarks.IsAtKeyWait(machine)
                     && machine.Cpu.Iff1
                     && !machine.DivMmc.IsMapped
                     && machine.MemoryBus.CurrentRomBank == 0
-                    && machine.MemoryBus.Read(0x0C8F) == 0x76
-                    && machine.MemoryBus.Read(0x0C90) == 0x21,
+                    && ZxNextRomLandmarks.MappedRomHasKeyWait(machine),
                 $"The loaded system ROM did not reach and repeatedly return to its " +
                 $"interrupt-driven keyboard wait within {maximumTraceInstructions} instructions " +
                 $"(PC=${machine.Cpu.PC:X4}, waits={keyWaitEntries}, " +
@@ -6286,8 +8682,7 @@ public static class ZxNextVerificationRunner
                     ushort previousPc = machine.Cpu.PC;
                     machine.StepInstruction();
                     keyInstructions++;
-                    acceptedEnter = previousPc == 0x0C95
-                        && machine.Cpu.PC == 0x0C97
+                    acceptedEnter = ZxNextRomLandmarks.LeftKeyWaitWithKey(previousPc, machine.Cpu.PC)
                         && machine.MemoryBus.CurrentRomBank == 0
                         && !machine.DivMmc.IsMapped;
                 }
@@ -6305,13 +8700,13 @@ public static class ZxNextVerificationRunner
 
             int returnInstructions = 0;
             while (returnInstructions < maximumKeyInstructions
-                && !(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90))
+                && !(ZxNextRomLandmarks.IsAtKeyWait(machine)))
             {
                 machine.StepInstruction();
                 returnInstructions++;
             }
 
-            Require(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90,
+            Require(ZxNextRomLandmarks.IsAtKeyWait(machine),
                 $"The supplied system ROM did not return to its input wait after " +
                 $"scripted Enter release within {maximumKeyInstructions} instructions " +
                 $"(PC=${machine.Cpu.PC:X4}).");
@@ -6409,13 +8804,13 @@ public static class ZxNextVerificationRunner
         const int maximumWelcomeInstructions = 5_000_000;
         int welcomeInstructions = 0;
         while (welcomeInstructions < maximumWelcomeInstructions
-            && !(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90))
+            && !(ZxNextRomLandmarks.IsAtKeyWait(machine)))
         {
             machine.StepInstruction();
             welcomeInstructions++;
         }
 
-        Require(machine.Cpu.IsHalted && machine.Cpu.PC is 0x0C8F or 0x0C90,
+        Require(ZxNextRomLandmarks.IsAtKeyWait(machine),
             $"The supplied system did not return to its Welcome/input wait after a hard " +
             $"reset within {maximumWelcomeInstructions} instructions (PC=${machine.Cpu.PC:X4}).");
 
@@ -6430,8 +8825,7 @@ public static class ZxNextVerificationRunner
                 ushort previousPc = machine.Cpu.PC;
                 machine.StepInstruction();
                 spaceInstructions++;
-                acceptedSpace = previousPc == 0x0C95
-                    && machine.Cpu.PC == 0x0C97
+                acceptedSpace = ZxNextRomLandmarks.LeftKeyWaitWithKey(previousPc, machine.Cpu.PC)
                     && machine.MemoryBus.CurrentRomBank == 0
                     && !machine.DivMmc.IsMapped;
             }
@@ -6562,12 +8956,19 @@ public static class ZxNextVerificationRunner
                     $"Debugger mapping misidentified MMU slot {slot}, page {page}.");
             }
 
-            machine.Registers.Write((byte)(0x50 + slot), 96);
+            // The first uninstalled page is $E0 on a 2 MiB machine. In slots 0 and 1, as for
+            // every page from $E0, zxnext.vhd shows the ROM; elsewhere it reaches nothing.
+            machine.Registers.Write((byte)(0x50 + slot), ZxNextMemoryBus.RomPageSentinel);
+            byte romByte = machine.MemoryBus.Read(logicalAddress);
+            machine.Registers.Write((byte)(0x50 + slot), (byte)machine.MemoryBus.PhysicalMemory.InstalledRamPageCount);
             machine.MemoryBus.WriteCpu(logicalAddress, 0xA5);
             var openMapping = machine.MemoryBus.GetMapping(logicalAddress);
-            Require(machine.MemoryBus.Read(logicalAddress) == 0xFF && openMapping.IsOpenBus
-                    && openMapping.IsReadOnly && !machine.MemoryBus.CanWriteDirect(logicalAddress),
-                $"MMU slot {slot} did not reject an uninstalled page.");
+            Require(slot < 2
+                    ? machine.MemoryBus.Read(logicalAddress) == romByte && openMapping.IsRom
+                        && openMapping.IsReadOnly && !machine.MemoryBus.CanWriteDirect(logicalAddress)
+                    : machine.MemoryBus.Read(logicalAddress) == 0xFF && openMapping.IsOpenBus
+                        && openMapping.IsReadOnly && !machine.MemoryBus.CanWriteDirect(logicalAddress),
+                $"MMU slot {slot} did not {(slot < 2 ? "show the ROM for" : "reject")} an uninstalled page.");
         }
 
         byte[] rom = new byte[ZxNextMemoryBus.RomBankSize];
@@ -6653,9 +9054,13 @@ public static class ZxNextVerificationRunner
                 && paging.PortEff7 == 0 && !paging.PagingLocked
                 && paging.SelectedRamBank == 0 && paging.SelectedRomBank == 0,
             "Legacy paging registers did not reset to native +3 defaults.");
-        Require(ZxNextPortBus.IsPort7Ffd(0x5FFD) && ZxNextPortBus.IsPortDFfd(0xD1FD)
+        Require(ZxNextPortBus.IsPort7Ffd(0x5FFD, plus3Timing: true, port1FfdEnabled: true)
+                && ZxNextPortBus.IsPortDFfd(0xD1FD)
                 && ZxNextPortBus.IsPort1Ffd(0x11FD) && ZxNextPortBus.IsPortEff7(0xE1F7)
-                && !ZxNextPortBus.IsPort7Ffd(0x3FFD),
+                && !ZxNextPortBus.IsPort7Ffd(0x3FFD, plus3Timing: true, port1FfdEnabled: true)
+                && ZxNextPortBus.IsPort7Ffd(0x3FFD, plus3Timing: false, port1FfdEnabled: true)
+                && !ZxNextPortBus.IsPort7Ffd(0x1FFD, plus3Timing: false, port1FfdEnabled: true)
+                && ZxNextPortBus.IsPort7Ffd(0x1FFD, plus3Timing: false, port1FfdEnabled: false),
             "A native legacy paging port mask does not match the pinned decoder.");
         Require(ports.ReadUncontended(0x7FFD) == 0xFF,
             "A write-only legacy paging port did not return open bus.");
@@ -6691,7 +9096,7 @@ public static class ZxNextVerificationRunner
         [
             [0, 1, 2, 3],
             [4, 5, 6, 7],
-            [5, 5, 6, 3],
+            [4, 5, 6, 3],
             [4, 7, 6, 3]
         ];
         for (int mode = 0; mode < allRamBanks.Length; mode++)
@@ -6811,16 +9216,24 @@ public static class ZxNextVerificationRunner
             "A valid MMU page did not take priority over config mapping.");
         machine.Registers.Write(0x50, ZxNextMemoryBus.RomPageSentinel);
 
+        // Raw banks 16-127 are the 2 MiB machine's guest RAM, pages 0-223.
         machine.Registers.Write(0x04, 63);
+        machine.MemoryBus.WriteCpu(0x3FFF, 0xDE);
+        Require(machine.MemoryBus.ReadPhysicalRam(95, ZxNextPhysicalMemory.PageSize - 1) == 0xDE,
+            "The last raw SRAM bank of the old 1 MiB range did not map page 95.");
+        machine.Registers.Write(0x04, 127);
         machine.MemoryBus.WriteCpu(0x3FFF, 0xDF);
-        Require(machine.MemoryBus.ReadPhysicalRam(95, ZxNextPhysicalMemory.PageSize - 1) == 0xDF,
+        Require(machine.MemoryBus.ReadPhysicalRam(223, ZxNextPhysicalMemory.PageSize - 1) == 0xDF,
             "The final installed raw SRAM bank did not map the final physical RAM page.");
-        machine.Registers.Write(0x04, 64);
-        machine.MemoryBus.WriteCpu(0x0123, 0xEE);
-        var invalidConfigMapping = machine.MemoryBus.GetMapping(0x0123);
-        Require(machine.MemoryBus.Read(0x0123) == 0xFF && invalidConfigMapping.IsOpenBus
-                && !machine.MemoryBus.CanWriteDirect(0x0123),
-            "The first uninstalled raw SRAM bank did not behave as open bus.");
+        // NextReg $04 keeps seven bits on an issue 4 board, so 128 aliases raw bank 0, and with
+        // 2 MiB fitted every bank it can reach is installed.
+        machine.Registers.Write(0x04, 0);
+        byte bankZeroByte = machine.MemoryBus.Read(0x0123);
+        machine.Registers.Write(0x04, 128);
+        Require(machine.MemoryBus.ConfigurationBank == 0
+                && machine.MemoryBus.Read(0x0123) == bankZeroByte
+                && !machine.MemoryBus.GetMapping(0x0123).IsOpenBus,
+            "NextReg $04 = 128 did not alias raw bank 0.");
 
         machine.Registers.Write(0x04, 0x01);
         machine.MemoryBus.WriteCpu(0x0123, 0xE1);
@@ -7156,6 +9569,112 @@ public static class ZxNextVerificationRunner
         machine.Reset(ZxNextResetKind.Hard);
         Require(machine.Registers.Read(0x0A) == 0x01 && !machine.DivMmc.AutomapEnabled,
             "Hard reset did not restore the DivMMC automap enable default.");
+    }
+
+    /// <summary>
+    /// A command clocked in while a CMD18 stream is still delivering data has to abandon
+    /// that stream and be answered, with no CMD12 and no chip-select in between.
+    /// </summary>
+    /// <remarks>
+    /// SPI is full duplex and a real card's command decoder never stops listening. Atic
+    /// Atac Next relies on this: it ends one asset stream by issuing the next CMD18 straight
+    /// into it. The card used to parse commands only once its response queue was empty,
+    /// and in CMD18 mode the queue is refilled the moment it drains, so the new command
+    /// was swallowed as dummy clocks and the game read the next sector of the old stream
+    /// as its asset directory - all zeros, as it happened, which left every asset with a
+    /// zero sector count and a loop that walked over its own stack.
+    /// </remarks>
+    private static void VerifySdCommandDuringMultipleRead()
+    {
+        string temporaryDirectory = Path.Combine(Path.GetTempPath(), $"ZedExEss-zxnext-sd-midstream-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryDirectory);
+        string imagePath = Path.Combine(temporaryDirectory, "sd0.img");
+        const int Sectors = 8;
+        byte[] image = new byte[Sectors * 512];
+        for (int sector = 0; sector < Sectors; sector++)
+        {
+            for (int index = 0; index < 512; index++)
+            {
+                image[(sector * 512) + index] = (byte)(((index * (sector + 3)) ^ (0x11 * sector)) & 0xFF);
+            }
+        }
+
+        File.WriteAllBytes(imagePath, image);
+        SpectrumDivMmcSdCard card = SpectrumDivMmcSdCard.Open(imagePath, writeProtected: false);
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        try
+        {
+            machine.DivMmc.AttachSdCard(0, card);
+            machine.PortBus.WriteUncontended(0x12E7, 0x02);
+            InitializeSdCard(machine);
+
+            // A CMD18 at sector 1 delivers 1, then 2, then 3 ... for as long as it is clocked.
+            SendSdCommand(machine, 18, 1);
+            Require(ReadSdR1(machine) == 0x00, "CMD18 was rejected.");
+            Require(DrainSdReadBlock(machine).AsSpan().SequenceEqual(image.AsSpan(512, 512)),
+                "The first block of the stream was not sector 1.");
+
+            // Part way into sector 2, a new CMD18 for sector 5 arrives: no CMD12, no deselect.
+            for (int skip = 0; skip < 7; skip++)
+            {
+                _ = ReadSpi(machine);
+            }
+
+            SendSdCommand(machine, 18, 5);
+            Require(ReadSdR1(machine) == 0x00, "A CMD18 issued during a running stream was not answered.");
+            Require(DrainSdReadBlock(machine).AsSpan().SequenceEqual(image.AsSpan(5 * 512, 512)),
+                "A CMD18 issued during a running stream did not restart the stream at its own sector.");
+            Require(DrainSdReadBlock(machine).AsSpan().SequenceEqual(image.AsSpan(6 * 512, 512)),
+                "The restarted stream did not continue from its own sector.");
+
+            // A single-block read during the stream is answered too, and ends the streaming.
+            for (int skip = 0; skip < 100; skip++)
+            {
+                _ = ReadSpi(machine);
+            }
+
+            SendSdCommand(machine, 17, 3);
+            Require(ReadSdR1(machine) == 0x00, "A CMD17 issued during a running stream was not answered.");
+            Require(DrainSdReadBlock(machine).AsSpan().SequenceEqual(image.AsSpan(3 * 512, 512)),
+                "A CMD17 issued during a running stream returned the wrong sector.");
+            bool idle = true;
+            for (int index = 0; index < 600 && idle; index++)
+            {
+                idle = ReadSpi(machine) == 0xFF;
+            }
+
+            Require(idle, "The stream carried on after a CMD17 had ended it.");
+
+            // And CMD12 in the middle of a block still stops the card cleanly.
+            SendSdCommand(machine, 18, 2);
+            Require(ReadSdR1(machine) == 0x00, "The second CMD18 was rejected.");
+            Require(DrainSdReadBlock(machine).AsSpan().SequenceEqual(image.AsSpan(2 * 512, 512)),
+                "The second stream did not start at sector 2.");
+            for (int skip = 0; skip < 40; skip++)
+            {
+                _ = ReadSpi(machine);
+            }
+
+            SendSdCommand(machine, 12, 0);
+            Require(ReadSdR1(machine) == 0x00, "CMD12 during a block was not answered.");
+            idle = true;
+            for (int index = 0; index < 600 && idle; index++)
+            {
+                idle = ReadSpi(machine) == 0xFF;
+            }
+
+            Require(idle, "The stream carried on after CMD12.");
+
+            // The card is still a card: an ordinary read works afterwards.
+            Require(ReadSdSector(machine, 7).AsSpan().SequenceEqual(image.AsSpan(7 * 512, 512)),
+                "An ordinary CMD17 after the interrupted streams returned the wrong sector.");
+        }
+        finally
+        {
+            machine.DivMmc.AttachSdCard(0, null);
+            card.Dispose();
+            try { Directory.Delete(temporaryDirectory, recursive: true); } catch { }
+        }
     }
 
     private static void VerifyNextSpiAndSdCard()
@@ -7733,6 +10252,31 @@ public static class ZxNextVerificationRunner
         Require(setAe.Cpu.A == 0x10, "SETAE produced the wrong pixel mask.");
     }
 
+    /// <summary>
+    /// RETI copies IFF2 into IFF1 exactly as RETN does (the shared Z80's RETI did not), so
+    /// an NMI handler that ends in RETI returns with interrupts enabled again.
+    /// </summary>
+    private static void VerifyReturnRestoresIff1()
+    {
+        foreach (byte opcode in new byte[] { 0x4D, 0x45 })
+        {
+            ZxNextMachine machine = CreateProgram(0xED, opcode);
+            machine.MemoryBus.WriteCpu(0x3000, 0x34);
+            machine.MemoryBus.WriteCpu(0x3001, 0x12);
+            machine.Cpu.RestoreSnapshotState(machine.Cpu.CaptureSnapshotState() with
+            {
+                SP = 0x3000,
+                Iff1 = false,
+                Iff2 = true
+            });
+            machine.StepInstruction();
+            Require(machine.Cpu.PC == 0x1234 && machine.Cpu.SP == 0x3002
+                    && machine.Cpu.Iff1 && machine.Cpu.Iff2,
+                $"ED {opcode:X2} did not return with IFF1 restored from IFF2 " +
+                $"(PC=${machine.Cpu.PC:X4}, IFF1={machine.Cpu.Iff1}).");
+        }
+    }
+
     private static void VerifyZ80NIoOperations()
     {
         ZxNextMachine output = CreateProgram(0xED, 0x90);
@@ -7854,6 +10398,1661 @@ public static class ZxNextVerificationRunner
             "LDWS did not increment only L and D with 14-T-state timing.");
     }
 
+    /// <summary>
+    /// Where the Next's T80N differs from a Zilog Z80, from <c>t80n.vhd</c>,
+    /// <c>t80n_mcode.vhd</c> and <c>t80n_alu.vhd</c>.
+    /// </summary>
+    /// <remarks>
+    /// Every expected value was worked out by hand from the pinned VHDL, and the inputs are
+    /// chosen so that a Zilog Z80 (Fuse's results, which <c>--verify-z80-core</c> holds the
+    /// Spectrum to) would give a different answer.
+    /// </remarks>
+    private static void VerifyT80nDifferences()
+    {
+        ZxNextMachine Run(byte[] program, Action<ZxNextMachine> setup, int instructions = 1, ushort at = 0)
+        {
+            ZxNextMachine machine = at == 0 ? CreateProgram(program) : CreateProgramAt(at, program);
+            setup(machine);
+            for (int step = 0; step < instructions; step++)
+            {
+                machine.StepInstruction();
+            }
+
+            return machine;
+        }
+
+        void RequireFlags(ZxNextMachine machine, byte expected, string what) =>
+            Require(machine.Cpu.GetFlags() == expected,
+                $"{what}: F was {machine.Cpu.GetFlags():X2}, the T80N gives {expected:X2}.");
+
+        // SCF and CCF: flag bits 5/3 from A alone, never from Q (t80n.vhd's I_SCF/I_CCF).
+        // After a NOP, a Zilog Z80 would OR in the old F's bits (0xED and 0xFC).
+        RequireFlags(Run([0x00, 0x37], m => { m.Cpu.A = 0x00; m.Cpu.SetFlags(0xEC); }, 2), 0xC5,
+            "SCF after an instruction that set no flags");
+        RequireFlags(Run([0x00, 0x3F], m => { m.Cpu.A = 0x00; m.Cpu.SetFlags(0xED); }, 2), 0xD4,
+            "CCF after an instruction that set no flags");
+
+        // LD A,I and LD A,R keep C and bits 5/3 (Zilog: copied from the value, 0x85 and 0x00).
+        ZxNextMachine loadI = Run([0xED, 0x57], m =>
+        {
+            m.Cpu.I = 0x80;
+            m.Cpu.SetFlags(0x29);
+            m.Cpu.SetInterruptState(1, iff1: true, iff2: true);
+        });
+        Require(loadI.Cpu.A == 0x80, "LD A,I did not load I.");
+        RequireFlags(loadI, 0xAD, "LD A,I");
+        // And the value's own bits 5/3 are not copied (Zilog: 0xAD).
+        RequireFlags(Run([0xED, 0x57], m =>
+        {
+            m.Cpu.I = 0xA8;
+            m.Cpu.SetFlags(0x01);
+            m.Cpu.SetInterruptState(1, iff1: true, iff2: true);
+        }), 0x85, "LD A,I with I = $A8");
+        RequireFlags(Run([0xED, 0x5F], m =>
+        {
+            m.Cpu.R = 0x00;
+            m.Cpu.SetFlags(0x28);
+            m.Cpu.SetInterruptState(1, iff1: false, iff2: false);
+        }), 0x28, "LD A,R");
+
+        // IN A,(C) keeps C and bits 5/3 (Zilog: 0x45). Port $253B reads NextReg $7F.
+        ZxNextMachine input = Run([0xED, 0x78], m =>
+        {
+            m.Registers.Write(0x7F, 0x00);
+            m.PortBus.WriteUncontended(0x243B, 0x7F);
+            m.Cpu.B = 0x25;
+            m.Cpu.C = 0x3B;
+            m.Cpu.A = 0x99;
+            m.Cpu.SetFlags(0x29);
+        });
+        Require(input.Cpu.A == 0x00, "IN A,(C) did not read NextReg $7F through $253B.");
+        RequireFlags(input, 0x6D, "IN A,(C)");
+
+        // CPI takes bits 5/3 from the byte compared (Zilog: from A - value - H, 0xB6).
+        RequireFlags(Run([0xED, 0xA1], m =>
+        {
+            m.Cpu.A = 0x00;
+            m.Cpu.B = 0x00;
+            m.Cpu.C = 0x02;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0x28);
+            m.Cpu.SetFlags(0x00);
+        }), 0xBE, "CPI");
+
+        // INI/OUTI: every flag from SUB B,1, whatever the byte (Zilog: 0x2C and 0x40 here).
+        RequireFlags(Run([0xED, 0xA2], m =>
+        {
+            m.Cpu.B = 0x80;
+            m.Cpu.C = 0xFE;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.Cpu.SetFlags(0x00);
+        }), 0x3E, "INI with B = $80");
+        RequireFlags(Run([0xED, 0xA3], m =>
+        {
+            m.Cpu.B = 0x01;
+            m.Cpu.C = 0xFE;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0x00);
+            m.Cpu.SetFlags(0x00);
+        }), 0x42, "OUTI with B = $01");
+
+        // A repeating iteration changes no flag (a Zilog Z80 copies PC bits 13/11, here
+        // $A8's, into bits 5/3, and INIR/OTIR's other repeat flags).
+        RequireFlags(Run([0xED, 0xB0], m =>
+        {
+            m.Cpu.B = 0x00;
+            m.Cpu.C = 0x02;
+            m.Cpu.H = 0x90;
+            m.Cpu.L = 0x00;
+            m.Cpu.D = 0x91;
+            m.Cpu.E = 0x00;
+            m.Cpu.A = 0x00;
+            m.MemoryBus.WriteCpu(0x9000, 0x00);
+            m.Cpu.SetFlags(0x00);
+        }, at: 0xA800), 0x04, "A repeating LDIR at $A800");
+        RequireFlags(Run([0xED, 0xB1], m =>
+        {
+            m.Cpu.B = 0x00;
+            m.Cpu.C = 0x02;
+            m.Cpu.H = 0x90;
+            m.Cpu.L = 0x00;
+            m.Cpu.A = 0x00;
+            m.MemoryBus.WriteCpu(0x9000, 0x01);
+            m.Cpu.SetFlags(0x00);
+        }, at: 0xA800), 0x96, "A repeating CPIR at $A800");
+        ZxNextMachine inir = Run([0xED, 0xB2], m =>
+        {
+            m.Cpu.B = 0x02;
+            m.Cpu.C = 0xFE;
+            m.Cpu.H = 0x90;
+            m.Cpu.L = 0x00;
+            m.Cpu.SetFlags(0x00);
+        }, at: 0xA800);
+        Require(inir.Cpu.PC == 0xA800 && inir.Cpu.B == 0x01, "INIR did not repeat.");
+        RequireFlags(inir, 0x02, "A repeating INIR at $A800");
+        RequireFlags(Run([0xED, 0xB4], m =>
+        {
+            m.Cpu.B = 0x00;
+            m.Cpu.C = 0x02;
+            m.Cpu.H = 0x90;
+            m.Cpu.L = 0x00;
+            m.Cpu.D = 0x91;
+            m.Cpu.E = 0x00;
+            m.Cpu.A = 0x00;
+            m.MemoryBus.WriteCpu(0x9000, 0x11);
+            m.Cpu.SetFlags(0x00);
+        }, at: 0xA800), 0x04, "A repeating LDIRX at $A800");
+
+        // BIT: bits 5/3 cleared for an opcode ending 110, otherwise from the byte; never MEMPTR
+        // (a Zilog Z80 gives 0x38 and 0x18 here).
+        RequireFlags(Run([0xCB, 0x46], m =>
+        {
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0x29);
+            m.Cpu.MemPtr = 0x2800;
+            m.Cpu.SetFlags(0x00);
+        }), 0x10, "BIT 0,(HL) with MEMPTR $2800");
+        RequireFlags(Run([0xDD, 0xCB, 0x00, 0x46], m =>
+        {
+            m.Cpu.IX = 0x0800;
+            m.MemoryBus.WriteCpu(0x0800, 0x29);
+            m.Cpu.SetFlags(0x00);
+        }), 0x10, "BIT 0,(IX+0) at $0800");
+        RequireFlags(Run([0xDD, 0xCB, 0x00, 0x40], m =>
+        {
+            m.Cpu.IX = 0x0800;
+            m.MemoryBus.WriteCpu(0x0800, 0x29);
+            m.Cpu.SetFlags(0x00);
+        }), 0x38, "The undocumented DD CB d 40 BIT form at $0800");
+
+        // Z80N: OUTINB keeps F; LDWS carries out of D + 1; LDPIRX's flags come from B (after
+        // BC's decrement) OR the byte; LDIX's from A + the byte.
+        RequireFlags(Run([0xED, 0x90], m =>
+        {
+            m.Cpu.B = 0x12;
+            m.Cpu.C = 0x34;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0xA5);
+            m.Cpu.SetFlags(0xD7);
+        }), 0xD7, "OUTINB");
+        RequireFlags(Run([0xED, 0xA5], m =>
+        {
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0xFF;
+            m.Cpu.D = 0xD0;
+            m.Cpu.E = 0x10;
+            m.Cpu.SetFlags(0x01);
+        }), 0x80, "LDWS with D = $D0");
+        RequireFlags(Run([0xED, 0xA5], m =>
+        {
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.Cpu.D = 0xFF;
+            m.Cpu.E = 0x10;
+            m.Cpu.SetFlags(0x00);
+        }), 0x51, "LDWS with D = $FF");
+        ZxNextMachine ldpirx = Run([0xED, 0xB7], m =>
+        {
+            m.Cpu.A = 0x5F;
+            m.Cpu.B = 0x02;
+            m.Cpu.C = 0x00;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.Cpu.D = 0x20;
+            m.Cpu.E = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0x00);
+            m.Cpu.SetFlags(0x00);
+        });
+        Require(ldpirx.Cpu.BC == 0x01FF, "LDPIRX did not decrement BC.");
+        RequireFlags(ldpirx, 0x04, "LDPIRX with BC = $0200 (B | byte after the decrement is $01)");
+        RequireFlags(Run([0xED, 0xA4], m =>
+        {
+            m.Cpu.A = 0x00;
+            m.Cpu.B = 0x00;
+            m.Cpu.C = 0x02;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.Cpu.D = 0x20;
+            m.Cpu.E = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0x0A);
+            m.Cpu.SetFlags(0xC1);
+        }), 0xED, "LDIX of $0A with A = 0");
+
+        // ED B6 (LDIRSCALE) runs as LDIRX: its scaling is commented out of t80n.vhd.
+        ZxNextMachine scale = Run([0xED, 0xB6], m =>
+        {
+            m.Cpu.A = 0x00;
+            m.Cpu.B = 0x00;
+            m.Cpu.C = 0x01;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.Cpu.D = 0x20;
+            m.Cpu.E = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0x77);
+        });
+        Require(scale.MemoryBus.Read(0x2000) == 0x77 && scale.Cpu.HL == 0x1001 && scale.Cpu.DE == 0x2001
+                && scale.Cpu.BC == 0 && scale.Cpu.PC == 2 && scale.Cpu.Cyc == 16,
+            "ED B6 did not run as LDIRX (copy, HL+1, DE+1, BC-1, 16 T-states).");
+        ZxNextMachine scaleSkip = Run([0xED, 0xB6], m =>
+        {
+            m.Cpu.A = 0x77;
+            m.Cpu.B = 0x00;
+            m.Cpu.C = 0x02;
+            m.Cpu.H = 0x10;
+            m.Cpu.L = 0x00;
+            m.Cpu.D = 0x20;
+            m.Cpu.E = 0x00;
+            m.MemoryBus.WriteCpu(0x1000, 0x77);
+            m.MemoryBus.WriteCpu(0x2000, 0x55);
+        });
+        Require(scaleSkip.MemoryBus.Read(0x2000) == 0x55 && scaleSkip.Cpu.PC == 0 && scaleSkip.Cpu.Cyc == 21,
+            "ED B6 did not skip the byte equal to A and repeat as LDIRX does.");
+
+        // PIXELDN: the 8-bit row H4H3 L7L6L5 H2H1H0 plus one; H7-H5 and L4-L0 untouched.
+        (ushort From, ushort To)[] pixelDown =
+        [
+            (0x4000, 0x4100), (0x4700, 0x4020), (0x47E0, 0x4800), (0x57E5, 0x5805),
+            (0x5FE0, 0x4000), (0x7FFF, 0x601F)
+        ];
+        foreach ((ushort from, ushort to) in pixelDown)
+        {
+            ZxNextMachine down = Run([0xED, 0x93], m =>
+            {
+                m.Cpu.H = (byte)(from >> 8);
+                m.Cpu.L = (byte)from;
+                m.Cpu.SetFlags(0xD7);
+            });
+            Require(down.Cpu.HL == to && down.Cpu.GetFlags() == 0xD7,
+                $"PIXELDN {from:X4} gave {down.Cpu.HL:X4}, the T80N gives {to:X4} (row 255 wraps within H7-H5).");
+        }
+
+        // Bus cycles (FIX-CPU-3). Each line is a cycle: F fetch, R read, W write, I one internal
+        // T-state, with its address.
+        string[] Cycles(byte[] program, Action<ZxNextMachine> setup)
+        {
+            ZxNextMachine machine = CreateProgram(program);
+            setup(machine);
+            var log = new BusCycleLog();
+            machine.Cpu.ConfigureBusObserver(log);
+            machine.StepInstruction();
+            machine.Cpu.ConfigureBusObserver(null);
+            return log.Cycles.ToArray();
+        }
+
+        void RequireCycles(string[] actual, string[] expected, string what) =>
+            Require(actual.SequenceEqual(expected),
+                $"{what}: cycles were [{string.Join(" ", actual)}], t80n_mcode.vhd gives [{string.Join(" ", expected)}].");
+
+        // NEXTREG: two read cycles after the operands, not internal cycles.
+        RequireCycles(Cycles([0xED, 0x91, 0x7F, 0x05], _ => { }),
+            ["F0000", "F0001", "R0002", "R0003", "R0004", "R0004"], "NEXTREG $7F,5");
+        RequireCycles(Cycles([0xED, 0x92, 0x7F], m => m.Cpu.A = 0x05),
+            ["F0000", "F0001", "R0002", "R0003", "R0003"], "NEXTREG $7F,A");
+        // PUSH nn: each operand read is followed by its stack write, then a read cycle.
+        RequireCycles(Cycles([0xED, 0x8A, 0x12, 0x34], m => m.Cpu.SP = 0x3000),
+            ["F0000", "F0001", "R0002", "W2FFF", "R0003", "W2FFE", "R0004"], "PUSH $1234");
+        // LDIX with the write suppressed: the destination M-cycle is a read at DE.
+        RequireCycles(Cycles([0xED, 0xA4], m =>
+            {
+                m.Cpu.A = 0xA5;
+                m.Cpu.B = 0x00;
+                m.Cpu.C = 0x01;
+                m.Cpu.H = 0x10;
+                m.Cpu.L = 0x00;
+                m.Cpu.D = 0x20;
+                m.Cpu.E = 0x00;
+                m.MemoryBus.WriteCpu(0x1000, 0xA5);
+            }),
+            ["F0000", "F0001", "R1000", "R2000", "I2000", "I2000"], "LDIX with the byte equal to A");
+
+        ZxNextMachine nextReg = Run([0xED, 0x91, 0x7F, 0x05], _ => { });
+        ZxNextMachine push = Run([0xED, 0x8A, 0x12, 0x34], m => m.Cpu.SP = 0x3000);
+        Require(nextReg.Registers.Read(0x7F) == 0x05 && nextReg.Cpu.Cyc == 20 && nextReg.Cpu.PC == 4
+                && push.MemoryBus.Read(0x2FFF) == 0x12 && push.MemoryBus.Read(0x2FFE) == 0x34
+                && push.Cpu.SP == 0x2FFE && push.Cpu.Cyc == 23 && push.Cpu.PC == 4,
+            "NEXTREG or PUSH nn changed its result or length (20 and 23 T-states).");
+    }
+
+    /// <summary>Bus cycles in order, as the CPU reports them.</summary>
+    private sealed class BusCycleLog : ZedExEss.Z80CPU.IZ80BusObserver
+    {
+        private int _pendingCycles;
+        private ushort _pendingAddress;
+
+        public List<string> Cycles { get; } = [];
+
+        public void OnContend(ushort address, int cycles)
+        {
+            if (cycles == 1)
+            {
+                Cycles.Add($"I{address:X4}");
+                return;
+            }
+
+            _pendingCycles = cycles;
+            _pendingAddress = address;
+        }
+
+        public void OnRead(ushort address, byte value)
+        {
+            Cycles.Add($"{(_pendingCycles == 4 ? 'F' : 'R')}{address:X4}");
+            _pendingCycles = 0;
+        }
+
+        public void OnWrite(ushort address, byte value)
+        {
+            Cycles.Add($"W{address:X4}");
+            _pendingCycles = 0;
+        }
+
+        public void OnPortContend(ushort port, int cycles)
+        {
+        }
+
+        public void OnPortRead(ushort port, byte value) => Cycles.Add($"P{port:X4}");
+
+        public void OnPortWrite(ushort port, byte value) => Cycles.Add($"O{port:X4}");
+    }
+
+    /// <summary>
+    /// Hardware IM2 and the pulse, from <c>peripherals.vhd</c>, <c>im2_peripheral.vhd</c>,
+    /// <c>im2_device.vhd</c>, <c>im2_control.vhd</c> and <c>zxnext.vhd</c>'s interrupt lines.
+    /// </summary>
+    /// <remarks>
+    /// The expected vectors, orders and register values were worked out by hand from the VHDL:
+    /// priority is the source index (0 line, 3-10 CTC 0-7, 11 ULA), the vector
+    /// <c>($C0 &amp; $E0) | index * 2</c>.
+    /// </remarks>
+    private static void VerifyHardwareIm2()
+    {
+        // --- The NextRegs ------------------------------------------------------------------
+        ZxNextMachine registers = ZxNextMachineFactory.CreateFoundationMachine();
+        Require(registers.Registers.Read(0xC0) == 0x00 && registers.Registers.Read(0xC4) == 0x81
+                && registers.Registers.Read(0xC5) == 0 && registers.Registers.Read(0xC6) == 0
+                && registers.Registers.Read(0xC8) == 0 && registers.Registers.Read(0xC9) == 0
+                && registers.Registers.Read(0xCA) == 0 && registers.Registers.Read(0xCC) == 0
+                && registers.Registers.Read(0xCD) == 0 && registers.Registers.Read(0xCE) == 0
+                && registers.Registers.Read(0x20) == 0,
+            "The interrupt NextRegs did not reset to $C0 = 0, $C4 = $81 and the rest 0.");
+        foreach (byte register in new byte[] { 0xC0, 0xC5, 0xC6, 0xCC, 0xCD, 0xCE })
+        {
+            registers.Registers.Write(register, 0xFF);
+        }
+
+        Require(registers.Registers.Read(0xC0) == 0xE9 && registers.Registers.Read(0xC5) == 0x0F
+                && registers.Registers.Read(0xC6) == 0x77 && registers.Registers.Read(0xCC) == 0x83
+                && registers.Registers.Read(0xCD) == 0xFF && registers.Registers.Read(0xCE) == 0x77,
+            "$C0, $C5 (four CTC channels), $C6 or $CC-$CE did not keep the bits zxnext.vhd stores.");
+        registers.Registers.Write(0xC0, 0x00);
+        ZxNextMachine im2Mode = CreateProgram(0xED, 0x5E);
+        im2Mode.StepInstruction();
+        Require((im2Mode.Registers.Read(0xC0) & 0x06) == 0x04,
+            "$C0 bits 2-1 did not read the IM 2 the CPU executed.");
+
+        // --- Status, in both modes ------------------------------------------------------------
+        ZxNextMachine status = ZxNextMachineFactory.CreateFoundationMachine();
+        status.Registers.Write(0x20, 0xC5);
+        Require(status.Registers.Read(0x20) == 0xC5 && status.Registers.Read(0xC8) == 0x03
+                && status.Registers.Read(0xC9) == 0x05 && status.UlaTiming.InterruptLineActive,
+            "A $20 write in pulse mode did not latch the line, ULA and CTC 0/2 status bits and pulse INT.");
+        status.Registers.Write(0xC8, 0x02);
+        status.Registers.Write(0xC9, 0x01);
+        Require(status.Registers.Read(0x20) == 0x44 && status.Registers.Read(0xC8) == 0x01,
+            "Writing 1 to $C8/$C9 bits did not clear those status bits alone.");
+
+        ZxNextMachine pending = ZxNextMachineFactory.CreateFoundationMachine();
+        pending.Registers.Write(0xC0, 0x01);
+        pending.Registers.Write(0x20, 0x80);
+        pending.Registers.Write(0xC8, 0x02);
+        Require(pending.Registers.Read(0xC8) == 0x02 && !pending.UlaTiming.InterruptLineActive,
+            "In hardware IM2 mode a pending line interrupt's status did not stay set after a clear, or it pulsed.");
+        pending.Registers.Write(0xC0, 0x00);
+        Require(pending.Registers.Read(0xC8) == 0x00 && pending.Registers.Interrupts.Pending == 0,
+            "Pulse mode did not drop the pending hardware IM2 request.");
+
+        // --- The ULA exception -----------------------------------------------------------------
+        ZxNextMachine imOne = ZxNextMachineFactory.CreateFoundationMachine();
+        imOne.Registers.Write(0xC0, 0x01);
+        imOne.Cpu.SetInterruptState(1, iff1: false, iff2: false);
+        imOne.Registers.Write(0x20, 0x80);
+        Require(!imOne.UlaTiming.InterruptLineActive && !imOne.Cpu.InterruptPending,
+            "A line interrupt reached a CPU in IM 1 in hardware IM2 mode.");
+        imOne.Registers.Write(0x20, 0x40);
+        Require(imOne.UlaTiming.InterruptLineActive && imOne.Cpu.InterruptPending,
+            "The ULA did not pulse for a CPU in IM 1 in hardware IM2 mode (the EXCEPTION generic).");
+
+        // The same for the frame interrupt itself: it pulses, and is also left pending.
+        ZxNextMachine frame = CreateProgram(0xF3, 0xED, 0x56, 0x18, 0xFE);
+        frame.Registers.Write(0xC0, 0x01);
+        ulong frameInterrupts = frame.UlaTiming.InterruptCount;
+        for (int step = 0; step < 20_000 && frame.UlaTiming.InterruptCount == frameInterrupts; step++)
+        {
+            frame.StepInstruction();
+        }
+
+        Require(frame.UlaTiming.InterruptCount > frameInterrupts && frame.UlaTiming.InterruptLineActive
+                && frame.Registers.Interrupts.Pending == 0x0800,
+            "The frame interrupt did not pulse for a CPU in IM 1 in hardware IM2 mode.");
+
+        // A real line interrupt in hardware IM2 mode is a request, not a pulse: it has no
+        // exception, so a CPU in IM 1 sees nothing and the request waits.
+        ZxNextMachine line = CreateProgram(0xF3, 0xED, 0x56, 0x18, 0xFE);
+        line.Registers.Write(0xC0, 0x01);
+        line.Registers.Write(0x22, 0x06);
+        line.Registers.Write(0x23, 0x40);
+        ulong lineInterrupts = line.UlaTiming.LineInterruptCount;
+        for (int step = 0; step < 20_000 && line.UlaTiming.LineInterruptCount == lineInterrupts; step++)
+        {
+            line.StepInstruction();
+        }
+
+        Require(line.UlaTiming.LineInterruptCount > lineInterrupts && !line.UlaTiming.InterruptLineActive
+                && line.Registers.Interrupts.Pending == 0x0001 && !line.Cpu.InterruptPending,
+            "A line interrupt in hardware IM2 mode pulsed, or was not left pending, for a CPU in IM 1.");
+
+        // A reset clears the chain and its registers.
+        ZxNextMachine reset = ZxNextMachineFactory.CreateFoundationMachine();
+        reset.Registers.Write(0xC0, 0xA1);
+        reset.Registers.Write(0xC5, 0x0F);
+        reset.Registers.Write(0xC6, 0x77);
+        reset.Registers.Write(0xCC, 0x83);
+        reset.Registers.Write(0xCD, 0xFF);
+        reset.Registers.Write(0xCE, 0x77);
+        reset.Registers.Write(0x20, 0xCF);
+        reset.Reset(ZxNextResetKind.Soft);
+        Require(reset.Registers.Read(0xC0) == 0 && reset.Registers.Read(0xC5) == 0
+                && reset.Registers.Read(0xC6) == 0 && reset.Registers.Read(0xCC) == 0
+                && reset.Registers.Read(0xCD) == 0 && reset.Registers.Read(0xCE) == 0
+                && reset.Registers.Read(0x20) == 0 && reset.Registers.Interrupts.Pending == 0,
+            "A soft reset did not clear the interrupt chain and its registers.");
+
+        // INT follows the IM: a request pending under IM 0 drives INT once IM 2 is executed.
+        ZxNextMachine imChange = CreateProgram(0xED, 0x5E);
+        imChange.Registers.Write(0xC0, 0x01);
+        imChange.Registers.Write(0x20, 0x80);
+        Require(!imChange.Cpu.InterruptPending, "A hardware IM2 request drove INT for a CPU in IM 0.");
+        imChange.StepInstruction();
+        Require(imChange.Cpu.InterruptPending && imChange.Registers.Interrupts.Im2InterruptAsserted,
+            "Executing IM 2 did not let a pending hardware IM2 request drive INT.");
+
+        // --- Vectors, priority, nesting -------------------------------------------------------
+        RequireIm2Log("$20 = $C9: line, CTC 0 and 3, ULA pending together",
+            "NEXTREG $20,$C9", [], [0xA0, 0xA6, 0xAC, 0xB6]);
+        // The line nests in the ULA's handler and raises CTC 0; its RETI ends the line's
+        // service, not the ULA's, so CTC 0 (above the ULA) nests at once.
+        RequireIm2Log("a line interrupt raised inside the ULA's handler nests",
+            "NEXTREG $20,$40",
+            [
+                (0xB6, "LD A,$B6\nCALL LogA\nNEXTREG $20,$80\nEI\nNOP\nNOP\nLD A,$B7\nCALL LogA\nEI\nRETI"),
+                (0xA0, "LD A,$A0\nCALL LogA\nNEXTREG $20,$01\nEI\nRETI")
+            ],
+            [0xB6, 0xA0, 0xA6, 0xB7]);
+        RequireIm2Log("a ULA interrupt raised inside the line's handler waits for its RETI",
+            "NEXTREG $20,$80",
+            [(0xA0, "LD A,$A0\nCALL LogA\nNEXTREG $20,$40\nEI\nNOP\nNOP\nLD A,$A1\nCALL LogA\nEI\nRETI")],
+            [0xA0, 0xA1, 0xB6]);
+        ZxNextMachine retn = RequireIm2Log("a RETN ends no service",
+            "NEXTREG $20,$80\nEI\nNOP\nNOP\nNEXTREG $20,$40",
+            [(0xA0, "LD A,$A0\nCALL LogA\nEI\nRETN")],
+            [0xA0]);
+        Require(retn.Registers.Interrupts.InService == 0x0001 && retn.Registers.Interrupts.Pending == 0x0801,
+            "After a RETN the line was not still in service with the ULA waiting behind it.");
+        ZxNextMachine retiInImOne = RequireIm2Log("a RETI in IM 1 ends no service",
+            "NEXTREG $20,$80",
+            [(0xA0, "LD A,$A0\nCALL LogA\nIM 1\nRETI")],
+            [0xA0]);
+        Require(retiInImOne.Registers.Interrupts.InService == 0x0001,
+            "A RETI decoded while the CPU was in IM 1 ended the line's service.");
+
+        // In pulse mode an IM 2 acknowledge reads $FF from the bus.
+        RequireIm2Log("IM 2 in pulse mode reads its pointer at I * 256 + $FF",
+            "NEXTREG $C0,$00\nNEXTREG $20,$40", [], [0xFF]);
+
+        VerifyIm2DmaHoldOff(holdOff: true);
+        VerifyIm2DmaHoldOff(holdOff: false);
+        VerifyIm2DmaHoldOffAtStartAndInBurst();
+
+        // An active NMI holds the DMA off only with $CC bit 7.
+        ZxNextMachine nmi = ZxNextMachineFactory.CreateFoundationMachine();
+        nmi.Registers.Nmi.Request(multiface: true, divMmc: false);
+        Require(nmi.Registers.Nmi.Activated && !nmi.Registers.Interrupts.DmaHeldOff(nmi.Clock.MasterTicks),
+            "An NMI held the DMA off without $CC bit 7.");
+        nmi.Registers.Write(0xCC, 0x80);
+        Require(nmi.Registers.Interrupts.DmaHeldOff(nmi.Clock.MasterTicks),
+            "An active NMI did not hold the DMA off with $CC bit 7.");
+    }
+
+    /// <summary>
+    /// Runs an IM 2 program in hardware IM2 mode (vectors $A0) and requires its handlers' log.
+    /// </summary>
+    /// <remarks>
+    /// Table at $7E00 (I = $7E); every even vector and $FF enters a stub that logs the vector
+    /// and returns with EI, RETI, unless a handler of its own is given. The ULA's frame
+    /// interrupt is off ($22 bit 2), so only the program's requests are seen.
+    /// </remarks>
+    private static ZxNextMachine RequireIm2Log(
+        string what,
+        string body,
+        (byte Vector, string Code)[] handlers,
+        byte[] expected)
+    {
+        ushort logA = 0x6F00;
+        ushort commonAddress = 0x6F80;
+        const string logRoutine = """
+                    PUSH HL
+                    LD HL,($7F80)
+                    LD (HL),A
+                    INC HL
+                    LD ($7F80),HL
+                    POP HL
+                    RET
+            """;
+        const string commonRoutine = """
+                    CALL $6F00
+                    EI
+                    RETI
+            """;
+        string program = $"""
+                    DI
+                    LD SP,$5FFE
+                    LD A,$7E
+                    DB $ED,$47
+                    IM 2
+                    NEXTREG $22,$04
+                    NEXTREG $C0,$A1
+            {body}
+                    EI
+            Park:   JR Park
+            """;
+        var assembler = new Z80InlineAssembler(enableZ80N: true);
+        Z80AssemblyResult main = assembler.Assemble(0x6000, program);
+        Z80AssemblyResult log = assembler.Assemble(logA, logRoutine);
+        Z80AssemblyResult common = assembler.Assemble(commonAddress, commonRoutine);
+        Require(main.Success && log.Success && common.Success,
+            $"{what}: the program did not assemble: {main.Error}{log.Error}{common.Error}");
+        ZxNextMachine machine = CreateProgramAt(0x6000, main.Bytes);
+        WriteBytes(machine, logA, log.Bytes);
+        WriteBytes(machine, commonAddress, common.Bytes);
+        machine.MemoryBus.WriteCpu(0x7F80, 0x90);
+        machine.MemoryBus.WriteCpu(0x7F81, 0x7F);
+
+        ushort StubAddress(int vector) => (ushort)(0x7000 + (vector * 8));
+        for (int vector = 0; vector < 256; vector++)
+        {
+            if (vector % 2 == 1 && vector != 0xFF)
+            {
+                continue;
+            }
+
+            ushort stub = StubAddress(vector);
+            machine.MemoryBus.WriteCpu((ushort)(0x7E00 + vector), (byte)stub);
+            machine.MemoryBus.WriteCpu((ushort)(0x7E01 + vector), (byte)(stub >> 8));
+            byte[] code = [0x3E, (byte)vector, 0xC3, (byte)commonAddress, (byte)(commonAddress >> 8)];
+            for (int index = 0; index < code.Length; index++)
+            {
+                machine.MemoryBus.WriteCpu((ushort)(stub + index), code[index]);
+            }
+        }
+
+        // Handlers of their own go in $9000 upwards.
+        ushort next = 0x9000;
+        foreach ((byte vector, string code) in handlers)
+        {
+            Z80AssemblyResult handler = assembler.Assemble(next, code.Replace("LogA", $"${logA:X4}"));
+            Require(handler.Success, $"{what}: a handler did not assemble: {handler.Error}");
+            for (int index = 0; index < handler.Bytes.Length; index++)
+            {
+                machine.MemoryBus.WriteCpu((ushort)(next + index), handler.Bytes[index]);
+            }
+
+            machine.MemoryBus.WriteCpu((ushort)(0x7E00 + vector), (byte)next);
+            machine.MemoryBus.WriteCpu((ushort)(0x7E01 + vector), (byte)(next >> 8));
+            next = (ushort)(next + 0x100);
+        }
+
+        for (int step = 0; step < 4000; step++)
+        {
+            machine.StepInstruction();
+        }
+
+        int count = (machine.MemoryBus.ReadDirect(0x7F80) | (machine.MemoryBus.ReadDirect(0x7F81) << 8)) - 0x7F90;
+        byte[] entries = new byte[Math.Max(0, count)];
+        for (int index = 0; index < entries.Length; index++)
+        {
+            entries[index] = machine.MemoryBus.ReadDirect((ushort)(0x7F90 + index));
+        }
+
+        Require(entries.SequenceEqual(expected),
+            $"{what}: the handlers ran [{string.Join(" ", entries.Select(static v => v.ToString("X2")))}], "
+            + $"the daisy chain gives [{string.Join(" ", expected.Select(static v => v.ToString("X2")))}].");
+        return machine;
+    }
+
+    /// <summary>
+    /// A 16K continuous DMA copy spans the ULA's frame interrupt. With $CC bit 0 the request
+    /// holds the DMA off after its current byte, the CPU takes the interrupt, and the DMA
+    /// carries on after the handler's RETI; without it the interrupt waits for the end.
+    /// </summary>
+    private static void VerifyIm2DmaHoldOff(bool holdOff)
+    {
+        string program = $"""
+                    DI
+                    LD SP,$5FFE
+                    LD A,$7E
+                    DB $ED,$47
+                    IM 2
+                    NEXTREG $C0,$A1
+                    NEXTREG $CC,{(holdOff ? "$01" : "$00")}
+                    LD HL,Dma
+                    LD B,12
+                    LD C,$6B
+                    EI
+                    OTIR
+            Park:   JR Park
+            Dma:    DB $7D,$00,$C0,$00,$40,$14,$10,$AD,$00,$80,$CF,$87
+            """;
+        string handler = """
+                    PUSH AF
+                    LD A,($7F01)
+                    OR A
+                    JR NZ,Seen
+                    LD A,($BFFF)
+                    LD ($7F00),A
+                    LD A,1
+                    LD ($7F01),A
+            Seen:   POP AF
+                    EI
+                    RETI
+            """;
+        var assembler = new Z80InlineAssembler(enableZ80N: true);
+        Z80AssemblyResult main = assembler.Assemble(0x6000, program);
+        Z80AssemblyResult isr = assembler.Assemble(0x7000, handler);
+        Require(main.Success && isr.Success, $"The DMA hold-off programs did not assemble: {main.Error}{isr.Error}");
+        ZxNextMachine machine = CreateProgramAt(0x6000, main.Bytes);
+        WriteBytes(machine, 0x7000, isr.Bytes);
+
+        // Start just after a frame interrupt, so the next one falls inside the 16K transfer.
+        machine.MemoryBus.WriteCpu(0x5F00, 0x18);
+        machine.MemoryBus.WriteCpu(0x5F01, 0xFE);
+        machine.Cpu.PC = 0x5F00;
+        ulong interrupts = machine.UlaTiming.InterruptCount;
+        for (int step = 0; step < 100_000 && machine.UlaTiming.InterruptCount == interrupts; step++)
+        {
+            machine.StepInstruction();
+        }
+
+        machine.Cpu.PC = 0x6000;
+
+        // The ULA is source 11: vector $B6.
+        machine.MemoryBus.WriteCpu(0x7EB6, 0x00);
+        machine.MemoryBus.WriteCpu(0x7EB7, 0x70);
+        machine.MemoryBus.WriteCpu(0x7F00, 0x00);
+        machine.MemoryBus.WriteCpu(0x7F01, 0x00);
+        for (int offset = 0; offset < 0x4000; offset++)
+        {
+            machine.MemoryBus.WriteDirect((ushort)(0xC000 + offset), 0x5A);
+            machine.MemoryBus.WriteDirect((ushort)(0x8000 + offset), 0x00);
+        }
+
+        ushort reti = (ushort)(0x7000 + isr.Bytes.Length - 2);
+        ushort countAtEntry = 0;
+        ushort countAtReti = 0;
+        bool sawEntry = false;
+        bool sawReti = false;
+        bool activeAtEntry = false;
+        bool resumedAfterReti = false;
+        for (int step = 0; step < 200_000 && !resumedAfterReti; step++)
+        {
+            if (!sawEntry && machine.Cpu.PC == 0x7000)
+            {
+                sawEntry = true;
+                activeAtEntry = machine.Dma.IsActive;
+                countAtEntry = machine.Dma.ByteCounter;
+            }
+
+            bool atReti = sawEntry && !sawReti && machine.Cpu.PC == reti;
+            var reads = new DmaTicksAtReads(machine);
+            if (atReti)
+            {
+                sawReti = true;
+                countAtReti = machine.Dma.ByteCounter;
+                machine.Cpu.ConfigureBusObserver(reads);
+            }
+
+            machine.StepInstruction();
+            if (atReti)
+            {
+                machine.Cpu.ConfigureBusObserver(null);
+                // The RETI's reads: ED, 4D and the two stack reads, all before the DMA's next
+                // byte (dma_delay holds it through the first; the grant follows the second).
+                bool heldThroughReti = reads.Ticks.Count == 4 && reads.Ticks.All(t => t == reads.Ticks[0]);
+                resumedAfterReti = !holdOff
+                    || (heldThroughReti && machine.BusArbiter.DmaOwnedMasterTicks > reads.Ticks[0]);
+            }
+        }
+
+        Require(sawEntry && sawReti, "The ULA's IM 2 handler never ran during the DMA test.");
+        if (holdOff)
+        {
+            Require(activeAtEntry && countAtEntry > 0 && countAtEntry < 0x4000
+                    && machine.MemoryBus.ReadDirect(0x7F00) == 0x00,
+                "With $CC bit 0 the ULA interrupt did not break into the DMA transfer.");
+            Require(countAtReti == countAtEntry,
+                "The DMA moved while the interrupt it was held off for was in service.");
+            Require(resumedAfterReti,
+                "The DMA did not resume by the end of the handler's RETI.");
+        }
+        else
+        {
+            Require(!activeAtEntry && machine.MemoryBus.ReadDirect(0x7F00) == 0x5A,
+                "Without $CC bit 0 the ULA interrupt broke into the DMA transfer.");
+        }
+
+        for (int step = 0; step < 200_000 && machine.Dma.IsActive; step++)
+        {
+            machine.StepInstruction();
+        }
+
+        Require(!machine.Dma.IsActive && machine.MemoryBus.ReadDirect(0xBFFF) == 0x5A
+                && machine.MemoryBus.ReadDirect(0x8000) == 0x5A,
+            "The DMA transfer did not complete after the interrupt.");
+    }
+
+    /// <summary>
+    /// A hold-off already on when a transfer is enabled keeps START_DMA from asking for the bus;
+    /// in burst mode the hold-off is seen when a prescaler wait ends.
+    /// </summary>
+    private static void VerifyIm2DmaHoldOffAtStartAndInBurst()
+    {
+        ZxNextMachine start = CreateDmaCopyMachine(out ushort source, out ushort destination);
+        LoadSpinLoop(start);
+        start.Registers.Write(0xC0, 0x01);
+        start.Registers.Write(0xCC, 0x01);
+        start.Registers.Write(0x20, 0x40);
+        WriteDmaCommand(start, PacedCopy(source, destination, 16, 0xAD, 0, restart: false));
+        StepInstructions(start, 200);
+        Require(start.Dma.IsActive && CountCopiedBytes(start, source, destination) == 0,
+            "A DMA enabled during a hold-off asked for the bus.");
+        start.Registers.Write(0xC0, 0x00);
+        StepInstructions(start, 200);
+        Require(!start.Dma.IsActive && CountCopiedBytes(start, source, destination) == 16,
+            "The DMA did not start once the hold-off ended.");
+
+        ZxNextMachine burst = CreateDmaCopyMachine(out source, out destination);
+        LoadSpinLoop(burst);
+        burst.Registers.Write(0x22, 0x04);
+        burst.Registers.Write(0xC0, 0x01);
+        burst.Registers.Write(0xCC, 0x01);
+        WriteDmaCommand(burst, PacedCopy(source, destination, 16, 0xCD, 100, restart: false));
+        for (int step = 0; step < 10_000 && CountCopiedBytes(burst, source, destination) < 2; step++)
+        {
+            burst.StepInstruction();
+        }
+
+        burst.Registers.Write(0x20, 0x40);
+        int held = CountCopiedBytes(burst, source, destination);
+        StepInstructions(burst, 2000);
+        Require(held >= 2 && burst.Dma.IsActive && CountCopiedBytes(burst, source, destination) == held,
+            $"A burst transfer carried on through a hold-off after its prescaler wait (held {held}, now {CountCopiedBytes(burst, source, destination)}, active {burst.Dma.IsActive}).");
+        burst.Registers.Write(0xC0, 0x00);
+        for (int step = 0; step < 20_000 && burst.Dma.IsActive; step++)
+        {
+            burst.StepInstruction();
+        }
+
+        Require(CountCopiedBytes(burst, source, destination) == 16,
+            "The burst transfer did not finish once the hold-off ended.");
+    }
+
+    /// <summary>The DMA's bus time at each CPU read, to see when the DMA came back.</summary>
+    private sealed class DmaTicksAtReads(ZxNextMachine machine) : ZedExEss.Z80CPU.IZ80BusObserver
+    {
+        public List<ulong> Ticks { get; } = [];
+
+        public void OnContend(ushort address, int cycles)
+        {
+        }
+
+        public void OnRead(ushort address, byte value) => Ticks.Add(machine.BusArbiter.DmaOwnedMasterTicks);
+
+        public void OnWrite(ushort address, byte value)
+        {
+        }
+
+        public void OnPortContend(ushort port, int cycles)
+        {
+        }
+
+        public void OnPortRead(ushort port, byte value)
+        {
+        }
+
+        public void OnPortWrite(ushort port, byte value)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The Copper, from <c>device/copper.vhd</c>, its wiring in <c>zxnext.vhd</c> and cvc in
+    /// <c>video/zxula_timing.vhd</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The write ticks were worked out by hand from copper.vhd. Started at tick T, the change of
+    /// mode takes edge T+1 and instruction 0 runs at edge T+2. A NOP takes one edge, a MOVE two,
+    /// and a MOVE run at edge E writes at E+2. Edge E sees the beam as it was during tick E-1, so
+    /// a WAIT whose position starts at tick X is satisfied at edge X+1.
+    /// </para>
+    /// <para>
+    /// The beam is tied to the line interrupt, which the timing profile pins on its own: the
+    /// interrupt for line L comes when hc_ula is 255 on cvc line L-1, a pixel and half a clock
+    /// later, so 1026 ticks after hc_ula 0 of that line. A WAIT matching at hc_ula h on that
+    /// line, followed by a MOVE, therefore writes 1026 - 4h - 4 ticks before the interrupt.
+    /// </para>
+    /// </remarks>
+    private static void VerifyCopper()
+    {
+        VerifyCopperRegisters();
+        VerifyCopperInstructionTiming(batched: false);
+        VerifyCopperInstructionTiming(batched: true);
+        VerifyCopperWaits(0x90, false, "48K");
+        VerifyCopperWaits(0x90, true, "48K 60 Hz");
+        VerifyCopperWaits(0xB0, false, "+3");
+        VerifyCopperWaits(0xC0, false, "Pentagon");
+        VerifyCopperRestartAndLineOffset();
+        VerifyCopperLineOffsetLatch();
+        VerifyCopperModes();
+        VerifyCopperEffectsReachTheCpu(batched: false);
+        VerifyCopperEffectsReachTheCpu(batched: true);
+        VerifyCopperNmiDuringDma(holdOff: true);
+        VerifyCopperNmiDuringDma(holdOff: false);
+        VerifyNmiRetnGivesTheDmaTheBus(stackless: false);
+        VerifyNmiRetnGivesTheDmaTheBus(stackless: true);
+        VerifyCopperRasterIndependentOfCpu();
+        VerifyCopperSnapshot();
+        VerifyCopperResets();
+    }
+
+    private const ushort CopperHalt = 0xFFFF;
+
+    private static ushort CopperMove(int register, int value) =>
+        (ushort)(((register & 0x7F) << 8) | (value & 0xFF));
+
+    private static ushort CopperWait(int line, int h = 0) =>
+        (ushort)(0x8000 | ((h & 0x3F) << 9) | (line & 0x1FF));
+
+    /// <summary>
+    /// A machine in the given timing with the CPU parked (by default DI; JR $ at $8000) and the
+    /// Copper's writes logged with the ticks they land at.
+    /// </summary>
+    private static ZxNextMachine CreateCopperMachine(
+        List<(ulong Tick, byte Register, byte Value)> log,
+        bool batched = false,
+        byte timing = 0xB0,
+        bool sixtyHertz = false,
+        byte[]? program = null)
+    {
+        ZxNextMachine machine = CreateProgramAt(0x8000, program ?? [0xF3, 0x18, 0xFE]);
+        machine.Cpu.SP = 0x7000;
+        machine.Registers.Write(0x22, 0x04);
+        machine.Registers.Write(0x03, timing);
+        machine.Registers.Write(0x05, (byte)(sixtyHertz ? 0x04 : 0x00));
+        machine.UlaTiming.SynchronizeProfile();
+        if (batched)
+        {
+            machine.Registers.Write(0x6B, 0x80);
+            Require(machine.Cpu.InstructionTstateBatchingEnabled,
+                "The tilemap did not turn instruction batching on for the Copper checks.");
+        }
+
+        machine.Registers.CopperWritten = (register, value, tick) => log.Add((tick, register, value));
+        return machine;
+    }
+
+    /// <summary>Stops the Copper and writes <paramref name="list"/> from instruction 0 with $60.</summary>
+    private static void UploadCopper(ZxNextMachine machine, params ushort[] list)
+    {
+        machine.SynchronizeTime();
+        machine.Registers.Write(0x62, 0x00);
+        machine.Registers.Write(0x61, 0x00);
+        foreach (ushort instruction in list)
+        {
+            machine.Registers.Write(0x60, (byte)(instruction >> 8));
+            machine.Registers.Write(0x60, (byte)instruction);
+        }
+    }
+
+    /// <summary>Starts the Copper in <paramref name="mode"/> just after a frame begins; the tick it was started at.</summary>
+    private static ulong StartCopperAtFrame(ZxNextMachine machine, byte mode)
+    {
+        machine.RunFrame();
+        machine.SynchronizeTime();
+        ulong start = machine.Clock.MasterTicks;
+        machine.Registers.Write(0x62, mode);
+        return start;
+    }
+
+    private static void RunFrames(ZxNextMachine machine, int frames)
+    {
+        for (int frame = 0; frame < frames; frame++)
+        {
+            machine.RunFrame();
+        }
+    }
+
+    private static string DescribeCopperLog(List<(ulong Tick, byte Register, byte Value)> log, ulong start) =>
+        log.Count == 0
+            ? "no writes"
+            : string.Join(", ", log.Select(entry => $"+{(long)(entry.Tick - start)} ${entry.Register:X2}=${entry.Value:X2}"));
+
+    /// <summary>$1E/$1F as one 9-bit line: cvc.</summary>
+    private static int CopperLine(ZxNextMachine machine) =>
+        ((machine.Registers.Read(0x1E) & 0x01) << 8) | machine.Registers.Read(0x1F);
+
+    /// <summary>Where <paramref name="tick"/> falls in its frame.</summary>
+    private static ulong FramePhase(ZxNextMachine machine, ulong tick)
+    {
+        ulong frame = machine.UlaTiming.MasterTicksPerFrame;
+        return (tick + frame - (machine.UlaTiming.FrameStartMasterTick % frame)) % frame;
+    }
+
+    private static ulong LineInterruptPhase(ZxNextMachine machine, int line) =>
+        machine.UlaTiming.Profile.GetLineInterruptOffsetMasterTicks((ushort)line)
+            ?? throw new InvalidOperationException($"Line {line} has no line interrupt.");
+
+    private static void VerifyCopperRegisters()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextRegisterFile registers = machine.Registers;
+        ZxNextCopperDevice copper = registers.Copper;
+        Require(registers.Read(0x61) == 0 && registers.Read(0x62) == 0 && registers.Read(0x64) == 0
+                && !copper.IsActive,
+            "The Copper did not come up stopped with $61, $62 and $64 at 0.");
+        registers.Write(0x61, 0x34);
+        registers.Write(0x62, 0x05);
+        Require(registers.Read(0x61) == 0x34 && registers.Read(0x62) == 0x05,
+            "$61/$62 did not read back the write address and mode.");
+        registers.Write(0x62, 0x3F);
+        Require(registers.Read(0x62) == 0x07, "$62 stored bits 5-3, which zxnext.vhd reads as 0.");
+
+        // $60 at an odd address writes the low byte, and the address carries into bits 10-8.
+        registers.Write(0x62, 0x01);
+        registers.Write(0x61, 0xFF);
+        registers.Write(0x60, 0x12);
+        Require(copper.ReadInstruction(0xFF) == 0x0012 && registers.Read(0x61) == 0x00 && registers.Read(0x62) == 0x02,
+            "$60 at address $1FF did not write instruction $FF's low byte and carry into bits 10-8.");
+
+        // $63: an even address only stores the byte; the odd one writes both.
+        registers.Write(0x63, 0xAB);
+        Require(copper.ReadInstruction(0x100) == 0x0000,
+            "$63 at an even address wrote the list; it only stores the byte.");
+        registers.Write(0x63, 0xCD);
+        Require(copper.ReadInstruction(0x100) == 0xABCD && registers.Read(0x61) == 0x02 && registers.Read(0x62) == 0x02,
+            "$63 at the odd address did not write the stored byte with it, or did not move the address on.");
+
+        // $60 at an even address writes the high byte at once.
+        registers.Write(0x60, 0x7E);
+        Require(copper.ReadInstruction(0x101) == 0x7E00,
+            "$60 at an even address did not write the high byte at once.");
+
+        // The write address wraps from $7FF to 0.
+        registers.Write(0x61, 0xFE);
+        registers.Write(0x62, 0x07);
+        registers.Write(0x60, 0x11);
+        registers.Write(0x60, 0x22);
+        registers.Write(0x60, 0x33);
+        Require(copper.ReadInstruction(0x3FF) == 0x1122 && copper.ReadInstruction(0) == 0x3300
+                && registers.Read(0x61) == 0x01 && registers.Read(0x62) == 0x00,
+            "The write address did not wrap from $7FF (instruction 1023) to 0.");
+
+        registers.Write(0x62, 0xC0);
+        registers.Write(0x64, 0xA5);
+        Require(registers.Read(0x62) == 0xC0 && registers.Read(0x64) == 0xA5,
+            "$62 did not read back mode 11, or $64 did not read back.");
+    }
+
+    private static void VerifyCopperInstructionTiming(bool batched)
+    {
+        string label = batched ? " (with batched CPU time)" : "";
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine machine = CreateCopperMachine(log, batched);
+        UploadCopper(machine,
+            CopperMove(0x7F, 1), CopperMove(0x7F, 2), 0x0000, 0x0000, 0x0000, CopperMove(0x7F, 3), CopperHalt);
+        ulong start = StartCopperAtFrame(machine, 0x40);
+        RunFrames(machine, 2);
+        Require(log.Count == 3
+                && log[0] == (start + 4, (byte)0x7F, (byte)1)
+                && log[1] == (start + 6, (byte)0x7F, (byte)2)
+                && log[2] == (start + 11, (byte)0x7F, (byte)3)
+                && machine.Registers.Read(0x7F) == 3,
+            $"MOVE, MOVE, three NOPs, MOVE did not write at +4, +6 and +11{label}: {DescribeCopperLog(log, start)}.");
+
+        // A rewritten list is run as written: two NOPs then a MOVE, then one NOP then a MOVE.
+        foreach ((ushort[] list, ulong at, byte value) in new[]
+                 {
+                     (new ushort[] { 0x0000, 0x0000, CopperMove(0x7F, 4), CopperHalt }, 6UL, (byte)4),
+                     (new ushort[] { 0x0000, CopperMove(0x7F, 5), CopperHalt }, 5UL, (byte)5)
+                 })
+        {
+            log.Clear();
+            UploadCopper(machine, list);
+            start = StartCopperAtFrame(machine, 0x40);
+            RunFrames(machine, 1);
+            Require(log.Count == 1 && log[0] == (start + at, (byte)0x7F, value),
+                $"A list rewritten with {Array.IndexOf(list, CopperMove(0x7F, value))} NOPs before its MOVE did not " +
+                $"write at +{at}{label}: {DescribeCopperLog(log, start)}.");
+        }
+    }
+
+    private static void VerifyCopperWaits(byte timing, bool sixtyHertz, string name)
+    {
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine machine = CreateCopperMachine(log, timing: timing, sixtyHertz: sixtyHertz);
+        ZxNextUlaTiming beam = machine.UlaTiming;
+        int lines = beam.LinesPerFrame;
+        int lastH = (beam.PixelsPerLine - 1 - 12) / 8;
+
+        // (WAIT line, H, the line interrupt it is tied to, hc_ula it matches at)
+        (int Line, int H, int Anchor, int Hc)[] matching =
+        [
+            (0, 30, 1, 252),
+            (100, 30, 101, 252),
+            (lines - 1, 30, lines, 252),
+            (100, 0, 101, 12),
+            (100, 63, 101, 4),
+            (100, lastH, 101, (lastH * 8) + 12)
+        ];
+        foreach ((int line, int h, int anchor, int hc) in matching)
+        {
+            log.Clear();
+            UploadCopper(machine, CopperWait(line, h), CopperMove(0x7F, 0x5A), CopperHalt);
+            ulong start = StartCopperAtFrame(machine, 0x40);
+            ulong frame = beam.MasterTicksPerFrame;
+            ulong expected = (ulong)((long)beam.FrameStartMasterTick + (long)LineInterruptPhase(machine, anchor)
+                - (1026 - (4 * hc) - 4));
+            while (expected < start + 4)
+            {
+                expected += frame;
+            }
+
+            RunFrames(machine, 2);
+            Require(log.Count == 1 && log[0].Tick == expected,
+                $"{name}: WAIT line {line}, H {h} (hc_ula {hc}) then MOVE did not write {1026 - (4 * hc) - 4} ticks " +
+                $"before line {anchor}'s interrupt (expected +{expected - start}): {DescribeCopperLog(log, start)}.");
+        }
+
+        // A WAIT reached after its position in the line matches on the next edge: hc_ula >= h * 8 + 12.
+        log.Clear();
+        UploadCopper(machine, CopperWait(100, 30), CopperMove(0x7F, 1), CopperWait(100, 0), CopperMove(0x7F, 2), CopperHalt);
+        ulong passedStart = StartCopperAtFrame(machine, 0x40);
+        RunFrames(machine, 2);
+        Require(log.Count == 2 && log[1].Tick == log[0].Tick + 3,
+            $"{name}: a WAIT for hc_ula 12 reached at hc_ula 252 of its line did not match at once: " +
+            $"{DescribeCopperLog(log, passedStart)}.");
+
+        (int Line, int H)[] never = [(lines, 0), (400, 0), (100, lastH + 1)];
+        foreach ((int line, int h) in never)
+        {
+            log.Clear();
+            UploadCopper(machine, CopperWait(line, h), CopperMove(0x7F, 0x5A), CopperHalt);
+            ulong start = StartCopperAtFrame(machine, 0x40);
+            RunFrames(machine, 3);
+            Require(log.Count == 0,
+                $"{name}: WAIT line {line}, H {h} matched; cvc stops at {lines - 1} and hc_ula at {beam.PixelsPerLine - 1}: " +
+                $"{DescribeCopperLog(log, start)}.");
+        }
+
+        // FIX-INT-1: a line interrupt for line LinesPerFrame compares with c_max_vc, as line 0 does.
+        machine.Registers.Write(0x23, (byte)lines);
+        machine.Registers.Write(0x22, (byte)(0x06 | (lines >> 8)));
+        RunFrames(machine, 2);
+        ulong last = beam.LastLineInterruptMasterTick;
+        Require(beam.LineInterruptCount > 0
+                && FramePhase(machine, last) == LineInterruptPhase(machine, lines)
+                && LineInterruptPhase(machine, lines) == LineInterruptPhase(machine, 0),
+            $"{name}: a line interrupt for line {lines} did not come where line 0's does (c_max_vc).");
+        machine.Registers.Write(0x22, 0x04);
+    }
+
+    /// <summary>
+    /// Mode 11 restarts at cvc 0, hc_ula 0: the four edges seeing it reset the address, the next
+    /// runs instruction 0, so a MOVE there writes 1026 - 7 = 1019 ticks before line 1's interrupt.
+    /// With $64 = 200 that is in the middle of the paper, and the line interrupt moves with it.
+    /// </summary>
+    private static void VerifyCopperRestartAndLineOffset()
+    {
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine machine = CreateCopperMachine(log, timing: 0x90);
+        ZxNextUlaTiming beam = machine.UlaTiming;
+        int lines = beam.LinesPerFrame;
+        machine.Registers.Write(0x64, 200);
+        machine.Registers.Write(0x23, 0x01);
+        machine.Registers.Write(0x22, 0x06);
+        UploadCopper(machine, CopperMove(0x7F, 0x11), CopperHalt);
+        ulong start = StartCopperAtFrame(machine, 0xC0);
+        RunFrames(machine, 3);
+
+        ulong cvcZero = LineInterruptPhase(machine, lines - 200 + 1);
+        ulong expected = cvcZero - 1019;
+        List<(ulong Tick, byte Register, byte Value)> restarts = log.Skip(1).ToList();
+        Require(log.Count >= 3 && log[0].Tick == start + 4
+                && restarts.All(entry => FramePhase(machine, entry.Tick) == expected)
+                && restarts.Zip(restarts.Skip(1)).All(pair => pair.Second.Tick - pair.First.Tick == beam.MasterTicksPerFrame),
+            $"Mode 11 with $64 = 200 did not restart once a frame 1019 ticks before cvc 0's line interrupt " +
+            $"(phase {expected}): {string.Join(", ", log.Select(entry => FramePhase(machine, entry.Tick)))}.");
+        Require(beam.LineInterruptCount > 0 && FramePhase(machine, beam.LastLineInterruptMasterTick) == cvcZero,
+            "With $64 = 200 the line interrupt for line 1 did not come where cvc is 0.");
+
+        // A new offset moves the restart from the next reload on.
+        log.Clear();
+        machine.Registers.Write(0x64, 100);
+        RunFrames(machine, 3);
+        ulong moved = LineInterruptPhase(machine, lines - 100 + 1) - 1019;
+        Require(log.Count >= 2 && log.All(entry => FramePhase(machine, entry.Tick) == moved),
+            $"After $64 = 100 the mode 11 restart did not move to phase {moved}: " +
+            $"{string.Join(", ", log.Select(entry => FramePhase(machine, entry.Tick)))}.");
+
+        // A WAIT already waiting when $64 changes matches the new count after the reload: WAIT
+        // line 100 with $64 = $20 is where cvc 68 would be without it (hc_ula 12: 974 ticks
+        // before line 69's interrupt).
+        log.Clear();
+        machine.Registers.Write(0x64, 0x00);
+        RunFrames(machine, 1);
+        UploadCopper(machine, CopperWait(100), CopperMove(0x7F, 0x22), CopperHalt);
+        machine.RunFrame();
+        ulong pastLine100 = machine.UlaTiming.FrameStartMasterTick + LineInterruptPhase(machine, 151);
+        while (machine.Clock.MasterTicks < pastLine100)
+        {
+            machine.StepInstruction();
+        }
+
+        // Started past this frame's line 100, it waits for the next frame's and looks ahead.
+        log.Clear();
+        machine.Registers.Write(0x62, 0x40);
+        for (int instruction = 0; instruction < 10; instruction++)
+        {
+            machine.StepInstruction();
+        }
+
+        Require(log.Count == 0, "The WAIT for line 100 matched again in the frame it had passed.");
+        machine.Registers.Write(0x64, 0x20);
+        RunFrames(machine, 2);
+        ulong shifted = LineInterruptPhase(machine, 69) - 974;
+        Require(log.Count == 1 && FramePhase(machine, log[0].Tick) == shifted,
+            $"A WAIT for line 100 waiting across a $64 = $20 write did not match where cvc 68 is without it " +
+            $"(phase {shifted}): {string.Join(", ", log.Select(entry => FramePhase(machine, entry.Tick)))}.");
+    }
+
+    /// <summary>
+    /// COP-016: $64 is loaded into cvc only at the first display line, so a write after it
+    /// changes nothing until the next frame's, and a write before it shows from this frame's.
+    /// Two machines run the same instructions in step; one writes $64.
+    /// </summary>
+    private static void VerifyCopperLineOffsetLatch()
+    {
+        ZxNextMachine reference = CreateCopperMachine([]);
+        ZxNextMachine written = CreateCopperMachine([]);
+        int lines = reference.UlaTiming.LinesPerFrame;
+        foreach (ZxNextMachine machine in new[] { reference, written })
+        {
+            machine.Registers.Write(0x23, 150);
+            machine.Registers.Write(0x22, 0x06);
+            machine.RunFrame();
+        }
+
+        void StepBoth()
+        {
+            reference.StepInstruction();
+            written.StepInstruction();
+        }
+
+        void RunBothToPhase(ulong phase)
+        {
+            ulong target = reference.UlaTiming.FrameStartMasterTick + phase;
+            while (reference.Clock.MasterTicks < target)
+            {
+                StepBoth();
+            }
+        }
+
+        void RunBothFrame()
+        {
+            reference.RunFrame();
+            written.RunFrame();
+        }
+
+        // After the reload: this frame's count and line interrupt are untouched.
+        ulong line100 = LineInterruptPhase(reference, 101);
+        RunBothToPhase(line100);
+        written.Registers.Write(0x64, 0x20);
+        Require(CopperLine(written) == CopperLine(reference) && written.Registers.Read(0x64) == 0x20,
+            "A $64 write after the first display line moved cvc at once.");
+        ulong referenceInterrupts = reference.UlaTiming.LineInterruptCount;
+        while (reference.UlaTiming.LineInterruptCount == referenceInterrupts)
+        {
+            StepBoth();
+        }
+
+        Require(written.UlaTiming.LastLineInterruptMasterTick == reference.UlaTiming.LastLineInterruptMasterTick,
+            "A $64 write after the reload moved this frame's line interrupt.");
+
+        // The next frame counts from the new offset.
+        RunBothFrame();
+        RunBothToPhase(line100);
+        Require(reference.Clock.MasterTicks == written.Clock.MasterTicks
+                && CopperLine(written) == (CopperLine(reference) + 0x20) % lines,
+            $"The next frame's cvc did not count from $64 = $20 ({CopperLine(written)} against {CopperLine(reference)}).");
+        referenceInterrupts = reference.UlaTiming.LineInterruptCount;
+        ulong writtenInterrupts = written.UlaTiming.LineInterruptCount;
+        while (reference.UlaTiming.LineInterruptCount == referenceInterrupts
+               || written.UlaTiming.LineInterruptCount == writtenInterrupts)
+        {
+            StepBoth();
+        }
+
+        Require(FramePhase(reference, reference.UlaTiming.LastLineInterruptMasterTick) == LineInterruptPhase(reference, 150)
+                && FramePhase(written, written.UlaTiming.LastLineInterruptMasterTick) == LineInterruptPhase(written, 150 - 0x20),
+            "With $64 = $20 latched, the line interrupt for line 150 did not move to where line 118's is without it.");
+
+        // Before the reload: the old offset counts until the first display line.
+        RunBothFrame();
+        written.Registers.Write(0x64, 0x40);
+        Require(CopperLine(written) == (CopperLine(reference) + 0x20) % lines,
+            "A $64 write before the first display line changed the lines still counting from the old offset.");
+        RunBothToPhase(line100);
+        Require(CopperLine(written) == (CopperLine(reference) + 0x40) % lines,
+            "A $64 write before the first display line did not show from that line.");
+    }
+
+    private static void VerifyCopperModes()
+    {
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+
+        byte RunMode(ZxNextMachine machine, byte mode)
+        {
+            machine.SynchronizeTime();
+            machine.Registers.Write(0x7F, 0x33);
+            machine.Registers.Write(0x62, mode);
+            RunFrames(machine, 2);
+            return machine.Registers.Read(0x7F);
+        }
+
+        ZxNextMachine everyFrame = CreateCopperMachine(log);
+        UploadCopper(everyFrame, CopperMove(0x7F, 0x5A), CopperHalt);
+        Require(RunMode(everyFrame, 0xC0) == 0x5A && RunMode(everyFrame, 0xC0) == 0x5A,
+            "Mode 11 did not run the list again in the next frame.");
+
+        ZxNextMachine once = CreateCopperMachine(log);
+        UploadCopper(once, CopperMove(0x7F, 0x5A), CopperHalt);
+        once.Registers.Write(0x62, 0x40);
+        RunFrames(once, 2);
+        Require(once.Registers.Read(0x7F) == 0x5A, "Mode 01 did not run the list.");
+        Require(RunMode(once, 0x40) == 0x33, "Rewriting mode 01 restarted the list.");
+        Require(RunMode(once, 0x80) == 0x33, "01 to 10 restarted the list instead of continuing at the HALT.");
+        Require(RunMode(once, 0x80) == 0x33, "Rewriting mode 10 restarted the list.");
+        Require(RunMode(once, 0x40) == 0x5A, "10 to 01 did not restart the list.");
+        Require(RunMode(once, 0x00) == 0x33, "Mode 00 did not stop the Copper.");
+        Require(RunMode(once, 0x80) == 0x33, "00 to 10 restarted the list.");
+        Require(RunMode(once, 0xC0) == 0x5A, "10 to 11 did not restart the list.");
+        Require(RunMode(once, 0x40) == 0x5A, "11 to 01 did not restart the list.");
+
+        // COP-011: MOVE $62,0 lands two edges later, after the next MOVE has run, so that MOVE's
+        // write goes out and the one after it does not run; mode 10 continues there.
+        log.Clear();
+        ZxNextMachine stop = CreateCopperMachine(log);
+        UploadCopper(stop, CopperMove(0x62, 0x00), CopperMove(0x7F, 0x5A), CopperMove(0x4A, 0x5A), CopperHalt);
+        stop.Registers.Write(0x7F, 0xE3);
+        stop.Registers.Write(0x4A, 0xE3);
+        ulong start = StartCopperAtFrame(stop, 0x40);
+        RunFrames(stop, 2);
+        Require(log.Count == 2 && log[0] == (start + 4, (byte)0x62, (byte)0) && log[1] == (start + 6, (byte)0x7F, (byte)0x5A)
+                && stop.Registers.Read(0x62) >> 6 == 0 && stop.Registers.Read(0x4A) == 0xE3,
+            $"A Copper MOVE to $62 did not stop it after exactly one more MOVE: {DescribeCopperLog(log, start)}.");
+        stop.Registers.Write(0x62, 0x80);
+        RunFrames(stop, 1);
+        Require(stop.Registers.Read(0x4A) == 0x5A, "Mode 10 did not continue after the Copper had stopped itself.");
+    }
+
+    /// <summary>
+    /// A Copper write lands under a running CPU: a MOVE to MMU slot 6 is seen by the next read,
+    /// and a MOVE $02,$04 raises the DivMMC NMI at the end of the instruction it lands in (the
+    /// way Atic Atac Next paces its streaming). With batched CPU time the boundary deadline has
+    /// to include the Copper's next write for either to come in time.
+    /// </summary>
+    private static void VerifyCopperEffectsReachTheCpu(bool batched)
+    {
+        string label = batched ? " with batched CPU time" : "";
+
+        // DI; Loop: LD A,($C000); CP $5A; JR NZ,Loop; HALT
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine mmu = CreateCopperMachine(log, batched,
+            program: [0xF3, 0x3A, 0x00, 0xC0, 0xFE, 0x5A, 0x20, 0xF9, 0x76]);
+        mmu.Registers.Write(0x56, 10);
+        mmu.MemoryBus.WriteCpu(0xC000, 0x5A);
+        mmu.Registers.Write(0x56, 0);
+        mmu.MemoryBus.WriteCpu(0xC000, 0x11);
+        UploadCopper(mmu, CopperWait(100), CopperMove(0x56, 10), CopperHalt);
+        StartCopperAtFrame(mmu, 0x40);
+        int steps = 0;
+        while (!mmu.Cpu.IsHalted && steps++ < 200_000)
+        {
+            mmu.StepInstruction();
+        }
+
+        mmu.SynchronizeTime();
+        Require(mmu.Cpu.IsHalted && log.Count == 1 && log[0].Register == 0x56
+                && mmu.Clock.MasterTicks > log[0].Tick && mmu.Clock.MasterTicks - log[0].Tick <= 700,
+            $"The CPU did not see the Copper's MMU write within two passes of its loop{label} " +
+            $"(write at {(log.Count > 0 ? log[0].Tick : 0)}, HALT at {mmu.Clock.MasterTicks}).");
+
+        // DI; JR $, with the DivMMC NMI enabled ($06 bit 4) and not.
+        foreach (bool enabled in new[] { true, false })
+        {
+            log.Clear();
+            ZxNextMachine nmi = CreateCopperMachine(log, batched);
+            nmi.Registers.Write(0x06, (byte)(enabled ? 0xB0 : 0xA0));
+            UploadCopper(nmi, CopperWait(100), CopperMove(0x02, 0x04), CopperHalt);
+            StartCopperAtFrame(nmi, 0x40);
+            steps = 0;
+            while (nmi.Cpu.PC != 0x0066 && steps++ < 10_000)
+            {
+                nmi.StepInstruction();
+            }
+
+            nmi.SynchronizeTime();
+            if (enabled)
+            {
+                Require(nmi.Cpu.PC == 0x0066 && log.Count == 1 && log[0] == (log[0].Tick, (byte)0x02, (byte)0x04)
+                        && nmi.Clock.MasterTicks > log[0].Tick && nmi.Clock.MasterTicks - log[0].Tick <= 400
+                        && (nmi.Registers.Read(0x02) & 0x04) != 0,
+                    $"A Copper MOVE $02,$04 did not take the CPU to $0066 straight after it landed{label} " +
+                    $"(write at {(log.Count > 0 ? log[0].Tick : 0)}, $0066 at {nmi.Clock.MasterTicks}).");
+            }
+            else
+            {
+                Require(nmi.Cpu.PC != 0x0066 && log.Count == 1,
+                    $"A Copper MOVE $02,$04 raised the DivMMC NMI with $06 bit 4 clear{label}.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A Copper NMI landing while the DMA holds the bus, as Atic Atac Next's do: the CPU takes
+    /// it only with the bus back and at the end of an instruction. With $CC bit 7 the NMI holds
+    /// the DMA off and breaks into the transfer; without it the NMI waits for the transfer to
+    /// end. Either way the stacked return address is an instruction's.
+    /// </summary>
+    /// <remarks>
+    /// The DMA is enabled by the last OUT of an OTIR, so it takes the bus inside an instruction
+    /// and runs between that instruction's machine cycles.
+    /// </remarks>
+    private static void VerifyCopperNmiDuringDma(bool holdOff)
+    {
+        string label = holdOff ? "with $CC bit 7" : "without $CC bit 7";
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine machine = CreateCopperMachine(log);
+        machine.Registers.Write(0x56, 0x20);
+        machine.Registers.Write(0x57, 0x21);
+        machine.Registers.Write(0x06, 0xB0);
+        machine.Registers.Write(0xCC, (byte)(holdOff ? 0x80 : 0x00));
+
+        // $9000 DI; LD SP,$7000; LD HL,$9014; LD BC,$0D6B; OTIR
+        // $900C Loop: LD A,($C000); LD ($7F80),A; JR Loop
+        // $9014 an 8K continuous copy from $C000 to $E000 on $6B.
+        byte[] program =
+        [
+            0xF3, 0x31, 0x00, 0x70, 0x21, 0x14, 0x90, 0x01, 0x6B, 0x0D, 0xED, 0xB3,
+            0x3A, 0x00, 0xC0, 0x32, 0x80, 0x7F, 0x18, 0xF8,
+            0xC3, 0x7D, 0x00, 0xC0, 0x00, 0x20, 0x14, 0x10, 0xAD, 0x00, 0xE0, 0xCF, 0x87
+        ];
+        ushort[] starts = [0x9000, 0x9001, 0x9004, 0x9007, 0x900A, 0x900C, 0x900F, 0x9012];
+        WriteBytes(machine, 0x9000, program);
+
+        // The NMI comes at cvc 0, the first display line, well inside the transfer.
+        UploadCopper(machine, CopperWait(0), CopperMove(0x02, 0x04), CopperHalt);
+        StartCopperAtFrame(machine, 0x40);
+        machine.Cpu.PC = 0x9000;
+        bool dmaRan = false;
+        int steps = 0;
+        while (machine.Cpu.PC != 0x0066 && steps++ < 100_000)
+        {
+            machine.StepInstruction();
+            dmaRan |= machine.Dma.IsActive;
+        }
+
+        ushort returnAddress = (ushort)(machine.MemoryBus.ReadDirect(0x6FFE) | (machine.MemoryBus.ReadDirect(0x6FFF) << 8));
+        Require(machine.Cpu.PC == 0x0066 && dmaRan && log.Count == 1
+                && machine.BusArbiter.Owner == ZxNextBusOwner.Cpu
+                && machine.Cpu.SP == 0x6FFE && starts.Contains(returnAddress),
+            $"A Copper NMI during a DMA transfer {label} was not taken with the bus back and at an instruction's end " +
+            $"(PC ${machine.Cpu.PC:X4}, return ${returnAddress:X4}, owner {machine.BusArbiter.Owner}).");
+        Require(machine.Dma.IsActive == holdOff,
+            holdOff
+                ? "With $CC bit 7 the Copper's NMI did not break into the DMA transfer."
+                : "Without $CC bit 7 the Copper's NMI broke into the DMA transfer.");
+    }
+
+    /// <summary>
+    /// Mid-line palette changes by the Copper paint the same picture whatever the CPU runs:
+    /// each write reaches the renderer at its own tick, not where the CPU's time happened to be
+    /// published. A NOP loop and an EX (SP),HL loop publish at different machine cycles.
+    /// </summary>
+    private static void VerifyCopperRasterIndependentOfCpu()
+    {
+        int[] Render(byte[] loop)
+        {
+            ZxNextMachine machine = CreateCopperMachine([], program: loop);
+            machine.Registers.Write(0x43, 0x00);
+            machine.Registers.Write(0x40, 0x10);
+            machine.Registers.Write(0x41, 0x00);
+            for (ushort address = 0x4000; address < 0x5B00; address++)
+            {
+                machine.MemoryBus.WriteCpu(address, 0x00);
+            }
+
+            // PAPER 0 and BORDER 0 are entry 16: red from line 100 at hc_ula 140, green from
+            // line 120 at hc_ula 60, blue from line 140 at hc_ula 284, black again at cvc 0.
+            UploadCopper(machine,
+                CopperMove(0x40, 0x10), CopperMove(0x41, 0x00),
+                CopperWait(100, 16), CopperMove(0x40, 0x10), CopperMove(0x41, 0xE0),
+                CopperWait(120, 6), CopperMove(0x40, 0x10), CopperMove(0x41, 0x1C),
+                CopperWait(140, 34), CopperMove(0x40, 0x10), CopperMove(0x41, 0x03),
+                CopperHalt);
+            StartCopperAtFrame(machine, 0xC0);
+            RunFrames(machine, 3);
+            var frame = new int[machine.FrameWidth * machine.FrameHeight];
+            machine.TryCopyFrame(frame);
+            return frame;
+        }
+
+        int[] nops = Render([0xF3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0xF9]);
+        int[] exchanges = Render([0xF3, 0xE3, 0xE3, 0xE3, 0x18, 0xFB]);
+        int colours = nops.Distinct().Count();
+        int differing = nops.Zip(exchanges).Count(pair => pair.First != pair.Second);
+        Require(colours >= 4 && differing == 0,
+            $"The Copper's mid-line palette changes painted a different picture under a different CPU loop " +
+            $"({differing} pixels differ, {colours} colours).");
+    }
+
+    /// <summary>
+    /// Copper NMIs holding a long DMA transfer off ($CC bit 7), as Atic Atac Next's sample player
+    /// does: the program the DMA interrupted does not move until the transfer ends.
+    /// </summary>
+    /// <remarks>
+    /// divmmc.vhd lets the NMI go at the RETN's opcode fetch (<c>retn_seen</c>), so the DMA asks
+    /// for the bus again during the RETN and is granted at the end of one of its stack reads.
+    /// The CPU finishes the RETN only after the next NMI has held the DMA off again, and takes
+    /// that NMI at once. A stackless RETN runs the same two read cycles with $C2/$C3 in place
+    /// of the data. Without them the program crept on an instruction per NMI and called code
+    /// the transfer had not yet written.
+    /// </remarks>
+    private static void VerifyNmiRetnGivesTheDmaTheBus(bool stackless)
+    {
+        string label = stackless ? "a stackless RETN" : "a RETN";
+        ZxNextMachine machine = CreateCopperMachine([]);
+        machine.Registers.Write(0x56, 0x20);
+        machine.Registers.Write(0x57, 0x21);
+        machine.Registers.Write(0x06, 0xB0);
+        machine.Registers.Write(0x0A, 0x11);
+        machine.Registers.Write(0xB8, 0x00);
+        machine.Registers.Write(0xCC, 0x80);
+        machine.Registers.Write(0xC0, (byte)(stackless ? 0x08 : 0x00));
+
+        // The handler, in DivMMC ROM after the $0066 fetch pages it in: RETN.
+        var divMmcRom = new byte[ZxNextPhysicalMemory.PageSize];
+        divMmcRom[0x0067] = 0xED;
+        divMmcRom[0x0068] = 0x45;
+        machine.MemoryBus.LoadDivMmcRom(divMmcRom);
+
+        // $9000 DI; LD SP,$7000; LD HL,$9014; LD BC,$0D6B; OTIR
+        // $900C Loop: INC A; JR Loop (padded to $9014), then the 8K continuous copy.
+        byte[] program =
+        [
+            0xF3, 0x31, 0x00, 0x70, 0x21, 0x14, 0x90, 0x01, 0x6B, 0x0D, 0xED, 0xB3,
+            0x3C, 0x18, 0xFD, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xC3, 0x7D, 0x00, 0xC0, 0x00, 0x20, 0x14, 0x10, 0xAD, 0x00, 0xE0, 0xCF, 0x87
+        ];
+        WriteBytes(machine, 0x9000, program);
+
+        // MOVE $02,$04 and 1023 NOPs: an NMI every 1024 ticks.
+        UploadCopper(machine, CopperMove(0x02, 0x04));
+        StartCopperAtFrame(machine, 0x40);
+        machine.Cpu.PC = 0x9000;
+        int nmis = 0;
+        int crept = 0;
+        bool dmaSeen = false;
+        for (int step = 0; step < 400_000 && !(dmaSeen && !machine.Dma.IsActive); step++)
+        {
+            ushort pc = machine.Cpu.PC;
+            if (pc == 0x0066)
+            {
+                nmis++;
+            }
+            else if (nmis > 0 && machine.Dma.IsActive && pc is 0x900C or 0x900D)
+            {
+                crept++;
+            }
+
+            dmaSeen |= machine.Dma.IsActive;
+            machine.StepInstruction();
+        }
+
+        Require(dmaSeen && !machine.Dma.IsActive && nmis > 50 && crept == 0,
+            $"With Copper NMIs holding an 8K DMA transfer off, the program moved on {crept} times through {label} " +
+            $"({nmis} NMIs, transfer {(machine.Dma.IsActive ? "unfinished" : "done")}).");
+    }
+
+    /// <summary>
+    /// A snapshot taken with a Copper write in flight and a $64 write not yet latched carries
+    /// on exactly as the machine it was taken from, through the file format.
+    /// </summary>
+    private static void VerifyCopperSnapshot()
+    {
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine original = CreateCopperMachine(log);
+        var list = new List<ushort> { CopperWait(10), CopperMove(0x7F, 1), CopperWait(20, 5) };
+        for (int index = 0; index < 100; index++)
+        {
+            list.Add(CopperMove(0x7F, index));
+        }
+
+        list.Add(CopperWait(30, 40));
+        list.Add(CopperMove(0x7F, 0xEE));
+        list.Add(CopperHalt);
+        UploadCopper(original, list.ToArray());
+        StartCopperAtFrame(original, 0xC0);
+        RunFrames(original, 1);
+
+        // After the reload (cvc 5), so the $64 write waits for the next frame's.
+        ulong afterReload = original.UlaTiming.FrameStartMasterTick + LineInterruptPhase(original, 6);
+        while (original.Clock.MasterTicks < afterReload)
+        {
+            original.StepInstruction();
+        }
+
+        original.Registers.Write(0x64, 0x30);
+        int steps = 0;
+        while (!original.Registers.Copper.CaptureState().HasWrite0 && steps++ < 10_000)
+        {
+            original.StepInstruction();
+        }
+
+        Require(original.Registers.Copper.CaptureState().HasWrite0,
+            "The snapshot check never caught a Copper write in flight.");
+        ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(original);
+        using var stream = new MemoryStream();
+        ZxNextSnapshotFile.Save(stream, captured);
+        stream.Position = 0;
+        ZxNextMachineSnapshot loaded = ZxNextSnapshotFile.Load(stream);
+
+        var restoredLog = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine restored = CreateCopperMachine(restoredLog);
+        ZxNextMachineSnapshotService.Restore(restored, loaded);
+        Require(restored.UlaTiming.CopperLineOffset == 0x30 && restored.UlaTiming.ActiveCopperLineOffset == 0
+                && CopperLine(restored) == CopperLine(original),
+            "The restore did not bring back $64 = $30 waiting for the reload, with cvc still on the old count.");
+
+        int captureIndex = log.Count;
+        for (int instruction = 0; instruction < 20_000; instruction++)
+        {
+            original.StepInstruction();
+            restored.StepInstruction();
+        }
+
+        List<(ulong Tick, byte Register, byte Value)> after = log.Skip(captureIndex).ToList();
+        ZxNextCopperState left = original.Registers.Copper.CaptureState();
+        ZxNextCopperState right = restored.Registers.Copper.CaptureState();
+        Require(after.Count > 100 && after.SequenceEqual(restoredLog)
+                && left.List.SequenceEqual(right.List) && left with { List = right.List } == right
+                && CopperLine(restored) == CopperLine(original),
+            $"The restored Copper did not carry on as the original: {after.Count} writes against {restoredLog.Count}, " +
+            $"PC {left.ProgramCounter} against {right.ProgramCounter}.");
+    }
+
+    private static void VerifyCopperResets()
+    {
+        var log = new List<(ulong Tick, byte Register, byte Value)>();
+        ZxNextMachine machine = CreateCopperMachine(log);
+        UploadCopper(machine, CopperMove(0x7F, 0x5A), CopperWait(50), CopperHalt);
+        machine.Registers.Write(0x64, 0x10);
+        machine.Registers.Write(0x62, 0xC0);
+        RunFrames(machine, 1);
+        machine.Reset(ZxNextResetKind.Soft);
+        ZxNextCopperDevice copper = machine.Registers.Copper;
+        Require(!copper.IsActive && copper.Mode == 0 && machine.Registers.Read(0x61) == 0
+                && machine.Registers.Read(0x62) == 0 && machine.Registers.Read(0x64) == 0
+                && copper.ReadInstruction(0) == CopperMove(0x7F, 0x5A) && copper.ReadInstruction(1) == CopperWait(50),
+            "A soft reset did not stop the Copper and clear $61-$64 while keeping the list.");
+        machine.Reset(ZxNextResetKind.Hard);
+        Require(Enumerable.Range(0, 1024).All(index => copper.ReadInstruction(index) == 0),
+            "A hard reset, which loads the FPGA again, did not clear the list.");
+
+        // The Copper's writes go down the CPU's path: $02 bit 0 resets the machine.
+        log.Clear();
+        ZxNextMachine resets = CreateCopperMachine(log);
+        UploadCopper(resets, CopperWait(50), CopperMove(0x02, 0x01), CopperHalt);
+        ulong sequence = resets.ResetSequence;
+        resets.Registers.Write(0x62, 0x40);
+        RunFrames(resets, 2);
+        Require(resets.ResetSequence == sequence + 1 && resets.LastResetKind == ZxNextResetKind.Soft
+                && !resets.Registers.Copper.IsActive
+                && resets.Registers.Copper.ReadInstruction(1) == CopperMove(0x02, 0x01),
+            "A Copper MOVE $02,$01 did not soft-reset the machine, stopping the Copper and keeping its list.");
+    }
+
+    private static void WriteBytes(ZxNextMachine machine, ushort address, byte[] bytes)
+    {
+        for (int index = 0; index < bytes.Length; index++)
+        {
+            machine.MemoryBus.WriteCpu((ushort)(address + index), bytes[index]);
+        }
+    }
+
     private static void VerifyZ80NDeveloperTools()
     {
         const string source = """
@@ -7933,19 +12132,27 @@ public static class ZxNextVerificationRunner
 
         // Instruction time is published when a device needs it, not at every boundary,
         // so the tail of the instruction is still held by the CPU here. Asking for it is
-        // what a reader of the clock has to do; the assertion is unchanged.
+        // what a reader of the clock has to do.
+        //
+        // NEXTREG n,n requests the write as its fourth M-cycle starts; cpu_speed latches at the
+        // end of that cycle (17 T at 3.5 MHz, 136 ticks), the fifth cycle's first T is still on
+        // the old clock (8), the clock pauses to the 7 MHz clock's next edge strictly after
+        // (4), and the last two T-states are at 7 MHz (8): 156.
         machine.StepInstruction();
         machine.SynchronizeTime();
-        Require(machine.Cpu.Cyc == 20 && machine.MasterTicks == 136
-                && machine.CpuSpeed == ZxNextCpuSpeed.Mhz7 && machine.CpuClockHz == 7_000_000,
-            $"NEXTREG n,n did not switch the remaining instruction interval to 7 MHz exactly "
+        Require(machine.Cpu.Cyc == 20 && machine.MasterTicks == 156
+                && machine.CpuSpeed == ZxNextCpuSpeed.Mhz7 && machine.CpuClockHz == 7_000_000
+                && machine.Registers.Read(0x07) == 0x11,
+            $"NEXTREG n,n did not latch 7 MHz after its fourth M-cycle and hand the clock over "
                 + $"(Cyc {machine.Cpu.Cyc}, master {machine.MasterTicks}).");
 
+        // NEXTREG n,A: 14 T at 7 MHz to the latch (56), one old T (4), a pause to the 14 MHz
+        // edge (2), two T at 14 MHz (4): 156 + 66.
         machine.StepInstruction();
         machine.SynchronizeTime();
-        Require(machine.Cpu.Cyc == 37 && machine.MasterTicks == 192
+        Require(machine.Cpu.Cyc == 37 && machine.MasterTicks == 222
                 && machine.CpuSpeed == ZxNextCpuSpeed.Mhz14 && machine.Registers.Read(0x07) == 0x22,
-            $"NEXTREG n,A did not switch the remaining instruction interval to 14 MHz exactly "
+            $"NEXTREG n,A did not latch 14 MHz after its fourth M-cycle and hand the clock over "
                 + $"(Cyc {machine.Cpu.Cyc}, master {machine.MasterTicks}).");
     }
 
@@ -8080,9 +12287,27 @@ public static class ZxNextVerificationRunner
             }
         }
 
+        // The DACs have a trace each, at the PSG channels' scale.
+        machine.Registers.Write(0x08, 0x18);
+        machine.Registers.Write(0x2D, 0xC0);
+        machine.Audio.AdvanceMasterTicks(ZxNextReferenceBaseline.MasterClockHz / 20);
+        for (int channel = 0; channel < 4; channel++)
+        {
+            int index = AudioScopeLayout.GetNextDacChannelIndex(channel);
+            short level = (short)((channel is 0 or 3 ? 0xC0 : 0x80) * 64);
+            capture.CopyLatest(index, window);
+            Require(index < AudioScopeLayout.ZxNext.ChannelCount && window.All(sample => sample == level),
+                $"Oscilloscope channel {index} (DAC {(char)('A' + channel)}) did not show the channel's value.");
+        }
+
         machine.Audio.SetScopeCapture(null);
     }
 
+    /// <remarks>
+    /// Each $07 write lands between instructions, so it latches on the next instruction's first
+    /// edge; that T-state is on the old clock and the clock then pauses to the new one's next
+    /// edge: 8 + 4, 4 + 2 and 2 + 1 ticks for the three switches, 14 more than 15 x 4096.
+    /// </remarks>
     private static void VerifyAllCpuSpeedRatios()
     {
         const int cpuTstatesPerSpeed = 4096;
@@ -8093,8 +12318,877 @@ public static class ZxNextVerificationRunner
             machine.RunForTstates(cpuTstatesPerSpeed);
         }
 
-        Require(machine.Cpu.Cyc == 4UL * cpuTstatesPerSpeed && machine.MasterTicks == 15UL * cpuTstatesPerSpeed,
-            "Long 3.5/7/14/28 MHz intervals accumulated master-clock drift.");
+        machine.SynchronizeTime();
+        Require(machine.Cpu.Cyc == 4UL * cpuTstatesPerSpeed && machine.MasterTicks == (15UL * cpuTstatesPerSpeed) + 14,
+            $"Long 3.5/7/14/28 MHz intervals took {machine.MasterTicks} master ticks, not 15 x 4096 + 14.");
+    }
+
+    /// <summary>
+    /// TIM-2: cpu_speed latches on the CPU's next idle edge (zxnext.vhd ~5796-5826), the clock runs
+    /// one more T-state at the old speed and the BUFGMUX_1s hand over on the new clock's next edge,
+    /// strictly after (Klive's F3-5, matched to the simulated core). Every figure is worked out
+    /// from that rule; the machine starts at tick 0 of a frame, on every clock's grid.
+    /// </summary>
+    private static void VerifyCpuSpeedSwitch()
+    {
+        foreach (bool batched in new[] { false, true })
+        {
+            VerifyCpuSpeedSwitchByOut(batched);
+            VerifyCpuSpeedSwitchDownAtEveryPhase(batched);
+        }
+
+        VerifyCpuSpeedLatchBetweenInstructions();
+        VerifyNoContentionAfterSwitchUp();
+        VerifyCpuSpeedSnapshotAndReset();
+    }
+
+    /// <summary>
+    /// Contention stops as cpu_speed leaves 3.5 MHz (zxnext.vhd's <c>i_contention_en</c>), though
+    /// the clock still runs a T-state on CLK_3M5_CONT: a NOP fetched from contended memory in the
+    /// paper right after an OUT that switched up takes 8 + 1 + 3 ticks at every phase. The OUT
+    /// runs from uncontended memory, so it ends at every phase of the pattern (after a
+    /// contended access the CPU always resumes where the pattern lets it).
+    /// </summary>
+    private static void VerifyNoContentionAfterSwitchUp()
+    {
+        for (int phase = 0; phase < 8; phase++)
+        {
+            ZxNextMachine machine = CreateSpeedMachine(false);
+            machine.Registers.Write(0x03, 0xB0);
+            machine.UlaTiming.SynchronizeProfile();
+            machine.Registers.Write(0x56, 0x0E); // bank 7 at $C000, contended in +3 timing
+            machine.MemoryBus.WriteCpu(0xBFFE, 0xED);
+            machine.MemoryBus.WriteCpu(0xBFFF, 0x79); // OUT (C),A, in bank 2
+            machine.MemoryBus.WriteCpu(0xC000, 0x00); // NOP, in bank 7
+            machine.Cpu.PC = 0xBFFE;
+            machine.PortBus.WriteUncontended(ZxNextPortBus.NextRegisterSelectPort, 0x07);
+            machine.Cpu.A = 0x03;
+            machine.Cpu.SetBC(ZxNextPortBus.NextRegisterDataPort);
+            int start = 22_896 + phase;
+            machine.Clock.AdvanceCpuTstates(start);
+            machine.Video.AdvanceMasterTicks((ulong)start * ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate);
+            ulong afterOut = StepAndTime(machine);
+            Require(machine.CpuSpeed == ZxNextCpuSpeed.Mhz28 && afterOut == ((ulong)start + 12) * 8,
+                $"The uncontended OUT at T {start} did not take 12 T at 3.5 MHz and latch 28 MHz.");
+            ulong nopTicks = StepAndTime(machine) - afterOut;
+            Require(nopTicks == 12,
+                $"The NOP after switching up at T {start} took {nopTicks} ticks, not 12: contention outlived cpu_speed's 3.5 MHz.");
+        }
+    }
+
+    private static ZxNextMachine CreateSpeedMachine(bool batched, params byte[] program)
+    {
+        ZxNextMachine machine = CreateProgramAt(0x8000, program);
+        if (batched)
+        {
+            machine.Registers.Write(0x6B, 0x80);
+            Require(machine.Cpu.InstructionTstateBatchingEnabled,
+                "The tilemap did not turn instruction batching on for the speed checks.");
+        }
+
+        return machine;
+    }
+
+    private static ulong StepAndTime(ZxNextMachine machine)
+    {
+        machine.StepInstruction();
+        machine.SynchronizeTime();
+        return machine.MasterTicks;
+    }
+
+    /// <summary>
+    /// An OUT to $253B with $07 selected: IORQ is high again from the middle of T3, so cpu_speed
+    /// latches as the I/O cycle ends and the whole OUT runs at the old speed.
+    /// </summary>
+    private static void VerifyCpuSpeedSwitchByOut(bool batched)
+    {
+        string mode = batched ? "batched" : "unbatched";
+        ZxNextMachine machine = CreateSpeedMachine(batched, 0xED, 0x79, 0x00, 0x00); // OUT (C),A; NOP; NOP
+        machine.PortBus.WriteUncontended(ZxNextPortBus.NextRegisterSelectPort, 0x07);
+        machine.Cpu.A = 0x03;
+        machine.Cpu.SetBC(ZxNextPortBus.NextRegisterDataPort);
+
+        // 12 T at 3.5 MHz; the latch is at the end and the clock has not handed over yet.
+        Require(StepAndTime(machine) == 96 && machine.Cpu.Cyc == 12
+                && machine.CpuSpeed == ZxNextCpuSpeed.Mhz28
+                && machine.Clock.ClockSpeed == ZxNextCpuSpeed.Mhz3_5
+                && machine.Clock.ClockHandoverPending
+                && machine.Registers.Read(0x07) == 0x33,
+            $"OUT (C),A to $07 did not run its whole I/O cycle at 3.5 MHz and latch 28 MHz at its end ({mode}, master {machine.MasterTicks}).");
+
+        // The NOP: one T on the 3.5 MHz clock (8), a pause to the next 28 MHz edge (1), three T.
+        Require(StepAndTime(machine) == 108 && !machine.Clock.ClockHandoverPending,
+            $"The instruction after the OUT did not run one 3.5 MHz T-state and hand the clock over ({mode}, master {machine.MasterTicks}).");
+        Require(StepAndTime(machine) == 112,
+            $"28 MHz did not take a tick a T-state after the handover ({mode}, master {machine.MasterTicks}).");
+    }
+
+    /// <summary>
+    /// NEXTREG $07,0 from 28 MHz with the instruction starting at every phase of the 3.5 MHz
+    /// clock: the latch after 17 ticks, one tick on the 28 MHz clock, a pause to the next 3.5 MHz
+    /// edge strictly after, then two T-states of 8. The CPU always comes back on the 3.5 MHz grid,
+    /// which is what keeps contention in step with the beam after any turbo period.
+    /// </summary>
+    private static void VerifyCpuSpeedSwitchDownAtEveryPhase(bool batched)
+    {
+        string mode = batched ? "batched" : "unbatched";
+        for (int phase = 0; phase < 8; phase++)
+        {
+            // LD A,n takes 7 ticks at 28 MHz, so k of them start the NEXTREG at 7k mod 8.
+            var program = new List<byte>();
+            for (int index = 0; index < phase; index++)
+            {
+                program.AddRange([0x3E, 0x00]);
+            }
+
+            program.AddRange([0xED, 0x91, 0x07, 0x00, 0x00]); // NEXTREG $07,0; NOP
+            ZxNextMachine machine = CreateSpeedMachine(batched, program.ToArray());
+            SetCpuSpeedNow(machine, ZxNextCpuSpeed.Mhz28);
+            for (int index = 0; index < phase; index++)
+            {
+                StepAndTime(machine);
+            }
+
+            ulong start = machine.MasterTicks;
+            Require(start == 7UL * (ulong)phase, $"The phase-{phase} lead-in did not take {7 * phase} ticks at 28 MHz ({mode}).");
+            ulong oldClockEnd = start + 17 + 1;
+            ulong expected = oldClockEnd + (8 - (oldClockEnd % 8)) + 16;
+            ulong end = StepAndTime(machine);
+            Require(end == expected && end % 8 == 0
+                    && machine.CpuSpeed == ZxNextCpuSpeed.Mhz3_5 && machine.Clock.ClockSpeed == ZxNextCpuSpeed.Mhz3_5
+                    && machine.Registers.Read(0x07) == 0x00,
+                $"NEXTREG $07,0 at phase {start % 8} ended at tick {end}, not {expected} on the 3.5 MHz grid ({mode}).");
+            Require(StepAndTime(machine) == expected + 32,
+                $"The NOP after switching down at phase {start % 8} was not four 3.5 MHz T-states ({mode}).");
+        }
+    }
+
+    /// <summary>
+    /// A $07 write that lands between instructions (a host's, or the Copper's at that point) is
+    /// latched on the next instruction's first edge; before that, $07 reads the request in bits
+    /// 1:0 and the old speed in bits 5:4.
+    /// </summary>
+    private static void VerifyCpuSpeedLatchBetweenInstructions()
+    {
+        ZxNextMachine machine = CreateSpeedMachine(false, 0x00, 0x00);
+        machine.Registers.Write(0x07, 0x02);
+        Require(machine.Registers.Read(0x07) == 0x02 && machine.Clock.SpeedLatchPending
+                && machine.CpuSpeed == ZxNextCpuSpeed.Mhz3_5 && machine.CpuClockHz == 3_500_000,
+            "A $07 write took effect before the CPU's next edge.");
+
+        // One T on the 3.5 MHz clock (8), a pause to the next 14 MHz edge (2), three T of 2.
+        Require(StepAndTime(machine) == 16 && machine.Registers.Read(0x07) == 0x22
+                && machine.CpuClockHz == 14_000_000,
+            $"A $07 write between instructions was not latched on the next instruction's first edge (master {machine.MasterTicks}).");
+        Require(StepAndTime(machine) == 24,
+            $"14 MHz did not take two ticks a T-state after the handover (master {machine.MasterTicks}).");
+    }
+
+    /// <summary>
+    /// A snapshot taken with the clock handover pending (right after an OUT that switched) carries
+    /// the three stages and carries on identically; a reset puts all three back at 3.5 MHz.
+    /// </summary>
+    private static void VerifyCpuSpeedSnapshotAndReset()
+    {
+        ZxNextMachine original = CreateSpeedMachine(false, 0xED, 0x79, 0x00, 0x00);
+        original.PortBus.WriteUncontended(ZxNextPortBus.NextRegisterSelectPort, 0x07);
+        original.Cpu.A = 0x01;
+        original.Cpu.SetBC(ZxNextPortBus.NextRegisterDataPort);
+        StepAndTime(original);
+        Require(original.Clock.ClockHandoverPending,
+            "The snapshot check did not catch the clock handover pending.");
+        ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(original);
+        ZxNextMachineSnapshot loaded = RoundTripThroughFile(captured);
+        Require(loaded.Clock == captured.Clock
+                && loaded.Clock.CpuSpeed == ZxNextCpuSpeed.Mhz7
+                && loaded.Clock.ClockSpeed == ZxNextCpuSpeed.Mhz3_5
+                && loaded.Clock.RequestedCpuSpeed == ZxNextCpuSpeed.Mhz7,
+            "The clock's three stages did not survive a file round trip (CLKX).");
+
+        ZxNextMachine restored = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextMachineSnapshotService.Restore(restored, loaded);
+        ulong originalEnd = StepAndTime(original);
+        ulong restoredEnd = StepAndTime(restored);
+        Require(originalEnd == restoredEnd && originalEnd == 96 + 8 + 4 + 12
+                && !restored.Clock.ClockHandoverPending,
+            $"A restore with the handover pending did not carry on as the original ({restoredEnd}, {originalEnd}).");
+
+        // A capture with a $07 write not yet latched: the restored machine latches it on its
+        // next instruction's first edge, as the original does.
+        ZxNextMachine pending = CreateSpeedMachine(false, 0x00, 0x00);
+        pending.Registers.Write(0x07, 0x03);
+        ZxNextMachine pendingRestored = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextMachineSnapshotService.Restore(pendingRestored, RoundTripThroughFile(ZxNextMachineSnapshotService.Capture(pending)));
+        Require(pendingRestored.Clock.SpeedLatchPending && pendingRestored.Registers.Read(0x07) == 0x03
+                && StepAndTime(pending) == 12 && StepAndTime(pendingRestored) == 12
+                && pendingRestored.Registers.Read(0x07) == 0x33,
+            "A restore with a $07 write pending did not latch it on the next instruction as the original did.");
+
+        // A state from before the stages were kept has them all at the speed in effect.
+        ZxNextMachine legacy = ZxNextMachineFactory.CreateFoundationMachine();
+        legacy.Clock.RestoreState(new ZxNextClockState(0, ZxNextCpuSpeed.Mhz14));
+        Require(legacy.Clock.RequestedCpuSpeed == ZxNextCpuSpeed.Mhz14 && legacy.Clock.ClockSpeed == ZxNextCpuSpeed.Mhz14,
+            "A clock state without its stages did not restore them equal.");
+
+        original.Registers.Write(0x07, 0x03);
+        original.Reset(ZxNextResetKind.Soft);
+        Require(original.Registers.Read(0x07) == 0x00 && original.CpuSpeed == ZxNextCpuSpeed.Mhz3_5
+                && original.Clock.ClockSpeed == ZxNextCpuSpeed.Mhz3_5 && !original.Clock.SpeedLatchPending,
+            "A reset did not put the requested, in-effect and clock speeds back at 3.5 MHz.");
+    }
+
+    /// <summary>
+    /// TIM-3: +3 timing decides its WAIT a T-state after the memory cycle starts. Klive's
+    /// simulated-core probes (F3-4, group C) ran LD A,(HL) and LD (HL),A on bank 7 starting at
+    /// 16 consecutive T-states from T 22,900 after a first fetch at the core's line 310, hc 448,
+    /// which is 8 hc before our frame's tick 0; the core's maximum wait came at T 22,903 and
+    /// 22,911, our T 22,899 and 22,907. The waits around them follow the +3 pattern.
+    /// </summary>
+    private static void VerifyPlus3WaitPhase()
+    {
+        int[] waits = [2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3];
+        const int first = 22_896;
+        foreach (bool batched in new[] { false, true })
+        {
+            foreach ((string name, byte opcode, byte page) in new (string, byte, byte)[]
+            {
+                ("read", 0x7E, 0x0E),
+                ("write", 0x77, 0x0E),
+                ("uncontended read (bank 2)", 0x7E, 0x04)
+            })
+            {
+                for (int index = 0; index < waits.Length; index++)
+                {
+                    ZxNextMachine machine = CreateSpeedMachine(batched, opcode);
+                    machine.Registers.Write(0x03, 0xB0);
+                    machine.UlaTiming.SynchronizeProfile();
+                    machine.Registers.Write(0x56, page);
+                    machine.Cpu.SetHL(0xC000);
+                    int start = first + index;
+                    machine.Clock.AdvanceCpuTstates(start);
+                    machine.Video.AdvanceMasterTicks((ulong)start * ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate);
+                    ulong before = machine.Cpu.Cyc;
+                    machine.StepInstruction();
+                    int expected = 7 + (page == 0x0E ? waits[index] : 0);
+                    int taken = checked((int)(machine.Cpu.Cyc - before));
+                    Require(machine.UlaTiming.Profile.IsPlus3 && taken == expected,
+                        $"A +3 {name} starting at T {start} (the probes' T {start + 4}) took {taken} T, not {expected} ({(batched ? "batched" : "unbatched")}).");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// FIX-INT-2: the T80N registers INT_n into INT_s every clock and takes INT at an
+    /// instruction's end with IFF1 set, so INT is a level: a handler that enables interrupts and
+    /// returns while the 32/36-clock pulse (zxnext.vhd pulse_int_n) is still low is interrupted
+    /// again. And EI holds off the maskable interrupt alone: NMI_s has no SetEI term.
+    /// </summary>
+    private static void VerifyIntLevelAndNmiAfterEi()
+    {
+        // IM 1 from a HALT loop: the interrupt is taken at a HALT boundary (under 4 T into the
+        // pulse), the acknowledge and EI; RET take 13 + 4 + 10 = 27 T, so RET ends inside the
+        // pulse and the handler runs again; the second RET ends past it. With EI first and four
+        // NOPs after it, the first NOP already ends inside the pulse, so the handler is
+        // interrupted inside itself, once. With the NOPs first and EI; RET last (43 T), RET ends
+        // past the pulse and the handler runs once.
+        byte[] shortHandler = [0xFB, 0xC9];
+        byte[] nestedHandler = [0xFB, 0x00, 0x00, 0x00, 0x00, 0xC9];
+        byte[] longHandler = [0x00, 0x00, 0x00, 0x00, 0xFB, 0xC9];
+        foreach ((string name, byte timing, ZxNextCpuSpeed speed, byte[] handler, int perFrame) in
+            new (string, byte, ZxNextCpuSpeed, byte[], int)[]
+            {
+                ("+3, 3.5 MHz, EI; RET", 0xB0, ZxNextCpuSpeed.Mhz3_5, shortHandler, 2),
+                ("128K, 3.5 MHz, EI; RET", 0xA0, ZxNextCpuSpeed.Mhz3_5, shortHandler, 2),
+                ("+3, 28 MHz, EI; RET", 0xB0, ZxNextCpuSpeed.Mhz28, shortHandler, 2),
+                ("+3, 3.5 MHz, EI then four NOPs", 0xB0, ZxNextCpuSpeed.Mhz3_5, nestedHandler, 2),
+                ("128K, 3.5 MHz, EI then four NOPs", 0xA0, ZxNextCpuSpeed.Mhz3_5, nestedHandler, 2),
+                ("+3, 3.5 MHz, four NOPs then EI; RET", 0xB0, ZxNextCpuSpeed.Mhz3_5, longHandler, 1),
+                ("128K, 3.5 MHz, four NOPs then EI; RET", 0xA0, ZxNextCpuSpeed.Mhz3_5, longHandler, 1)
+            })
+        {
+            ZxNextMachine machine = CreateIm1HaltLoop(timing, speed, handler);
+            ulong before = machine.Cpu.InterruptsAccepted;
+            RunFrames(machine, 3);
+            ulong accepted = machine.Cpu.InterruptsAccepted - before;
+            Require(accepted == (ulong)(3 * perFrame),
+                $"{name}: {accepted} interrupts taken in three frames, not {3 * perFrame}.");
+        }
+
+        // A capture between the two entries (the line still low, the request still up) carries
+        // on into the second as the original does.
+        ZxNextMachine original = CreateIm1HaltLoop(0xB0, ZxNextCpuSpeed.Mhz3_5, shortHandler);
+        int steps = 0;
+        while (original.Cpu.InterruptsAccepted == 0 && steps++ < 100_000)
+        {
+            original.StepInstruction();
+        }
+
+        Require(original.Cpu.InterruptPending,
+            "Taking the interrupt cleared the request while the pulse still held INT low.");
+        ZxNextMachine restored = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextMachineSnapshotService.Restore(restored, RoundTripThroughFile(ZxNextMachineSnapshotService.Capture(original)));
+        ulong originalBefore = original.Cpu.InterruptsAccepted;
+        ulong restoredBefore = restored.Cpu.InterruptsAccepted;
+        for (int step = 0; step < 4; step++)
+        {
+            original.StepInstruction();
+            restored.StepInstruction();
+        }
+
+        Require(original.Cpu.InterruptsAccepted - originalBefore == 1
+                && restored.Cpu.InterruptsAccepted - restoredBefore == 1
+                && restored.Cpu.PC == original.Cpu.PC,
+            "A restore between the two entries did not run the handler again as the original did.");
+
+        // An NMI already pending at an EI's end is taken there, returning to the instruction
+        // after the EI. (The machine's own NMI path delivers a latched NMI after the step and
+        // looks again at the same boundary, which hides the rule; so the NMI is raised in the
+        // CPU before the EI runs, as the Spectrum's devices raise theirs.)
+        ZxNextMachine nmi = CreateProgramAt(0x8000, 0xFB, 0x00, 0x00); // EI; NOP; NOP
+        nmi.Registers.Write(0x50, 0x20); // RAM at $0000-$1FFF
+        nmi.MemoryBus.WriteCpu(0x0066, 0xED);
+        nmi.MemoryBus.WriteCpu(0x0067, 0x45); // RETN
+        nmi.Cpu.SP = 0x7000;
+        nmi.Cpu.RequestNmi(ZxNextNmiSource.Multiface);
+        nmi.StepInstruction();
+        ushort returnAddress = (ushort)(nmi.MemoryBus.Read(nmi.Cpu.SP) | (nmi.MemoryBus.Read((ushort)(nmi.Cpu.SP + 1)) << 8));
+        Require(nmi.Cpu.PC == 0x0066 && nmi.Cpu.SP == 0x6FFE && returnAddress == 0x8001,
+            $"An NMI pending at an EI's end was not taken there (PC ${nmi.Cpu.PC:X4}, return ${returnAddress:X4}).");
+
+        // The NMI ends the EI's delay: its RETN brings back the IFF2 that EI set, and an INT
+        // already on the line is taken at the RETN's end (IM 0 with $FF on the bus: RST $38).
+        nmi.Cpu.Z80SetINTLine(true, 0xFF);
+        nmi.StepInstruction();
+        Require(nmi.Cpu.PC == 0x0038,
+            $"An INT waiting through an NMI taken after EI was not taken at the RETN's end (PC ${nmi.Cpu.PC:X4}).");
+    }
+
+    /// <summary>IM 1 with <paramref name="handler"/> in RAM at $0038, the CPU parked in HALT; JR.</summary>
+    private static ZxNextMachine CreateIm1HaltLoop(byte timing, ZxNextCpuSpeed speed, byte[] handler)
+    {
+        // IM 1; EI; HALT; JR back to the HALT.
+        ZxNextMachine machine = CreateProgramAt(0x8000, 0xED, 0x56, 0xFB, 0x76, 0x18, 0xFD);
+        machine.Registers.Write(0x03, timing);
+        machine.UlaTiming.SynchronizeProfile();
+        machine.Registers.Write(0x50, 0x20); // RAM at $0000-$1FFF
+        for (int index = 0; index < handler.Length; index++)
+        {
+            machine.MemoryBus.WriteCpu((ushort)(0x0038 + index), handler[index]);
+        }
+
+        machine.Cpu.SP = 0x7000;
+        if (speed != ZxNextCpuSpeed.Mhz3_5)
+        {
+            SetCpuSpeedNow(machine, speed);
+        }
+
+        return machine;
+    }
+
+    /// <summary>
+    /// HW-4: the Z80 CTC as ctc.vhd, ctc_chan.vhd and zxnext.vhd build it. Every expected count
+    /// and edge is worked out from the VHDL: a write at tick w is seen on edge w + 1; after the
+    /// time constant the channel leaves S_TRIGGER on edge w + 2 with the prescaler at 0, so a
+    /// timer at prescaler 16 first counts on edge w + 18; a read returns the counter after the
+    /// edge at its tick; a zero count's request is seen on the edge after it.
+    /// </summary>
+    private static void VerifyCtc()
+    {
+        VerifyCtcProtocol();
+        VerifyCtcPrescalerAndReload();
+        VerifyCtcResetsAndNewConstants();
+        VerifyCtcChainAndTrigger();
+        VerifyCtcCounterEdges();
+        VerifyCtcPortsAndStatus();
+        VerifyCtcInterrupts(batched: false);
+        VerifyCtcInterrupts(batched: true);
+        VerifyCtcReadMatchesTheCore();
+        VerifyCtcSnapshotAndReset();
+    }
+
+    private static ushort CtcPort(int channel) => (ushort)(0x183B | (channel << 8));
+
+    private static int Word(ZxNextMachine machine, ushort address) =>
+        machine.MemoryBus.Read(address) | (machine.MemoryBus.Read((ushort)(address + 1)) << 8);
+
+    private static void CtcOut(ZxNextMachine machine, int channel, byte value) =>
+        machine.PortBus.WriteUncontended(CtcPort(channel), value);
+
+    private static byte CtcIn(ZxNextMachine machine, int channel) =>
+        machine.PortBus.ReadUncontended(CtcPort(channel));
+
+    /// <summary>Moves the clock to <paramref name="tick"/> (the CTC follows when asked).</summary>
+    private static void CtcTo(ZxNextMachine machine, ulong tick)
+    {
+        Require(tick >= machine.Clock.MasterTicks, "A CTC check tried to go back in time.");
+        machine.Clock.AdvanceMasterTicks(tick - machine.Clock.MasterTicks);
+    }
+
+    private static byte CtcInAt(ZxNextMachine machine, int channel, ulong tick)
+    {
+        CtcTo(machine, tick);
+        return CtcIn(machine, channel);
+    }
+
+    /// <summary>$C9 at <paramref name="tick"/>, the CTC brought there first.</summary>
+    private static byte CtcStatusAt(ZxNextMachine machine, ulong tick)
+    {
+        CtcTo(machine, tick);
+        machine.Registers.Ctc.Advance(tick);
+        return machine.Registers.Read(0xC9);
+    }
+
+    /// <summary>A control word, two ticks, then the time constant; the tick the constant was written at.</summary>
+    private static ulong CtcProgram(ZxNextMachine machine, int channel, byte control, byte constant)
+    {
+        CtcOut(machine, channel, control);
+        CtcTo(machine, machine.Clock.MasterTicks + 2);
+        ulong written = machine.Clock.MasterTicks;
+        CtcOut(machine, channel, constant);
+        return written;
+    }
+
+    private static int CtcState(ZxNextMachine machine, int channel)
+    {
+        machine.Registers.Ctc.Advance(machine.Clock.MasterTicks);
+        return machine.Registers.Ctc.GetChannel(channel).State;
+    }
+
+    private static void VerifyCtcProtocol()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        for (int channel = 0; channel < 4; channel++)
+        {
+            Require(CtcIn(machine, channel) == 0x00 && CtcState(machine, channel) == 0,
+                $"CTC channel {channel} did not come up reset and reading 0.");
+        }
+
+        Require(machine.Registers.Read(0xC5) == 0x00, "NextReg $C5 did not come up 0.");
+
+        // A control word without D2 leaves the channel in S_RESET.
+        CtcOut(machine, 0, 0x01);
+        CtcTo(machine, machine.Clock.MasterTicks + 4);
+        Require(CtcIn(machine, 0) == 0x00 && CtcState(machine, 0) == 0,
+            "A CTC control word without D2 took the channel out of reset.");
+
+        // Timer, prescaler 16, constant $40.
+        ulong w = CtcProgram(machine, 0, 0x05, 0x40);
+        byte[] expected = [0x00, 0x40, 0x40, 0x3F, 0x3E];
+        ulong[] at = [w + 1, w + 2, w + 17, w + 18, w + 34];
+        for (int index = 0; index < at.Length; index++)
+        {
+            byte count = CtcInAt(machine, 0, at[index]);
+            Require(count == expected[index],
+                $"CTC channel 0 read ${count:X2} {at[index] - w} ticks after its constant, not ${expected[index]:X2}.");
+        }
+
+        // The byte after a D2 control word is the constant, D0 set or not; each port is its own channel.
+        CtcProgram(machine, 1, 0x05, 0xC5);
+        CtcProgram(machine, 2, 0x45, 0x22);
+        CtcProgram(machine, 3, 0x45, 0x33);
+        CtcTo(machine, machine.Clock.MasterTicks + 2);
+        Require(CtcIn(machine, 1) == 0xC5 && CtcIn(machine, 2) == 0x22 && CtcIn(machine, 3) == 0x33,
+            "An odd time constant was not taken as the constant, or a port reached another channel.");
+    }
+
+    private static void VerifyCtcPrescalerAndReload()
+    {
+        // Prescaler 256 (D5), constant 2: counts on w + 258, zero count on w + 514.
+        ZxNextMachine slow = ZxNextMachineFactory.CreateFoundationMachine();
+        ulong w = CtcProgram(slow, 0, 0x25, 0x02);
+        Require(CtcInAt(slow, 0, w + 257) == 2 && CtcInAt(slow, 0, w + 258) == 1
+                && CtcInAt(slow, 0, w + 513) == 1 && CtcInAt(slow, 0, w + 514) == 2,
+            "A prescaler-256 timer did not count every 256 ticks and reload its constant.");
+        Require((CtcStatusAt(slow, w + 514) & 0x01) == 0 && (CtcStatusAt(slow, w + 515) & 0x01) != 0,
+            "The zero count's status was not latched on the edge after it.");
+
+        // Constant 3 at prescaler 16: 3, 2, 1, and the edge that would read 0 reloads.
+        ZxNextMachine reload = ZxNextMachineFactory.CreateFoundationMachine();
+        w = CtcProgram(reload, 0, 0x05, 0x03);
+        Require(CtcInAt(reload, 0, w + 17) == 3 && CtcInAt(reload, 0, w + 18) == 2
+                && CtcInAt(reload, 0, w + 34) == 1 && CtcInAt(reload, 0, w + 50) == 3,
+            "The CTC counter read 0, or did not reload on the edge that would count 1 to 0.");
+
+        // Constant 0 counts 256.
+        ZxNextMachine full = ZxNextMachineFactory.CreateFoundationMachine();
+        w = CtcProgram(full, 0, 0x05, 0x00);
+        Require(CtcInAt(full, 0, w + 17) == 0x00 && CtcInAt(full, 0, w + 18) == 0xFF
+                && CtcInAt(full, 0, w + 4082) == 0x01 && CtcInAt(full, 0, w + 4098) == 0x00
+                && (CtcStatusAt(full, w + 4098) & 0x01) == 0 && (CtcStatusAt(full, w + 4099) & 0x01) != 0,
+            "A time constant of 0 did not count 256 before its zero count.");
+    }
+
+    private static void VerifyCtcResetsAndNewConstants()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        ulong w = CtcProgram(machine, 0, 0x05, 0x40);
+        Require(CtcInAt(machine, 0, w + 50) == 0x3D, "The timer had not counted three times by w + 50.");
+
+        // A vector byte (D0 clear) changes nothing on the Next.
+        CtcOut(machine, 0, 0x10);
+        Require(CtcInAt(machine, 0, w + 66) == 0x3C && machine.Registers.Ctc.GetChannel(0).Control == 0x00,
+            "A CTC vector write disturbed the channel.");
+
+        // Software reset with D2 at w + 66: seen on w + 67, the counter held at the constant from w + 68.
+        CtcOut(machine, 0, 0x07);
+        Require(CtcInAt(machine, 0, w + 67) == 0x3C && CtcInAt(machine, 0, w + 68) == 0x40
+                && CtcInAt(machine, 0, w + 300) == 0x40 && CtcState(machine, 0) == 1,
+            "A software reset with D2 did not stop the channel at its constant, waiting for a new one.");
+        CtcOut(machine, 0, 0x20);
+        Require(CtcInAt(machine, 0, w + 301) == 0x40 && CtcInAt(machine, 0, w + 302) == 0x20
+                && CtcInAt(machine, 0, w + 318) == 0x1F,
+            "The new constant after a software reset did not restart the channel from it.");
+
+        // Software reset without D2: S_RESET; a vector byte is ignored there.
+        CtcOut(machine, 0, 0x03);
+        ulong t = machine.Clock.MasterTicks;
+        CtcTo(machine, t + 2);
+        CtcOut(machine, 0, 0x10);
+        Require(CtcInAt(machine, 0, t + 4) == 0x20 && CtcState(machine, 0) == 0,
+            "A software reset without D2 did not return the channel to S_RESET, holding its constant.");
+
+        // CTC-019: D2 without D1 on a running timer: it counts on, the new constant comes at the
+        // next zero count.
+        ZxNextMachine running = ZxNextMachineFactory.CreateFoundationMachine();
+        w = CtcProgram(running, 0, 0x05, 0x04);
+        CtcTo(running, w + 20);
+        CtcOut(running, 0, 0x05);
+        CtcTo(running, w + 22);
+        CtcOut(running, 0, 0x02);
+        Require(CtcInAt(running, 0, w + 34) == 2 && CtcInAt(running, 0, w + 50) == 1
+                && CtcInAt(running, 0, w + 66) == 2 && CtcInAt(running, 0, w + 82) == 1
+                && CtcInAt(running, 0, w + 98) == 2,
+            "A new constant on a running timer did not wait for the next zero count.");
+
+        // CTC-018: a D2 control word while a timer waits for its trigger asks for a constant again.
+        ZxNextMachine waiting = ZxNextMachineFactory.CreateFoundationMachine();
+        w = CtcProgram(waiting, 1, 0x0D, 0x10);
+        Require(CtcInAt(waiting, 1, w + 100) == 0x10 && CtcState(waiting, 1) == 2,
+            "A timer with D3 did not wait for its trigger in S_TRIGGER.");
+        CtcOut(waiting, 1, 0x0D);
+        CtcTo(waiting, w + 102);
+        Require(CtcState(waiting, 1) == 1, "A D2 control word in S_TRIGGER did not go back to S_RESET_TC.");
+        CtcOut(waiting, 1, 0x08);
+        Require(CtcInAt(waiting, 1, w + 104) == 0x08 && CtcState(waiting, 1) == 2,
+            "The constant after a D2 control word in S_TRIGGER was not taken.");
+    }
+
+    private static void VerifyCtcChainAndTrigger()
+    {
+        // Timer 0 (constant 2) -> counter 1 (rising, 3) -> counter 2 (falling, 2).
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        CtcProgram(machine, 1, 0x55, 0x03);
+        CtcProgram(machine, 2, 0x45, 0x02);
+        ulong w = CtcProgram(machine, 0, 0x05, 0x02);
+
+        // Channel 0's zero counts fall on w + 34 + 32k; channel 1 counts on the edge after each
+        // (w + 35, 67, 99: zero count), channel 2 on the second edge after channel 1's (w + 101, 197).
+        Require(CtcInAt(machine, 1, w + 34) == 3 && CtcInAt(machine, 1, w + 35) == 2
+                && CtcInAt(machine, 1, w + 98) == 1 && CtcInAt(machine, 1, w + 99) == 3
+                && (CtcStatusAt(machine, w + 99) & 0x02) == 0 && (CtcStatusAt(machine, w + 100) & 0x02) != 0,
+            "A rising-edge counter did not count on the edge after its upstream's zero count.");
+        Require(CtcInAt(machine, 2, w + 100) == 2 && CtcInAt(machine, 2, w + 101) == 1
+                && CtcInAt(machine, 2, w + 196) == 1 && CtcInAt(machine, 2, w + 197) == 2
+                && (CtcStatusAt(machine, w + 197) & 0x04) == 0 && (CtcStatusAt(machine, w + 198) & 0x04) != 0,
+            "A falling-edge counter did not count two edges after its upstream's zero count.");
+
+        // The ring closes: channel 3's zero counts clock channel 0.
+        ZxNextMachine ring = ZxNextMachineFactory.CreateFoundationMachine();
+        CtcProgram(ring, 0, 0x55, 0x02);
+        w = CtcProgram(ring, 3, 0x05, 0x01);
+        Require(CtcInAt(ring, 0, w + 18) == 2 && CtcInAt(ring, 0, w + 19) == 1 && CtcInAt(ring, 0, w + 35) == 2,
+            "Channel 3's zero count did not clock channel 0.");
+
+        // A timer with D3 starts on its trigger: channel 0's zero count at w + 34, the rising edge
+        // on w + 35 leaves S_TRIGGER with the prescaler at 0, the first count on w + 51.
+        ZxNextMachine trigger = ZxNextMachineFactory.CreateFoundationMachine();
+        CtcProgram(trigger, 1, 0x1D, 0x04);
+        w = CtcProgram(trigger, 0, 0x05, 0x02);
+        CtcTo(trigger, w + 34);
+        Require(CtcState(trigger, 1) == 2, "The triggered timer started before its trigger.");
+        CtcTo(trigger, w + 35);
+        Require(CtcState(trigger, 1) == 3 && CtcInAt(trigger, 1, w + 50) == 4 && CtcInAt(trigger, 1, w + 51) == 3,
+            "A timer with D3 did not start on its upstream's zero count.");
+
+        // Changing the edge select (D4) is a trigger edge itself.
+        ZxNextMachine flip = ZxNextMachineFactory.CreateFoundationMachine();
+        CtcProgram(flip, 1, 0x1D, 0x04);
+        CtcTo(flip, flip.Clock.MasterTicks + 10);
+        ulong t = flip.Clock.MasterTicks;
+        CtcOut(flip, 1, 0x09);
+        Require(CtcInAt(flip, 1, t + 16) == 4 && CtcInAt(flip, 1, t + 17) == 3,
+            "Changing the edge select did not start a timer waiting for its trigger.");
+    }
+
+    private static void VerifyCtcCounterEdges()
+    {
+        // A counter never counts on the prescaler.
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        CtcProgram(machine, 2, 0x55, 0x03);
+        CtcProgram(machine, 1, 0x45, 0x05);
+        Require(CtcInAt(machine, 1, machine.Clock.MasterTicks + 1000) == 5,
+            "A counter with no upstream zero count counted.");
+
+        // A control word that flips D4 counts one edge; the same D4 does not.
+        byte[] words = [0x51, 0x51, 0x41, 0x51, 0x41];
+        byte[] counts = [4, 4, 3, 2, 1];
+        for (int index = 0; index < words.Length; index++)
+        {
+            CtcOut(machine, 1, words[index]);
+            byte count = CtcInAt(machine, 1, machine.Clock.MasterTicks + 2);
+            Require(count == counts[index],
+                $"Control word ${words[index]:X2} left the counter at {count}, not {counts[index]}.");
+        }
+
+        // The flip that reaches zero is a zero count: reload, status, and the next channel counts.
+        ulong t = machine.Clock.MasterTicks;
+        CtcOut(machine, 1, 0x51);
+        Require(CtcInAt(machine, 1, t + 1) == 5 && (CtcStatusAt(machine, t + 2) & 0x02) != 0
+                && CtcInAt(machine, 2, t + 2) == 2,
+            "A D4 flip that reached zero did not reload, latch the status and clock the next channel.");
+    }
+
+    private static void VerifyCtcPortsAndStatus()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        for (int channel = 4; channel < 8; channel++)
+        {
+            CtcOut(machine, channel, 0x05);
+            CtcTo(machine, machine.Clock.MasterTicks + 2);
+            CtcOut(machine, channel, 0x40);
+            Require(CtcIn(machine, channel) == 0x00, $"CTC port ${CtcPort(channel):X4} did not read $00.");
+        }
+
+        CtcTo(machine, machine.Clock.MasterTicks + 4);
+        for (int channel = 0; channel < 4; channel++)
+        {
+            Require(CtcIn(machine, channel) == 0x00 && CtcState(machine, channel) == 0,
+                $"A write to CTC channels 4-7 reached channel {channel}.");
+        }
+
+        // $C9 latches each zero count; writing 1 clears that bit alone.
+        ulong w0 = CtcProgram(machine, 0, 0x05, 0x01);
+        CtcProgram(machine, 1, 0x05, 0x01);
+        Require((CtcStatusAt(machine, w0 + 100) & 0x03) == 0x03, "The zero counts of channels 0 and 1 did not latch.");
+        machine.Registers.Write(0xC9, 0x02);
+        Require((machine.Registers.Read(0xC9) & 0x03) == 0x01, "Writing $C9 bit 1 did not clear channel 1's status alone.");
+
+        // Port enable bit 27 ($85 bit 3) off: the ports are gone, and a running channel runs on.
+        ZxNextMachine disabled = ZxNextMachineFactory.CreateFoundationMachine();
+        ulong w = CtcProgram(disabled, 0, 0x05, 0x40);
+        byte enables = disabled.Registers.Read(0x85);
+        disabled.Registers.Write(0x85, (byte)(enables & ~0x08));
+        CtcOut(disabled, 0, 0x03);
+        Require(CtcInAt(disabled, 0, w + 50) == 0xFF, "A CTC port read with its enable off did not float to $FF.");
+        disabled.Registers.Write(0x85, enables);
+        Require(CtcInAt(disabled, 0, w + 66) == 0x3C,
+            "A CTC write reached the channel with the port enable off, or the channel stopped.");
+    }
+
+    /// <summary>
+    /// A CPU taking the CTC's interrupts: hardware IM2 on vector $A0 | (3 + channel) * 2, then pulse
+    /// mode on $FF, a $C5 write stopping them while the status still latches, and the same zero
+    /// counts at 28 MHz (the CTC runs from the 28 MHz clock).
+    /// </summary>
+    private static void VerifyCtcInterrupts(bool batched)
+    {
+        string mode = batched ? "batched" : "unbatched";
+        (int Taken, int Wrong, ulong FirstAccepted, ZxNextMachine Machine, int ZeroCounts) Run(bool hardware, ZxNextCpuSpeed speed, int frames)
+        {
+            // IM 2; LD A,$B0; LD I,A; EI; HALT; JR back to the HALT.
+            ZxNextMachine machine = CreateSpeedMachine(batched, 0xED, 0x5E, 0x3E, 0xB0, 0xED, 0x47, 0xFB, 0x76, 0x18, 0xFD);
+            machine.Registers.Write(0x22, 0x04); // no ULA interrupt
+            machine.Registers.Write(0xC0, (byte)(hardware ? 0xA1 : 0xA0));
+            machine.Cpu.SP = 0x7000;
+
+            // Every vector to a handler counting a word at $A002; the CTC's (or $FF's) to one counting at $A000.
+            byte[] counting = [0xE5, 0x2A, 0x00, 0xA0, 0x23, 0x22, 0x00, 0xA0, 0xE1, 0xFB, 0xED, 0x4D];
+            byte[] wrong = [0xE5, 0x2A, 0x02, 0xA0, 0x23, 0x22, 0x02, 0xA0, 0xE1, 0xFB, 0xED, 0x4D];
+            for (int index = 0; index < counting.Length; index++)
+            {
+                machine.MemoryBus.WriteCpu((ushort)(0x9000 + index), counting[index]);
+                machine.MemoryBus.WriteCpu((ushort)(0x9100 + index), wrong[index]);
+            }
+
+            for (int vector = 0; vector < 0x101; vector++)
+            {
+                machine.MemoryBus.WriteCpu((ushort)(0xB000 + vector), (byte)((vector & 1) == 0 ? 0x00 : 0x91));
+            }
+
+            ushort used = hardware ? (ushort)0xB0A6 : (ushort)0xB0FF;
+            machine.MemoryBus.WriteCpu(used, 0x00);
+            machine.MemoryBus.WriteCpu((ushort)(used + 1), 0x90);
+            for (ushort address = 0xA000; address < 0xA004; address++)
+            {
+                machine.MemoryBus.WriteCpu(address, 0x00);
+            }
+
+            if (speed != ZxNextCpuSpeed.Mhz3_5)
+            {
+                SetCpuSpeedNow(machine, speed);
+            }
+
+            // Channel 0: interrupt (D7), timer, prescaler 16, constant $40: a zero count every 1024 ticks.
+            machine.StepInstruction();
+            machine.StepInstruction();
+            machine.StepInstruction();
+            machine.StepInstruction();
+            machine.SynchronizeTime();
+            machine.PortBus.WriteUncontended(CtcPort(0), 0x85);
+            machine.Clock.AdvanceMasterTicks(0);
+            ulong constantTick = machine.Clock.MasterTicks;
+            machine.PortBus.WriteUncontended(CtcPort(0), 0x40);
+            ulong firstAccepted = 0;
+            ulong accepted = machine.Cpu.InterruptsAccepted;
+            int steps = 0;
+            while (machine.Cpu.InterruptsAccepted == accepted && steps++ < 1_000_000)
+            {
+                machine.StepInstruction();
+            }
+
+            machine.SynchronizeTime();
+            firstAccepted = machine.Clock.MasterTicks;
+            RunFrames(machine, frames);
+            machine.SynchronizeTime();
+
+            // Zero counts on edges w + 1026 + 1024k, each seen on the next edge.
+            ulong end = machine.Clock.MasterTicks;
+            int zeroCounts = end < constantTick + 1027 ? 0 : (int)((end - (constantTick + 1027)) / 1024) + 1;
+            // The first request is seen on edge w + 1027; the HALT loop's next boundary takes it,
+            // and the step ends after the 19 T acknowledge: 152 to 183 ticks on at 3.5 MHz.
+            return (Word(machine, 0xA000), Word(machine, 0xA002), firstAccepted - (constantTick + 1027), machine, zeroCounts);
+        }
+
+        // The constant is written between instructions at a known tick, so the zero counts are
+        // known: the first on edge w + 1026 (64 counts from w + 18), then every 1024.
+        // Every zero count is taken, the last perhaps not yet (its handler still to come).
+        (int taken, int wrong, ulong first, ZxNextMachine hw, int zeroCounts) = Run(hardware: true, ZxNextCpuSpeed.Mhz3_5, frames: 2);
+        Require(wrong == 0 && hw.Registers.Read(0xC5) == 0x01,
+            $"A CTC interrupt took a vector other than $A6, or $C5 did not show control bit 7 ({mode}).");
+        Require(taken >= zeroCounts - 1 && taken <= zeroCounts,
+            $"Hardware IM2 took {taken} CTC interrupts for {zeroCounts} zero counts ({mode}).");
+        Require(first is >= 152 and < 184,
+            $"The first CTC interrupt was taken {first} ticks after its request, not at the next boundary ({mode}).");
+
+        (int pulseTaken, int pulseWrong, ulong pulseFirst, _, int pulseZeroCounts) = Run(hardware: false, ZxNextCpuSpeed.Mhz3_5, frames: 2);
+        Require(pulseWrong == 0 && pulseTaken >= pulseZeroCounts - 1 && pulseTaken <= pulseZeroCounts && pulseFirst == first,
+            $"In pulse mode the CTC's interrupts did not come through vector $FF at the same times ({pulseTaken} for {pulseZeroCounts}, first {pulseFirst} not {first}, {mode}).");
+
+        // $C5 cleared: no more interrupts, the status still latching.
+        hw.Registers.Write(0xC5, 0x00);
+        hw.Registers.Write(0xC9, 0x0F);
+        int before = Word(hw, 0xA000);
+        RunFrames(hw, 1);
+        Require(Word(hw, 0xA000) == before && (hw.Registers.Read(0xC9) & 0x01) != 0
+                && hw.Registers.Read(0xC5) == 0x00,
+            $"Clearing $C5 did not stop the CTC's interrupts, or stopped its status latching ({mode}).");
+
+        // At 28 MHz the zero counts are the same: the CTC counts the 28 MHz clock, not the CPU's.
+        (int fastTaken, _, _, _, int fastZeroCounts) = Run(hardware: true, ZxNextCpuSpeed.Mhz28, frames: 2);
+        Require(fastTaken >= fastZeroCounts - 1 && fastTaken <= fastZeroCounts,
+            $"At 28 MHz the CPU took {fastTaken} CTC interrupts for {fastZeroCounts} zero counts ({mode}).");
+    }
+
+    /// <summary>
+    /// The counter a program reads, as Klive's simulated-core probes measured it (its fidelity
+    /// plan's F3-8, probe group T, 24 reads one T-state apart). The probe program: control $05,
+    /// constant 10, a delay of 100 + k T-states, IN A,(C). Klive's model, which matches the core in
+    /// all 24, puts the count read at 10 - (n mod 10), n = floor((d + 14) / 16), where d is the
+    /// distance in ticks from the constant's OUT to the IN, both I/O cycles 8 T into their
+    /// instructions.
+    /// </summary>
+    private static void VerifyCtcReadMatchesTheCore()
+    {
+        for (int k = 0; k < 24; k++)
+        {
+            int delay = 100 + k;
+            var program = new List<byte> { 0xAF, 0x01, 0x3B, 0x18, 0x3E, 0x05, 0xED, 0x79, 0x3E, 0x0A, 0xED, 0x79 };
+            // Klive's delay(): RET NZ (5, Z set), INC HL (6) or LD A,0 (7) for the remainder, then NOPs.
+            int filler = delay % 4;
+            int fillerT = filler switch { 1 => 5, 2 => 6, 3 => 7, _ => 0 };
+            program.AddRange(filler switch { 1 => [0xC0], 2 => [0x23], 3 => [0x3E, 0x00], _ => [] });
+            program.AddRange(Enumerable.Repeat((byte)0x00, (delay - fillerT) / 4));
+            program.AddRange([0xED, 0x78, 0x18, 0xFE]);
+            ZxNextMachine machine = CreateSpeedMachine(false, program.ToArray());
+            machine.Registers.Write(0x22, 0x04);
+
+            // XOR A, LD BC, LD A, OUT, LD A: to the second OUT.
+            for (int step = 0; step < 5; step++)
+            {
+                machine.StepInstruction();
+            }
+
+            machine.SynchronizeTime();
+            ulong outStart = machine.Clock.MasterTicks;
+            while (machine.Cpu.PC != 0x8000 + program.Count - 4)
+            {
+                machine.StepInstruction();
+            }
+
+            machine.SynchronizeTime();
+            ulong inStart = machine.Clock.MasterTicks;
+            machine.StepInstruction();
+            ulong distance = inStart - outStart;
+            int n = (int)((distance + 14) / 16);
+            int expected = 10 - (n % 10);
+            Require(distance == (ulong)(12 + delay) * 8 && machine.Cpu.A == expected,
+                $"The CTC read ${machine.Cpu.A:X2} with the IN {delay} T after the constant, not ${expected:X2} as the simulated core.");
+        }
+    }
+
+    private static void VerifyCtcSnapshotAndReset()
+    {
+        // Captured with a write not yet seen and with a zero count's request still to come.
+        foreach (bool atZeroCount in new[] { false, true })
+        {
+            ZxNextMachine original = ZxNextMachineFactory.CreateFoundationMachine();
+            CtcProgram(original, 1, 0x55, 0x03);
+            ulong w = CtcProgram(original, 0, 0x85, 0x02);
+            if (atZeroCount)
+            {
+                CtcTo(original, w + 34);
+                original.Registers.Ctc.Advance(w + 34);
+            }
+            else
+            {
+                CtcTo(original, w + 40);
+                CtcOut(original, 2, 0x45);
+            }
+
+            ZxNextMachineSnapshot captured = ZxNextMachineSnapshotService.Capture(original);
+            Require(atZeroCount ? captured.Ctc!.PendingRequests == 0x01 : captured.Ctc!.PendingWriteChannel == 2,
+                "The CTC snapshot check did not catch the moment it was after.");
+            ZxNextMachine restored = ZxNextMachineFactory.CreateFoundationMachine();
+            ZxNextMachineSnapshotService.Restore(restored, RoundTripThroughFile(captured));
+            foreach (ulong offset in new ulong[] { 1, 2, 30, 70, 200 })
+            {
+                ulong tick = original.Clock.MasterTicks + offset;
+                Require(CtcInAt(original, 0, tick) == CtcInAt(restored, 0, tick)
+                        && CtcInAt(original, 1, tick) == CtcInAt(restored, 1, tick)
+                        && CtcState(original, 2) == CtcState(restored, 2)
+                        && CtcStatusAt(original, tick) == CtcStatusAt(restored, tick),
+                    $"A restored CTC differed from the original {offset} ticks on ({(atZeroCount ? "request pending" : "write pending")}).");
+            }
+        }
+
+        // A reset (soft or hard) puts every channel back in S_RESET with its enables clear.
+        ZxNextMachine reset = ZxNextMachineFactory.CreateFoundationMachine();
+        CtcProgram(reset, 0, 0x85, 0x40);
+        CtcTo(reset, reset.Clock.MasterTicks + 100);
+        reset.Reset(ZxNextResetKind.Soft);
+        Require(CtcIn(reset, 0) == 0x00 && CtcState(reset, 0) == 0 && reset.Registers.Read(0xC5) == 0x00,
+            "A soft reset did not reset the CTC.");
+    }
+
+    /// <summary>
+    /// Puts a machine at a speed for a check that is not about the switch, as if it had long
+    /// been in effect.
+    /// </summary>
+    private static void SetCpuSpeedNow(ZxNextMachine machine, ZxNextCpuSpeed speed)
+    {
+        machine.Registers.Write(0x07, (byte)speed);
+        machine.ForceCpuSpeed(speed);
     }
 
     private static void VerifyResetAndPause()
@@ -8126,6 +13220,902 @@ public static class ZxNextVerificationRunner
                 && !machine.Cpu.InstructionTstateBatchingEnabled
                 && machine.MemoryBus.ReadPhysicalRam(42, 7) == 0xA5,
             "Foundation reset did not reinitialize CPU and master-clock state.");
+    }
+
+    /// <summary>
+    /// A machine for the NMI rules: out of configuration mode (where NMI requests are ignored),
+    /// RAM pages 0 and 1 at the bottom with NOPs at $0066, a JR-to-itself loop at $8000, both
+    /// buttons' NMIs enabled (NextReg $06 bits 3 and 4), automap on with no RST entry points,
+    /// and blank DivMMC and Multiface ROMs.
+    /// </summary>
+    private static ZxNextMachine CreateNmiMachine()
+    {
+        ZxNextMachine machine = CreateProgramAt(0x8000, 0x18, 0xFE); // JR $8000
+        machine.Registers.Write(0x50, 0);
+        machine.Registers.Write(0x51, 1);
+        machine.MemoryBus.WriteCpu(0x0066, 0x00);
+        machine.MemoryBus.WriteCpu(0x0067, 0x00);
+        machine.Registers.Write(0x06, 0xB8);
+        machine.Registers.Write(0x0A, 0x11);
+        machine.Registers.Write(0xB8, 0x00);
+        machine.MemoryBus.LoadDivMmcRom(new byte[ZxNextPhysicalMemory.PageSize]);
+        machine.MemoryBus.LoadMultifaceRom(new byte[ZxNextPhysicalMemory.PageSize]);
+        machine.Cpu.SP = 0x9000;
+        return machine;
+    }
+
+    /// <summary>A page of ROM with the given bytes from $0067, after the NMI's first opcode.</summary>
+    private static byte[] NmiRoutine(params byte[] bytes)
+    {
+        var rom = new byte[ZxNextPhysicalMemory.PageSize];
+        bytes.CopyTo(rom, 0x0067);
+        return rom;
+    }
+
+    /// <summary>
+    /// The NMI arbitration of zxnext.vhd, rule by rule: the NextReg $06 gates, configuration
+    /// mode, one NMI at a time with later requests lost, the $02 cause bits, the interlocks
+    /// between the Multiface and DivMMC, a disabled Multiface, DivMMC paging in at the $0066
+    /// fetch through NextReg $BB, NextReg $C0 bit 3 cancelling the stackless return, and RETN
+    /// releasing only as ED 45, before it reads the stack.
+    /// </summary>
+    private static void VerifyNmiArbitrationRules()
+    {
+        // NextReg $06 bits 3 and 4 gate the requests, but not the cause bits.
+        ZxNextMachine gated = CreateNmiMachine();
+        gated.Registers.Write(0x06, 0xA0);
+        gated.Registers.Write(0x02, 0x0C);
+        gated.StepInstruction();
+        Require(gated.Registers.Nmi.Source == ZxNextNmiSource.None
+                && gated.Cpu.PC == 0x8000
+                && (gated.Registers.Read(0x02) & 0x0C) == 0x0C,
+            "With NextReg $06 bits 3 and 4 clear a $02 request raised an NMI, or its cause bits were not recorded.");
+
+        // Configuration mode ignores them.
+        ZxNextMachine configuring = CreateNmiMachine();
+        configuring.Registers.Write(0x03, 0x07);
+        configuring.Registers.Write(0x02, 0x08);
+        Require(configuring.Registers.Nmi.Source == ZxNextNmiSource.None && !configuring.Multiface.NmiActive,
+            "A $02 request latched an NMI in configuration mode.");
+
+        // One NMI at a time. A request while one is active is lost, and once $0066 has been
+        // fetched it leaves no cause bit either.
+        ZxNextMachine oneShot = CreateNmiMachine();
+        oneShot.MemoryBus.LoadMultifaceRom(NmiRoutine(0xED, 0x45)); // RETN
+        oneShot.Registers.Write(0x02, 0x08);
+        Require(oneShot.Registers.Nmi.Source == ZxNextNmiSource.Multiface
+                && oneShot.Registers.Nmi.Phase == ZxNextNmiPhase.Idle
+                && oneShot.Multiface.NmiActive,
+            "A Multiface request did not latch the NMI and press the Multiface's button.");
+        oneShot.Registers.Write(0x02, 0x0C);
+        Require(oneShot.Registers.Nmi.Source == ZxNextNmiSource.Multiface
+                && !oneShot.DivMmc.NmiActive
+                && (oneShot.Registers.Read(0x02) & 0x0C) == 0x0C,
+            "A DivMMC request made while a Multiface NMI waited for the CPU was not lost, or its cause was not recorded.");
+        oneShot.StepInstruction();
+        Require(oneShot.Cpu.PC == 0x0066
+                && oneShot.Registers.Nmi.Phase == ZxNextNmiPhase.Fetch
+                && !oneShot.Multiface.IsMapped,
+            "The CPU did not take the latched NMI at the next instruction boundary.");
+        oneShot.StepInstruction();
+        Require(oneShot.Cpu.PC == 0x0067
+                && oneShot.Multiface.IsMapped
+                && oneShot.Registers.Nmi.Phase == ZxNextNmiPhase.Hold,
+            "The $0066 fetch did not page the Multiface in and hold the NMI.");
+        oneShot.Registers.Write(0x02, 0x00);
+        oneShot.Registers.Write(0x02, 0x04);
+        Require(oneShot.Registers.Nmi.Source == ZxNextNmiSource.Multiface
+                && !oneShot.DivMmc.NmiActive
+                && (oneShot.Registers.Read(0x02) & 0x0C) == 0,
+            "A request inside the NMI routine was latched or recorded a cause, or a $02 write of 0 did not clear the cause bits.");
+        oneShot.StepInstruction();
+        Require(oneShot.Cpu.PC == 0x8000
+                && !oneShot.Multiface.IsMapped
+                && !oneShot.Multiface.NmiActive
+                && oneShot.Registers.Nmi.Source == ZxNextNmiSource.None,
+            "RETN did not release the Multiface and end the NMI.");
+        oneShot.StepInstruction();
+        Require(oneShot.Cpu.PC == 0x8000,
+            "A request lost inside the NMI routine was queued and taken afterwards.");
+
+        // The Multiface paged in - here by its enable port, which works once an NMI has made
+        // it visible - keeps a DivMMC request out.
+        _ = oneShot.PortBus.ReadUncontended(0x3F3F);
+        Require(oneShot.Multiface.IsMapped && !oneShot.Multiface.NmiActive,
+            "Setup: the Multiface enable port did not page it in.");
+        oneShot.Registers.Write(0x02, 0x04);
+        Require(oneShot.Registers.Nmi.Source == ZxNextNmiSource.None && !oneShot.DivMmc.NmiActive,
+            "A DivMMC request was latched while the Multiface was paged in.");
+        _ = oneShot.PortBus.ReadUncontended(0x00BF);
+        oneShot.Registers.Write(0x02, 0x04);
+        Require(oneShot.Registers.Nmi.Source == ZxNextNmiSource.DivMmc && oneShot.DivMmc.NmiActive,
+            "A DivMMC request was not latched once the Multiface had paged out.");
+
+        // DivMMC's CONMEM keeps a Multiface request out, so with both requested DivMMC wins.
+        ZxNextMachine conmem = CreateNmiMachine();
+        conmem.PortBus.WriteUncontended(0x00E3, 0x80);
+        conmem.Registers.Write(0x02, 0x0C);
+        Require(conmem.Registers.Nmi.Source == ZxNextNmiSource.DivMmc && !conmem.Multiface.NmiActive,
+            "With DivMMC's CONMEM on, a Multiface request was latched, or DivMMC's was not.");
+
+        // So does DivMMC holding automap. DivMMC's own request still latches, and its button
+        // clears at once: the automap holds the NMI instead.
+        ZxNextMachine automapped = CreateNmiMachine();
+        automapped.Registers.Write(0xB8, 0x01);
+        _ = automapped.MemoryBus.FetchOpcode(0x0000);
+        Require(automapped.DivMmc.AutomapHeld, "Setup: the $0000 entry point did not hold automap.");
+        automapped.Registers.Write(0x02, 0x08);
+        Require(automapped.Registers.Nmi.Source == ZxNextNmiSource.None && !automapped.Multiface.NmiActive,
+            "A Multiface request was latched while DivMMC held automap.");
+        automapped.Registers.Write(0x02, 0x04);
+        Require(automapped.Registers.Nmi.Source == ZxNextNmiSource.DivMmc
+                && !automapped.DivMmc.NmiActive
+                && automapped.DivMmc.NmiHold,
+            "A DivMMC request with automap held did not latch, or left its button latched.");
+
+        // A disabled Multiface (port enable bit 9) ignores its button, so the NMI runs whatever
+        // is at $0066 and ends with that fetch.
+        ZxNextMachine disabled = CreateNmiMachine();
+        disabled.Registers.Write(0x83, 0xFD);
+        disabled.Registers.Write(0x02, 0x08);
+        Require(disabled.Registers.Nmi.Source == ZxNextNmiSource.Multiface && !disabled.Multiface.NmiActive,
+            "A request for a disabled Multiface was not latched, or pressed its button.");
+
+        // Nothing holds that NMI - no interlock stands in DivMMC's way - so only the latch
+        // itself makes a DivMMC request now lost.
+        disabled.Registers.Write(0x02, 0x04);
+        Require(disabled.Registers.Nmi.Source == ZxNextNmiSource.Multiface && !disabled.DivMmc.NmiActive,
+            "A DivMMC request made while a disabled Multiface's NMI was latched took the NMI over.");
+        StepInstructions(disabled, 2);
+        Require(disabled.Cpu.PC == 0x0067
+                && !disabled.Multiface.IsMapped
+                && !disabled.DivMmc.IsMapped
+                && disabled.Registers.Nmi.Source == ZxNextNmiSource.None,
+            "A disabled Multiface's NMI did not run $0066 from the memory underneath and end with that fetch.");
+        disabled.Registers.Write(0x02, 0x08);
+        Require(disabled.Registers.Nmi.Source == ZxNextNmiSource.Multiface,
+            "The NMI after a disabled Multiface's was not latched.");
+
+        // DivMMC pages in at the $0066 fetch: delayed with NextReg $BB bit 0 (its reset value),
+        // instant with bit 1, and not at all with automap off, when the NMI ends at the fetch.
+        foreach ((byte entryPoints, bool automap, bool instant) in new (byte, bool, bool)[]
+        {
+            (0xCD, true, false),
+            (0xCE, true, true),
+            (0xCD, false, false)
+        })
+        {
+            ZxNextMachine paging = CreateNmiMachine();
+            var rom = new byte[ZxNextPhysicalMemory.PageSize];
+            rom[0x0066] = 0x76; // HALT, which only an instant entry executes
+            paging.MemoryBus.LoadDivMmcRom(rom);
+            paging.Registers.Write(0xBB, entryPoints);
+            if (!automap)
+            {
+                paging.Registers.Write(0x0A, 0x01);
+            }
+
+            paging.Registers.Write(0x02, 0x04);
+            Require(paging.DivMmc.NmiActive == automap && !paging.DivMmc.IsMapped,
+                $"$BB=${entryPoints:X2}, automap {(automap ? "on" : "off")}: the DivMMC request did not latch its button as expected, or paged DivMMC in before $0066.");
+            StepInstructions(paging, 2);
+            Require(paging.Cpu.IsHalted == instant
+                    && paging.DivMmc.IsMapped == automap
+                    && !paging.DivMmc.NmiActive
+                    && (paging.Registers.Nmi.Source == ZxNextNmiSource.DivMmc) == automap,
+                $"$BB=${entryPoints:X2}, automap {(automap ? "on" : "off")}: after the $0066 fetch halted={paging.Cpu.IsHalted}, "
+                    + $"mapped={paging.DivMmc.IsMapped}, button={paging.DivMmc.NmiActive}, NMI={paging.Registers.Nmi.Source}.");
+        }
+
+        // Clearing NextReg $C0 bit 3 inside the routine sends a stackless NMI's RETN back to the
+        // stack, which the acknowledge did not write.
+        ZxNextMachine cancel = CreateNmiMachine();
+        cancel.Registers.Write(0xC0, 0x08);
+        cancel.MemoryBus.LoadDivMmcRom(NmiRoutine(0xED, 0x91, 0xC0, 0x00, 0xED, 0x45)); // NEXTREG $C0,0; RETN
+        cancel.MemoryBus.WriteCpu(0x8FFE, 0x34);
+        cancel.MemoryBus.WriteCpu(0x8FFF, 0x12);
+        cancel.Registers.Write(0x02, 0x04);
+        StepInstructions(cancel, 4);
+        Require(cancel.Cpu.PC == 0x1234 && cancel.Cpu.SP == 0x9000,
+            $"Clearing NextReg $C0 bit 3 inside the NMI routine did not send its RETN to the stack (PC=${cancel.Cpu.PC:X4}).");
+
+        // Only ED 45 releases: the core's RETN decoder does not know the other encodings.
+        ZxNextMachine alias = CreateNmiMachine();
+        alias.MemoryBus.LoadDivMmcRom(NmiRoutine(0xED, 0x55)); // RETN, as ED 55
+        alias.Registers.Write(0x02, 0x04);
+        StepInstructions(alias, 3);
+        Require(alias.Cpu.PC == 0x8000
+                && alias.DivMmc.AutomapHeld
+                && alias.Registers.Nmi.Source == ZxNextNmiSource.DivMmc,
+            "A RETN encoded other than ED 45 released DivMMC or ended the NMI.");
+
+        // ED 45 releases at its fetch, before it reads the stack: with the stack under DivMMC's
+        // RAM window, the return address comes from the RAM the acknowledge pushed it to.
+        ZxNextMachine early = CreateNmiMachine();
+        early.MemoryBus.LoadDivMmcRom(NmiRoutine(0xED, 0x45));
+        early.Cpu.SP = 0x3000;
+        early.Registers.Write(0x02, 0x04);
+        StepInstructions(early, 3);
+        Require(early.Cpu.PC == 0x8000 && !early.DivMmc.IsMapped,
+            $"RETN returned to ${early.Cpu.PC:X4}: it read the stack before releasing DivMMC's RAM window.");
+    }
+
+    /// <summary>
+    /// NextReg values zxnext.vhd gives at power on and keeps or resets on a soft reset: the
+    /// $02 reset-type shift register, $0B, $0F, $10, the I2S mirrors $2C-$2E, $7F, the
+    /// $82-$85 and $86-$89 port enables with their reset-type bits, and $A2.
+    /// </summary>
+    private static void VerifyNextRegValueRules()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        (byte Register, byte Value)[] powerOn =
+        [
+            (0x0B, 0x01), (0x0F, 0x02), (0x10, 0x04), (0x2C, 0x80), (0x2D, 0x00), (0x2E, 0x80),
+            (0x7F, 0xFF), (0x82, 0xFF), (0x83, 0xFF), (0x84, 0xFF), (0x85, 0x8F),
+            (0x86, 0xFF), (0x87, 0xFF), (0x88, 0xFF), (0x89, 0x8F), (0xA2, 0x02)
+        ];
+        foreach ((byte register, byte value) in powerOn)
+        {
+            Require(machine.Registers.Read(register) == value,
+                $"NextReg ${register:X2} read ${machine.Registers.Read(register):X2} at power on, not ${value:X2}.");
+        }
+
+        Require((machine.Registers.Read(0x02) & 0x03) == 0,
+            "NextReg $02 reported a reset type before any soft reset.");
+
+        // What the registers keep of a write.
+        machine.Registers.Write(0x0B, 0xFF);
+        machine.Registers.Write(0xA2, 0xFF);
+        machine.Registers.Write(0x85, 0xFF);
+        machine.Registers.Write(0x89, 0x70);
+        machine.Registers.Write(0x86, 0x12);
+        machine.Registers.Write(0x82, 0x00);
+        machine.Registers.Write(0x7F, 0x39);
+        Require(machine.Registers.Read(0x0B) == 0xB1
+                && machine.Registers.Read(0xA2) == 0xDF
+                && machine.Registers.Read(0x85) == 0x8F
+                && machine.Registers.Read(0x89) == 0x00
+                && machine.Registers.Read(0x86) == 0x12,
+            "NextRegs $0B, $A2, $85 or $89 did not keep only their implemented bits, or $86 its write.");
+
+        // The first soft reset after power on reads as hard. $85 bit 7 set resets the internal
+        // enables, $89 bit 7 clear the expansion bus ones, and $7F survives.
+        machine.Reset(ZxNextResetKind.Soft);
+        Require((machine.Registers.Read(0x02) & 0x03) == 0x02,
+            "NextReg $02 did not report a hard reset after power on and one soft reset.");
+        Require(machine.Registers.Read(0x7F) == 0x39
+                && machine.Registers.Read(0x0B) == 0x01
+                && machine.Registers.Read(0xA2) == 0x02
+                && machine.Registers.Read(0x82) == 0xFF
+                && machine.Registers.Read(0x85) == 0x8F
+                && machine.Registers.Read(0x86) == 0xFF
+                && machine.Registers.Read(0x89) == 0x0F,
+            "A soft reset did not keep $7F, reset $0B and $A2, or reset the port enables by their reset-type bits.");
+
+        // The other way round: the enables survive.
+        machine.Registers.Write(0x85, 0x0F);
+        machine.Registers.Write(0x82, 0x00);
+        machine.Registers.Write(0x89, 0x8F);
+        machine.Registers.Write(0x86, 0x12);
+        machine.Reset(ZxNextResetKind.Soft);
+        Require((machine.Registers.Read(0x02) & 0x03) == 0x01
+                && machine.Registers.Read(0x82) == 0x00
+                && machine.Registers.Read(0x85) == 0x0F
+                && machine.Registers.Read(0x86) == 0x12,
+            "A second soft reset did not read as soft, or reset port enables its reset-type bits protect.");
+        machine.Reset(ZxNextResetKind.Soft);
+        Require((machine.Registers.Read(0x02) & 0x03) == 0x01,
+            "A third soft reset did not read as soft.");
+
+        // A hard reset reloads the FPGA: power-on values again.
+        machine.Reset(ZxNextResetKind.Hard);
+        Require((machine.Registers.Read(0x02) & 0x03) == 0
+                && machine.Registers.Read(0x7F) == 0xFF
+                && machine.Registers.Read(0x82) == 0xFF
+                && machine.Registers.Read(0x85) == 0x8F
+                && machine.Registers.Read(0x86) == 0xFF
+                && machine.Registers.Read(0x89) == 0x8F,
+            "A hard reset did not bring NextRegs $02, $7F and $82-$89 back to their power-on values.");
+    }
+
+    /// <summary>
+    /// Readies the boundary workload for a NextReg $02 DivMMC NMI that pages DivMMC in at its
+    /// $0066 fetch: out of configuration mode, where NMI requests are ignored, with the DRIVE
+    /// button's NMI enabled (NextReg $06 bit 4), automap on ($0A bit 4) and DivMMC's NMI entry
+    /// point instant ($BB bit 1, not bit 0).
+    /// </summary>
+    private static void ArmDivMmcNmi(ZxNextMachine machine)
+    {
+        machine.Registers.Write(0x03, 0x03);
+        machine.Registers.Write(0x06, (byte)(machine.Registers.Read(0x06) | 0x10));
+        machine.Registers.Write(0x0A, (byte)(machine.Registers.Read(0x0A) | 0x10));
+        machine.Registers.Write(0xBB, (byte)((machine.Registers.Read(0xBB) & ~0x01) | 0x02));
+    }
+
+    /// <summary>
+    /// A machine of the given NextReg $03 machine type with four marked ROMs: ROM n reads
+    /// $A0 + n at $0123. Written from configuration mode, which the write then leaves.
+    /// </summary>
+    private static ZxNextMachine CreateRomMachine(byte machineType)
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        for (int bank = 0; bank < 4; bank++)
+        {
+            var rom = new byte[ZxNextMemoryBus.RomBankSize];
+            rom[0x0123] = (byte)(0xA0 + bank);
+            machine.MemoryBus.LoadRomBank(bank, rom);
+        }
+
+        machine.Registers.Write(0x03, machineType);
+        return machine;
+    }
+
+    /// <summary>
+    /// Moves a machine's clock and raster to the first contended cycle of the display's first
+    /// line, less <paramref name="tstatesEarlier"/>, so an access made that much later waits.
+    /// </summary>
+    private static void MoveToContentionWindow(ZxNextMachine machine, int tstatesEarlier = 0)
+    {
+        machine.UlaTiming.SynchronizeProfile();
+        ZxNextUlaTimingProfile profile = machine.UlaTiming.Profile;
+        ulong sample = checked(((ulong)profile.FirstDisplayLine * (ulong)profile.PixelsPerLine
+                + (ulong)(profile.ContentionCounterStartHorizontal + 3))
+            * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel);
+        ulong tstate = ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate;
+        ulong cycleStart = profile.IsPlus3 ? sample - tstate : sample;
+        int tstates = checked((int)((cycleStart / tstate) - (ulong)tstatesEarlier));
+        machine.Clock.AdvanceCpuTstates(tstates);
+        machine.Video.AdvanceMasterTicks((ulong)tstates * tstate);
+    }
+
+    /// <summary>
+    /// Runs one instruction at $8000 from the first contended cycle of the display, in the
+    /// given machine timing, with the tilemap (and so instruction-time batching) on or off,
+    /// and returns how many T-states it took.
+    /// </summary>
+    private static int TimeInstructionInWindow(
+        byte timing,
+        bool tilemap,
+        Action<ZxNextMachine> setUp,
+        int tstatesBeforeAccess,
+        params byte[] instruction)
+    {
+        ZxNextMachine machine = CreateProgramAt(0x8000, instruction);
+        machine.Registers.Write(0x03, timing);
+        if (tilemap)
+        {
+            machine.Registers.Write(0x6B, 0x80);
+        }
+
+        setUp(machine);
+        MoveToContentionWindow(machine, tstatesBeforeAccess);
+        ulong before = machine.Cpu.Cyc;
+        machine.StepInstruction();
+        return checked((int)(machine.Cpu.Cyc - before));
+    }
+
+    /// <summary>
+    /// Memory, paging and contention as zxnext.vhd does them: ROM selection by machine type,
+    /// MMU pages $E0-$FF showing the ROM in slots 0 and 1, contention by the slot's MMU page
+    /// (internal cycles included), the I/O cycle's high-byte term, NextReg $04's seven bits,
+    /// the Layer 2 aperture's eight-bit page, $DFFD bits 4 and 6, NextReg $08 bit 6 latched
+    /// at the end of the line's contention window, and the ROM chosen in all-RAM mode.
+    /// </summary>
+    private static void VerifyMemoryPagingContentionRules()
+    {
+        // ROM selection by machine type: a 48K has ROM 0 only, a 128K (and the Pentagon type)
+        // takes $7FFD bit 4, a +3 takes $1FFD bit 2 as well.
+        foreach (byte type in new byte[] { 1, 2, 3, 4 })
+        {
+            for (int selection = 0; selection < 4; selection++)
+            {
+                ZxNextMachine machine = CreateRomMachine(type);
+                machine.Paging.WritePort1Ffd((byte)((selection & 0x02) << 1));
+                machine.Paging.WritePort7Ffd((byte)((selection & 0x01) << 4));
+                int expected = type switch { 1 => 0, 3 => selection, _ => selection & 0x01 };
+                Require(machine.MemoryBus.Read(0x0123) == 0xA0 + expected,
+                    $"Machine type {type} with ports selecting ROM {selection} showed ROM {machine.MemoryBus.Read(0x0123) - 0xA0}, not {expected}.");
+            }
+
+            // NextReg $8C's lock bits: ignored by a 48K, bit 5 alone on a 128K, both on a +3.
+            for (int locks = 1; locks < 4; locks++)
+            {
+                ZxNextMachine machine = CreateRomMachine(type);
+                machine.Registers.Write(0x8C, (byte)(locks << 4));
+                int expected = type switch { 1 => 0, 3 => locks, _ => locks >> 1 };
+                Require(machine.MemoryBus.Read(0x0123) == 0xA0 + expected,
+                    $"Machine type {type} with ROM locks {locks} showed ROM {machine.MemoryBus.Read(0x0123) - 0xA0}, not {expected}.");
+            }
+        }
+
+        // A 48K's alternate ROM is the 48K one unless the locks are exactly 01.
+        ZxNextMachine alternate48 = CreateRomMachine(1);
+        bool alternateOk = alternate48.MemoryBus.EffectiveAlternateRomBank == 1;
+        alternate48.Registers.Write(0x8C, 0x10);
+        alternateOk &= alternate48.MemoryBus.EffectiveAlternateRomBank == 0;
+        alternate48.Registers.Write(0x8C, 0x30);
+        alternateOk &= alternate48.MemoryBus.EffectiveAlternateRomBank == 1;
+        Require(alternateOk, "A 48K did not choose its alternate ROM as sram_alt_128_n does.");
+
+        // DivMMC's ROM 3 entry points ($3Dxx here) follow the machine type's 48K BASIC ROM:
+        // always on a 48K, ROM 1 on a 128K, ROM 3 on a +3.
+        foreach ((byte type, byte port1Ffd, byte port7Ffd, bool rom3) in new (byte, byte, byte, bool)[]
+        {
+            (1, 0x00, 0x00, true),
+            (2, 0x00, 0x00, false),
+            (2, 0x00, 0x10, true),
+            (3, 0x00, 0x10, false),
+            (3, 0x04, 0x10, true)
+        })
+        {
+            ZxNextMachine machine = CreateRomMachine(type);
+            machine.Paging.WritePort1Ffd(port1Ffd);
+            machine.Paging.WritePort7Ffd(port7Ffd);
+            machine.Registers.Write(0x0A, 0x11);
+            _ = machine.MemoryBus.FetchOpcode(0x3D00);
+            Require(machine.DivMmc.AutomapHeld == rom3,
+                $"Machine type {type} with $1FFD=${port1Ffd:X2}, $7FFD=${port7Ffd:X2}: the $3D00 entry point {(rom3 ? "did not fire" : "fired")}.");
+        }
+
+        // ... and not under a Layer 2 read mapping over the ROM.
+        ZxNextMachine hidden = CreateRomMachine(1);
+        hidden.Registers.Write(0x0A, 0x11);
+        hidden.PortBus.WriteUncontended(0x123B, 0x04);
+        _ = hidden.MemoryBus.FetchOpcode(0x3D00);
+        Require(!hidden.DivMmc.AutomapHeld,
+            "A ROM 3 entry point fired under a Layer 2 read mapping.");
+
+        // MMU pages $E0-$FF all show the ROM in slots 0 and 1, and reach nothing elsewhere.
+        ZxNextMachine highPages = CreateRomMachine(3);
+        highPages.Registers.Write(0x50, 0xE5);
+        highPages.Registers.Write(0x52, 0xE5);
+        Require(highPages.MemoryBus.Read(0x0123) == 0xA0
+                && highPages.MemoryBus.GetMapping(0x0123).IsRom
+                && highPages.MemoryBus.Read(0x4123) == 0xFF,
+            "MMU page $E5 did not show the ROM in slot 0, or reached something in slot 2.");
+
+        // Contention follows the slot's MMU page, not what is paged over it (+3 timing).
+        ZxNextMachine layer2Over = CreateRomMachine(3);
+        layer2Over.PortBus.WriteUncontended(0x123B, 0xC1);
+        MoveToContentionWindow(layer2Over);
+        ulong before = layer2Over.Cpu.Cyc;
+        layer2Over.MemoryBus.WriteCpu(0x4000, 0x00);
+        Require(layer2Over.Cpu.Cyc > before && layer2Over.MemoryBus.GetMapping(0x4000).IsContended,
+            "A Layer 2 write mapping over bank 5's MMU slot was not contended.");
+
+        ZxNextMachine layer2Under = CreateRomMachine(3);
+        layer2Under.Registers.Write(0x12, 0x05);
+        layer2Under.PortBus.WriteUncontended(0x123B, 0x01);
+        MoveToContentionWindow(layer2Under);
+        before = layer2Under.Cpu.Cyc;
+        layer2Under.MemoryBus.WriteCpu(0x0123, 0x00);
+        Require(layer2Under.Cpu.Cyc == before && layer2Under.MemoryBus.ReadPhysicalRam(10, 0x0123) == 0x00,
+            "A Layer 2 write mapping of bank 5 over the ROM slot was contended.");
+
+        ZxNextMachine divMmcOver = CreateRomMachine(3);
+        divMmcOver.Registers.Write(0x50, 10);
+        divMmcOver.PortBus.WriteUncontended(0x00E3, 0x80);
+        MoveToContentionWindow(divMmcOver);
+        before = divMmcOver.Cpu.Cyc;
+        _ = divMmcOver.MemoryBus.Read(0x0123);
+        Require(divMmcOver.Cpu.Cyc > before,
+            "DivMMC paged over a contended MMU slot hid the contention.");
+
+        // Internal cycles go by the 8 KiB slot (128K timing): EX (SP),HL with SP in slot 3.
+        // And identically with the tilemap on, where instruction time is batched.
+        int[] SlotTimes(bool tilemap)
+        {
+            int OneSlot(byte slot2, byte slot3) => TimeInstructionInWindow(0xA3, tilemap, machine =>
+            {
+                machine.Registers.Write(0x52, slot2);
+                machine.Registers.Write(0x53, slot3);
+                machine.Cpu.SP = 0x6000;
+            }, 0, 0xE3);
+            return [OneSlot(4, 4), OneSlot(2, 4), OneSlot(4, 2)];
+        }
+
+        int[] slotTimes = SlotTimes(tilemap: false);
+        int[] batchedSlotTimes = SlotTimes(tilemap: true);
+        Require(slotTimes[0] == slotTimes[1] && slotTimes[2] > slotTimes[0]
+                && batchedSlotTimes.SequenceEqual(slotTimes),
+            $"EX (SP),HL with SP in an uncontended slot took {slotTimes[1]} T-states when the other half of its "
+                + $"16 KiB was contended, {slotTimes[0]} when neither was, {slotTimes[2]} when its own was; "
+                + $"with instruction time batched {string.Join("/", batchedSlotTimes)}.");
+
+        // The I/O cycle's high byte counts as an address (48K timing). IN A,(C) with its I/O
+        // cycle starting at hc 3, where the wait pattern is 6,5,4,3,2,1,0,0, takes the
+        // classic C:1,C:1,C:1,C:1 = 24, N:4 = 12, C:1,C:3 = 18 and N:1,C:3 = 17. And the same
+        // with instruction time batched.
+        int[] InTimes(bool tilemap)
+        {
+            int In(ushort port) => TimeInstructionInWindow(0x91, tilemap, machine =>
+            {
+                machine.Cpu.B = (byte)(port >> 8);
+                machine.Cpu.C = (byte)port;
+            }, 8, 0xED, 0x78);
+            return [In(0x40FF), In(0x80FF), In(0x40FE), In(0x80FE)];
+        }
+
+        int[] expectedIn = [24, 12, 18, 17];
+        int[] inTimes = InTimes(tilemap: false);
+        int[] batchedInTimes = InTimes(tilemap: true);
+        Require(inTimes.SequenceEqual(expectedIn) && batchedInTimes.SequenceEqual(expectedIn),
+            $"IN A,(C) to $40FF, $80FF, $40FE and $80FE took {string.Join("/", inTimes)} T-states "
+                + $"({string.Join("/", batchedInTimes)} with instruction time batched), not 24/12/18/17.");
+
+        // NextReg $04 keeps seven bits on an issue 4 board.
+        ZxNextMachine configBank = ZxNextMachineFactory.CreateFoundationMachine();
+        configBank.Registers.Write(0x04, 0x85);
+        Require(configBank.MemoryBus.ConfigurationBank == 0x05,
+            "NextReg $04 kept bit 7.");
+
+        // The Layer 2 aperture's page has eight bits: bank 127 plus one wraps to bank 0.
+        ZxNextMachine wrap = CreateRomMachine(3);
+        wrap.Registers.Write(0x12, 0x7F);
+        wrap.PortBus.WriteUncontended(0x123B, 0xC1);
+        wrap.MemoryBus.WriteCpu(0x4123, 0x6E);
+        Require(wrap.MemoryBus.ReadPhysicalRam(0, 0x0123) == 0x6E,
+            "The Layer 2 aperture did not wrap bank 128 to bank 0.");
+
+        // $DFFD keeps bits 4 and 6, which NextReg $8E leaves alone and the Multiface +3 reads.
+        ZxNextMachine dffd = CreateRomMachine(3);
+        dffd.Paging.WritePortDFfd(0xFF);
+        bool dffdOk = dffd.Paging.PortDFfd == 0x5F && dffd.Paging.SelectedRamBank == 0x78;
+        dffd.Registers.Write(0x8E, 0x08);
+        dffdOk &= dffd.Paging.PortDFfd == 0x50;
+        dffd.Multiface.PressButton();
+        Require(dffdOk && dffd.PortBus.ReadUncontended(0xDF3F) == 0x50,
+            "$DFFD did not keep bits 4 and 6 through NextReg $8E, or the Multiface +3 did not read them.");
+
+        // NextReg $08 bit 6 waits for the end of the line's contention window (+3 timing).
+        ZxNextMachine latch = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextUlaTimingProfile latchProfile = latch.UlaTiming.Profile;
+        int inWindow = checked((int)((((ulong)latchProfile.FirstDisplayLine * (ulong)latchProfile.PixelsPerLine
+                + (ulong)(latchProfile.ContentionCounterStartHorizontal + 8))
+            * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel) / ZxNextReferenceBaseline.MasterTicksPerBaseCpuTstate));
+        latch.Clock.AdvanceCpuTstates(inWindow);
+        latch.Registers.Write(0x08, 0x50);
+        bool latchOk = !latch.Registers.ContentionDisabled
+            && (latch.Registers.Read(0x08) & 0x40) == 0
+            && latch.Contention.Enabled;
+        latch.Clock.AdvanceCpuTstates(100);
+        latchOk &= !latch.Registers.ContentionDisabled;
+        latch.Clock.AdvanceCpuTstates(30);
+        latchOk &= latch.Registers.ContentionDisabled
+            && (latch.Registers.Read(0x08) & 0x40) != 0
+            && !latch.Contention.Enabled;
+        latch.Registers.Write(0x08, 0x10);
+        latchOk &= !latch.Registers.ContentionDisabled;
+        Require(latchOk,
+            "NextReg $08 bit 6 took effect inside the line's contention window, never, or late outside it.");
+
+        // The ROM chosen in all-RAM mode is the one an MMU page of $FF then shows.
+        ZxNextMachine allRam = CreateRomMachine(3);
+        allRam.Paging.WritePort1Ffd(0x01);
+        allRam.Paging.WritePort7Ffd(0x10);
+        allRam.Registers.Write(0x50, 0xFF);
+        Require(allRam.MemoryBus.Read(0x0123) == 0xA1,
+            "A ROM chosen while in all-RAM mode was not the one an MMU page of $FF showed.");
+
+        // A restore brings the machine type back to the ROM selection too: a 48K saved with
+        // $7FFD bit 4 set, restored into a +3, still shows ROM 0.
+        ZxNextMachine saved48 = CreateRomMachine(1);
+        saved48.Paging.WritePort7Ffd(0x10);
+        ZxNextMachine restoredInto = CreateRomMachine(3);
+        ZxNextMachineSnapshotService.Restore(restoredInto, ZxNextMachineSnapshotService.Capture(saved48));
+        Require(restoredInto.MemoryBus.MachineType == 1 && restoredInto.MemoryBus.Read(0x0123) == 0xA0,
+            "A restored 48K did not take its machine type back to the ROM selection.");
+    }
+
+    /// <summary>Steps a machine until its ULA timing starts the next frame.</summary>
+    private static void RunToNextFrame(ZxNextMachine machine)
+    {
+        ulong frame = machine.UlaTiming.FrameNumber;
+        while (machine.UlaTiming.FrameNumber == frame)
+        {
+            machine.StepInstruction();
+        }
+    }
+
+    /// <summary>
+    /// Renders a frame twice, through the snapshot reference and the live raster, requires the
+    /// two to agree, and returns the picture.
+    /// </summary>
+    private static int[] RenderBothWays(ZxNextMachine machine, string scene)
+    {
+        machine.Video.RenderFrame(0);
+        int[] reference = (int[])machine.Video.FrameBuffer.Clone();
+        machine.Video.Reset();
+        machine.Video.AdvanceMasterTicks(machine.UlaTiming.MasterTicksPerFrame * 2);
+        int[] live = (int[])machine.Video.FrameBuffer.Clone();
+        int first = live.AsSpan().CommonPrefixLength(reference);
+        Require(first == live.Length,
+            $"{scene}: the live raster diverged from the reference at output "
+                + $"({first % ZxNextVideoRenderer.FrameWidth}, {first / ZxNextVideoRenderer.FrameWidth}).");
+        return live;
+    }
+
+    /// <summary>
+    /// A scene for the mixer rules. Display pixel (0,0): bright blue ULA ink over Layer 2 index 1
+    /// (red). Display pixel (1,0): black ULA paper over transparent Layer 2. The fallback colour
+    /// ($4A) is green, so it cannot be mistaken for a layer.
+    /// </summary>
+    private static ZxNextMachine CreateMixerScene()
+    {
+        ZxNextMachine machine = ZxNextMachineFactory.CreateFoundationMachine();
+        machine.MemoryBus.WritePhysicalRam(10, 0x0000, 0x80);
+        machine.MemoryBus.WritePhysicalRam(10, 0x1800, 0x41);
+        WriteLayer2Palette(machine, 0x01, 0x1C0);
+        WriteLayer2Byte(machine, 8, 0x0000, 0x01);
+        WriteLayer2Byte(machine, 8, 0x0001, 0xE3);
+        machine.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x02);
+        machine.Registers.Write(0x4A, 0x1C);
+        return machine;
+    }
+
+    /// <summary>
+    /// A 40x32 tilemap of tile 0 over bank 5 (map at $6000, tiles at $7000), tile 0 all
+    /// tilemap palette index 1, coloured cyan; in text mode its glyph is all ink.
+    /// </summary>
+    private static void AddCyanTilemap(ZxNextMachine machine, bool textMode)
+    {
+        for (int offset = 0; offset < 32; offset++)
+        {
+            machine.MemoryBus.WritePhysicalRam(11, 0x1000 + offset, textMode ? (byte)0xFF : (byte)0x11);
+        }
+
+        machine.Registers.Write(0x6E, 0x20);
+        machine.Registers.Write(0x6F, 0x30);
+        machine.Registers.Write(0x43, 0x30);
+        machine.Registers.Write(0x40, 0x01);
+        machine.Registers.Write(0x44, 0x03F >> 1);
+        machine.Registers.Write(0x44, 0x03F & 0x01);
+        machine.Registers.Write(0x6B, textMode ? (byte)0x88 : (byte)0x80);
+    }
+
+    /// <summary>
+    /// zxnext.vhd's stage 2 mixer and zxula.vhd's border, case by case: the blend operand of
+    /// orders 6 and 7 per NextReg $68 bits 6:5 (and its disregard of the ULA enable), every
+    /// opaque Layer 2 pixel blended, a sprite over the ULA's border in LUS/USL/ULS, the
+    /// stencil, text-mode tilemap pixels equal to $14, the Timex hi-res border, Layer 2 scroll
+    /// beyond its documented range, a tilemap disabled mid-line, and the $28, $03 bit 7 and
+    /// $6B bit 2 readbacks. Every scene is also rendered live and held to the reference.
+    /// </summary>
+    private static void VerifyCompositorRules()
+    {
+        int pixel0 = (ZxNextVideoRenderer.UlaTop * ZxNextVideoRenderer.FrameWidth) + ZxNextVideoRenderer.UlaLeft;
+        int pixel1 = pixel0 + 2;
+        int red = ZxNextPaletteDevice.ToArgb(0x1C0);
+        int blue = ZxNextPaletteDevice.ToArgb(0x007);
+        int black = ZxNextPaletteDevice.ToArgb(0x000);
+        int green = ZxNextPaletteDevice.ToArgb(0x038);
+        int cyan = ZxNextPaletteDevice.ToArgb(0x03F);
+        int magenta = ZxNextPaletteDevice.ToArgb(0x1C7);
+        int darkMagenta = ZxNextPaletteDevice.ToArgb(0x082);
+
+        // Orders 6 and 7. The tilemap is off, so its below flag is NOT $6B bit 0: below.
+        foreach ((byte order, byte ulaControl, int expected0, int expected1, string what) in new (byte, byte, int, int, string)[]
+        {
+            (6, 0x00, magenta, green, "ULA operand: blended where Layer 2 is opaque, unseen elsewhere"),
+            (7, 0x00, darkMagenta, green, "ULA operand, add minus 5"),
+            (6, 0x20, blue, black, "no operand: the ULA above"),
+            (6, 0x40, magenta, green, "ULA/tilemap combination as operand"),
+            (6, 0x60, blue, black, "tilemap operand: the ULA above"),
+            (6, 0x80, magenta, green, "ULA disabled: still the operand"),
+            (6, 0xA0, red, green, "ULA disabled, no operand: Layer 2 alone")
+        })
+        {
+            ZxNextMachine machine = CreateMixerScene();
+            machine.Registers.Write(0x15, (byte)(order << 2));
+            machine.Registers.Write(0x68, ulaControl);
+            string scene = $"Order {order}, $68=${ulaControl:X2} ({what})";
+            int[] frame = RenderBothWays(machine, scene);
+            Require(frame[pixel0] == expected0 && frame[pixel1] == expected1,
+                $"{scene}: got ${frame[pixel0]:X8}/${frame[pixel1]:X8}, expected ${expected0:X8}/${expected1:X8}.");
+        }
+
+        int yellow = ZxNextPaletteDevice.ToArgb(0x1F8);
+
+        // With a sprite over the pixel the layer above it and the layer below it differ:
+        // with no operand the ULA is above (the tilemap is off, so below); with the ULA as
+        // operand nothing is above, and the sprite shows.
+        foreach ((byte ulaControl, int expected0, int expected1) in new (byte, int, int)[]
+        {
+            (0x20, blue, black),
+            (0x00, yellow, yellow)
+        })
+        {
+            ZxNextMachine machine = CreateMixerScene();
+            WriteSolidSpritePattern8(machine, 0, 0x02);
+            WriteSpritePalette(machine, 0x02, 0x1F8);
+            WriteSpriteAttributes(machine, 0, 32, 32, 0, 0x80, 0);
+            machine.Registers.Write(0x15, 0x19);
+            machine.Registers.Write(0x68, ulaControl);
+            string scene = $"Order 6, $68=${ulaControl:X2}, a sprite over the pixel";
+            int[] frame = RenderBothWays(machine, scene);
+            Require(frame[pixel0] == expected0 && frame[pixel1] == expected1,
+                $"{scene}: got ${frame[pixel0]:X8}/${frame[pixel1]:X8}, expected ${expected0:X8}/${expected1:X8}.");
+        }
+
+        // The single- and two-layer compositions in order 6, where the operand hides a layer:
+        // the ULA alone, the tilemap alone as the operand, and the tilemap as the operand with
+        // a sprite.
+        ZxNextMachine ulaAlone = CreateMixerScene();
+        ulaAlone.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x00);
+        ulaAlone.Registers.Write(0x15, 0x18);
+        int[] ulaAloneFrame = RenderBothWays(ulaAlone, "Order 6, the ULA alone");
+        Require(ulaAloneFrame[pixel0] == green && ulaAloneFrame[pixel1] == green,
+            "In order 6 the ULA alone, the blend operand with no Layer 2 to blend, was not hidden.");
+
+        ZxNextMachine tilemapAlone = CreateMixerScene();
+        tilemapAlone.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x00);
+        AddCyanTilemap(tilemapAlone, textMode: false);
+        tilemapAlone.Registers.Write(0x15, 0x18);
+        tilemapAlone.Registers.Write(0x68, 0xE0);
+        int[] tilemapAloneFrame = RenderBothWays(tilemapAlone, "Order 6, the tilemap alone as operand");
+        Require(tilemapAloneFrame[pixel0] == green,
+            "In order 6 the tilemap alone, as the blend operand, was not hidden.");
+
+        ZxNextMachine tilemapSprite = CreateMixerScene();
+        tilemapSprite.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x00);
+        AddCyanTilemap(tilemapSprite, textMode: false);
+        WriteSolidSpritePattern8(tilemapSprite, 0, 0x02);
+        WriteSpritePalette(tilemapSprite, 0x02, 0x1F8);
+        WriteSpriteAttributes(tilemapSprite, 0, 32, 32, 0, 0x80, 0);
+        tilemapSprite.Registers.Write(0x15, 0x19);
+        tilemapSprite.Registers.Write(0x68, 0xC0);
+        int[] tilemapSpriteFrame = RenderBothWays(tilemapSprite, "Order 6, the tilemap as operand under a sprite");
+        Require(tilemapSpriteFrame[pixel0] == yellow,
+            "In order 6 the tilemap as the blend operand was drawn over a sprite.");
+
+        // LUS, USL, ULS: a sprite shows over the ULA's border, not over its display. In order
+        // 6 the ULA is only the operand, so the sprite shows over both.
+        foreach (byte order in new byte[] { 3, 4, 5, 6 })
+        {
+            foreach (bool layer2 in new[] { true, false })
+            {
+                ZxNextMachine machine = CreateMixerScene();
+                if (!layer2)
+                {
+                    machine.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x00);
+                }
+
+                WriteSolidSpritePattern8(machine, 0, 0x02);
+                WriteSpritePalette(machine, 0x02, 0x1F8);
+                WriteSpriteAttributes(machine, 0, 0, 0, 0, 0x80, 0);
+                WriteSpriteAttributes(machine, 1, 32, 32, 0, 0x80, 0);
+                machine.Registers.Write(0x15, (byte)(0x03 | (order << 2)));
+                string scene = $"Order {order}, Layer 2 {(layer2 ? "on" : "off")}, sprites over border and display";
+                int[] frame = RenderBothWays(machine, scene);
+                int expectedDisplay = order == 6 ? yellow : order == 3 && layer2 ? red : blue;
+                Require(frame[0] == yellow && frame[pixel0] == expectedDisplay,
+                    $"{scene}: the border pixel was ${frame[0]:X8} (sprite ${yellow:X8}), the display pixel ${frame[pixel0]:X8}.");
+            }
+        }
+
+        // The stencil: where both are opaque, ULA AND tilemap; otherwise transparent.
+        foreach (bool stencil in new[] { false, true })
+        {
+            ZxNextMachine machine = CreateMixerScene();
+            machine.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x00);
+            AddCyanTilemap(machine, textMode: false);
+            machine.Registers.Write(0x68, stencil ? (byte)0x01 : (byte)0x00);
+            string scene = $"Stencil {(stencil ? "on" : "off")}";
+            int[] frame = RenderBothWays(machine, scene);
+            Require(stencil
+                    ? frame[pixel0] == blue && frame[pixel1] == black
+                    : frame[pixel0] == cyan && frame[pixel1] == cyan,
+                $"{scene}: got ${frame[pixel0]:X8}/${frame[pixel1]:X8}.");
+        }
+
+        // Text-mode tilemap pixels equal to $14 are transparent; graphics-mode ones are not.
+        foreach ((bool textMode, byte transparency, int expected) in new (bool, byte, int)[]
+        {
+            (true, 0x1F, blue),
+            (true, 0xE3, cyan),
+            (false, 0x1F, cyan)
+        })
+        {
+            ZxNextMachine machine = CreateMixerScene();
+            machine.PortBus.WriteUncontended(ZxNextLayer2Device.ControlPort, 0x00);
+            AddCyanTilemap(machine, textMode);
+            machine.Registers.Write(0x14, transparency);
+            string scene = $"{(textMode ? "Text" : "Graphics")}-mode tilemap with $14=${transparency:X2}";
+            int[] frame = RenderBothWays(machine, scene);
+            Require(frame[pixel0] == expected,
+                $"{scene}: got ${frame[pixel0]:X8}, expected ${expected:X8}.");
+        }
+
+        // Timex hi-res: the border is the bright paper of the inverted ink, not the $FE colour.
+        ZxNextMachine hires = CreateMixerScene();
+        hires.PortBus.WriteUncontended(0x00FE, 0x00);
+        hires.PortBus.WriteUncontended(0x00FF, 0x16);
+        int hiresBorder = ZxNextPaletteDevice.ToArgb(
+            hires.Registers.Palettes.GetUlaPaperPaletteColor(0x40 | (5 << 3) | 2));
+        int[] hiresFrame = RenderBothWays(hires, "Timex hi-res border");
+        Require(hiresFrame[0] == hiresBorder && hiresBorder != black,
+            $"The Timex hi-res border was ${hiresFrame[0]:X8}, not the bright paper ${hiresBorder:X8}.");
+
+        // Layer 2 scrolled past its documented range reads past the picture, as layer2.vhd's
+        // one-step wrap does: row 184 scrolled by 200 is row 192, column 300 by 400 is 380.
+        ZxNextMachine scrolledY = CreateMixerScene();
+        WriteLayer2Palette(scrolledY, 0x02, 0x038);
+        WriteLayer2Byte(scrolledY, 8, 0xC000, 0x02);
+        scrolledY.Registers.Write(0x17, 200);
+        int[] scrolledYFrame = RenderBothWays(scrolledY, "Layer 2 scrolled down 200");
+        Require(scrolledYFrame[pixel0 + (184 * ZxNextVideoRenderer.FrameWidth)] == green,
+            "Layer 2 row 184 scrolled by 200 did not read row 192.");
+
+        ZxNextMachine scrolledX = CreateMixerScene();
+        WriteLayer2Palette(scrolledX, 0x02, 0x038);
+        scrolledX.Registers.Write(0x70, 0x10);
+        SetLayer2Clip(scrolledX, 0, 159, 0, 255);
+        WriteLayer2Byte(scrolledX, 8, 60 << 8, 0x01);
+        WriteLayer2Byte(scrolledX, 8, 380 << 8, 0x02);
+        scrolledX.Registers.Write(0x16, 400 & 0xFF);
+        scrolledX.Registers.Write(0x71, 0x01);
+        int[] scrolledXFrame = RenderBothWays(scrolledX, "320-wide Layer 2 scrolled right 400");
+        Require(scrolledXFrame[600] == green,
+            "320-wide Layer 2 column 300 scrolled by 400 did not read column 380.");
+
+        // A tilemap disabled mid-line is gone from the next pixel, timed fetch or not.
+        ZxNextMachine midLine = CreateMixerScene();
+        for (int address = 0; address < 0xC000; address++)
+        {
+            WriteLayer2Byte(midLine, 8, address, 0xE3);
+        }
+
+        AddCyanTilemap(midLine, textMode: false);
+        midLine.Video.Reset();
+        ZxNextUlaTimingProfile profile = midLine.UlaTiming.Profile;
+        ulong disableTick = checked(
+            ((ulong)(profile.FirstDisplayLine + 100) * (ulong)profile.PixelsPerLine
+                + (ulong)(profile.DisplayStartHorizontal + 100))
+            * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel);
+        midLine.Video.AdvanceMasterTicks(disableTick);
+        midLine.Registers.Write(0x6B, 0x00);
+        midLine.Video.AdvanceMasterTicks(profile.MasterTicksPerFrame - disableTick);
+        int row100 = pixel0 + (100 * ZxNextVideoRenderer.FrameWidth);
+        int[] midLineFrame = midLine.Video.FrameBuffer;
+        Require(midLineFrame[row100 + (90 * 2)] == cyan
+                && midLineFrame[row100 + (100 * 2)] == black
+                && midLineFrame[row100 + (104 * 2)] == black,
+            "A tilemap disabled mid-line was still drawn from its timed fetch.");
+
+        // The border colour taken for a group survives a restore made inside that group after
+        // a $FE write: the rest of the group keeps the old colour in both machines.
+        ZxNextMachine borderOriginal = ZxNextMachineFactory.CreateFoundationMachine();
+        borderOriginal.PortBus.WriteUncontended(0x00FE, 0x02);
+        borderOriginal.Video.Reset();
+        profile = borderOriginal.UlaTiming.Profile;
+        ulong midGroupTick = checked(
+            ((ulong)profile.VisibleFirstLine * (ulong)profile.PixelsPerLine
+                + (ulong)profile.VisibleStartHorizontal + 10)
+            * ZxNextUlaTimingProfile.MasterTicksPerRasterPixel);
+        borderOriginal.Video.AdvanceMasterTicks(midGroupTick);
+        borderOriginal.PortBus.WriteUncontended(0x00FE, 0x01);
+        ZxNextMachineSnapshot midGroup = ZxNextMachineSnapshotService.Capture(borderOriginal);
+        ZxNextMachine borderRestored = ZxNextMachineFactory.CreateFoundationMachine();
+        ZxNextMachineSnapshotService.Restore(borderRestored, midGroup);
+        borderOriginal.Video.AdvanceMasterTicks(profile.MasterTicksPerFrame - midGroupTick);
+        borderRestored.Video.AdvanceMasterTicks(profile.MasterTicksPerFrame - midGroupTick);
+        int[] borderOriginalFrame = borderOriginal.Video.FrameBuffer;
+        int[] borderRestoredFrame = borderRestored.Video.FrameBuffer;
+        Require(borderRestoredFrame[(15 * 2) + 1] == borderOriginalFrame[(15 * 2) + 1]
+                && borderOriginalFrame[(15 * 2) + 1] != borderOriginalFrame[16 * 2],
+            "A machine restored inside a border group did not keep the colour taken for that group.");
+
+        // Readbacks: $28 the first byte of a nine-bit write, $03 bit 7 the half-done write,
+        // $6B every bit.
+        ZxNextMachine readbacks = ZxNextMachineFactory.CreateFoundationMachine();
+        readbacks.Registers.Write(0x40, 0x10);
+        readbacks.Registers.Write(0x44, 0x5A);
+        bool halfDone = readbacks.Registers.Read(0x28) == 0x5A && (readbacks.Registers.Read(0x03) & 0x80) != 0;
+        readbacks.Registers.Write(0x44, 0x01);
+        bool done = (readbacks.Registers.Read(0x03) & 0x80) == 0 && readbacks.Registers.Read(0x28) == 0x5A;
+        readbacks.Registers.Write(0x6B, 0x7F);
+        Require(halfDone && done && readbacks.Registers.Read(0x6B) == 0x7F,
+            "NextReg $28, $03 bit 7 or $6B bit 2 did not read back as zxnext.vhd stores them.");
     }
 
     private static ZxNextMachine CreateProgram(params byte[] bytes)

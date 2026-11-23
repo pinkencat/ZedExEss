@@ -104,6 +104,8 @@ public static class SettingsVerificationRunner
             "ZX80/ZX81 RAM should default to the common 16 KiB expansion.");
         Require(settings.Zx8xHighResolutionMode == Zx8xHighResolutionMode.Sinclair,
             "Optional WRX hardware must default off.");
+        Require(!settings.ZxNextKempstonMouseEnabled,
+            "The Next's Kempston mouse capture must default off.");
     }
 
     private static void VerifyRoundTrip(ISettingsStore store, string settingsPath)
@@ -127,7 +129,8 @@ public static class SettingsVerificationRunner
             Zx8xRamConfiguration = Zx8xRamConfiguration.Internal1K,
             Zx8xHighResolutionMode = Zx8xHighResolutionMode.Wrx,
             ZxNextSystemDirectory = @"C:\System\Next",
-            ZxNextBootRomPath = @"C:\System\bootrom.vhd"
+            ZxNextBootRomPath = @"C:\System\bootrom.vhd",
+            ZxNextKempstonMouseEnabled = true
         };
 
         store.Save(expected);

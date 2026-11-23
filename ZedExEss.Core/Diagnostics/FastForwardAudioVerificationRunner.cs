@@ -35,6 +35,8 @@ public static class FastForwardAudioVerificationRunner
             Check($"{speed}x advances source at requested rate and retains pitch", () => VerifySpeed(speed, writer), ref failures);
         }
 
+        Check("A stereo source is mixed down to mono frame by frame", VerifyStereoSource, ref failures);
+
         writer.WriteLine();
         writer.WriteLine(failures == 0 ? "Result: PASS" : $"Result: FAIL ({failures} failed checks)");
         return failures == 0 ? 0 : 1;
@@ -99,11 +101,68 @@ public static class FastForwardAudioVerificationRunner
             $"pitch={measuredFrequency.ToString("0.0", CultureInfo.InvariantCulture)} Hz");
     }
 
+    /// <summary>
+    /// A stereo source (the Next's host stream) is read in whole frames and mixed down: the
+    /// same tone on both sides comes out as that tone, at the source's frame rate, and
+    /// opposite sides cancel.
+    /// </summary>
+    private static void VerifyStereoSource()
+    {
+        var same = new StereoSineSource(invertRight: false);
+        var stretched = new TimeStretchAudioSource(same, SampleRate, 2);
+        var output = new short[SampleRate / 2];
+        Require(((IAudioSource)stretched).Channels == 1 && stretched.ReadSamples(output, 0, output.Length) == output.Length,
+            "The stretcher did not give mono output for a stereo source.");
+        Require(same.OddReads == 0,
+            "The stretcher asked a stereo source for part of a frame.");
+        double ratio = same.FramesRead / (double)output.Length;
+        Require(Math.Abs(ratio - 2) < 0.1,
+            $"A stereo source advanced {ratio.ToString("0.000", CultureInfo.InvariantCulture)}x, not 2x, in frames.");
+        int positiveCrossings = 0;
+        for (int i = 4_097; i < output.Length; i++)
+        {
+            positiveCrossings += output[i - 1] <= 0 && output[i] > 0 ? 1 : 0;
+        }
+
+        double pitch = positiveCrossings * SampleRate / (double)(output.Length - 4_096);
+        Require(Math.Abs(pitch - TestFrequency) < 55.0,
+            $"A stereo tone came out at {pitch.ToString("0.0", CultureInfo.InvariantCulture)} Hz, not near {TestFrequency} Hz.");
+
+        var opposite = new TimeStretchAudioSource(new StereoSineSource(invertRight: true), SampleRate, 2);
+        Require(opposite.ReadSamples(output, 0, output.Length) == output.Length
+                && output.All(static sample => Math.Abs((int)sample) <= 1),
+            "Opposite stereo sides did not cancel in the mixdown.");
+    }
+
     private static void Require(bool condition, string message)
     {
         if (!condition)
         {
             throw new InvalidOperationException(message);
+        }
+    }
+
+    private sealed class StereoSineSource(bool invertRight) : IAudioSource
+    {
+        private long _frame;
+
+        public int Channels => 2;
+        public long FramesRead => _frame;
+        public int OddReads { get; private set; }
+
+        public int ReadSamples(short[] buffer, int offset, int count)
+        {
+            OddReads += count % 2;
+            for (int i = 0; i + 1 < count; i += 2)
+            {
+                double phase = 2.0 * Math.PI * TestFrequency * _frame / SampleRate;
+                short value = (short)(Math.Sin(phase) * 12_000.0);
+                buffer[offset + i] = value;
+                buffer[offset + i + 1] = invertRight ? (short)-value : value;
+                _frame++;
+            }
+
+            return count - (count % 2);
         }
     }
 

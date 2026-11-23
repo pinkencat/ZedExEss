@@ -45,6 +45,7 @@ public static class ZxNextMachineFactory
         var paging = new ZxNextPagingController(memoryBus);
         var keyboard = new SpectrumKeyboard();
         var joystick = new ZxNextJoystickDevice(keyboard);
+        var mouse = new ZxNextMouseDevice();
         var audio = new ZxNextAudioDevice(sampleRate);
         var palettes = new ZxNextPaletteDevice();
         var registers = new ZxNextRegisterFile(
@@ -59,6 +60,7 @@ public static class ZxNextMachineFactory
             layer2,
             tilemap,
             sprites);
+        memoryBus.ConfigureNmi(registers.Nmi);
         var portBus = new ZxNextPortBus(
             registers,
             paging,
@@ -66,15 +68,22 @@ public static class ZxNextMachineFactory
             multiface,
             keyboard,
             joystick,
+            mouse,
             audio,
             layer2,
             sprites,
             dma);
+        tilemap.ConfigureTextModeTransparency(palettes, layer2);
         dma.ConfigurePorts(portBus);
+        dma.ConfigureLayer2(layer2);
+        dma.ConfigureClock(clock);
         var cpu = new ZxNextCpu(memoryBus, portBus, registers, divMmc, multiface);
         registers.ConfigureCpu(cpu);
-        var ulaTiming = new ZxNextUlaTiming(clock, registers, cpu);
+        var ulaTiming = new ZxNextUlaTiming(clock, registers, cpu, registers.Interrupts);
         registers.ConfigureUlaTiming(ulaTiming);
+        registers.Interrupts.Configure(cpu, ulaTiming, clock);
+        cpu.ConfigureInterrupts(registers.Interrupts);
+        dma.ConfigureInterrupts(registers.Interrupts);
         var contention = new ZxNextContentionController(clock, registers, ulaTiming);
         var floatingBus = new ZxNextFloatingBus(ulaTiming, paging);
         var video = new ZxNextVideoRenderer(
@@ -99,6 +108,7 @@ public static class ZxNextMachineFactory
             multiface,
             keyboard,
             joystick,
+            mouse,
             audio,
             portBus,
             ulaTiming,
@@ -120,7 +130,7 @@ public static class ZxNextMachineFactory
         cpu.ConfigureIoContention(enabled: true);
         memoryBus.ConfigureTiming(cpu, contention, clock);
         memoryBus.ConfigureFloatingBus(floatingBus);
-        portBus.ConfigureTiming(cpu, contention);
+        portBus.ConfigureTiming(cpu, contention, ulaTiming, memoryBus);
         portBus.ConfigureFloatingBus(floatingBus);
         return machine;
     }
